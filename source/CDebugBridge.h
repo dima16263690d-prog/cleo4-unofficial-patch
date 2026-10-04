@@ -10,6 +10,8 @@
 #else
 #define TRACE(...) __noop
 #define DIAG(...) __noop
+#define SCRIPT_TRACE(...) __noop
+#define MEMORY_TRACE(...) __noop
 #endif
 
 void Warning(const char *message);
