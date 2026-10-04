@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "ScmFunction.h"
+#include "CDebugCallbackSystem.h"
 #include <cstdint>
 
 namespace CLEO
@@ -174,60 +175,113 @@ namespace CLEO
     CRunningScript **inactiveThreadQueue, **activeThreadQueue;
 	CCustomScript *lastScriptCreated = nullptr;
 
+    // -------------------------------------------------------------------------
+    // Script engine lifecycle
+    // -------------------------------------------------------------------------
+    // Keep GTA responsible for script execution and pActiveScripts ordering.
+    // CScriptEngine owns the transition into/out of the CLEO runtime. This is
+    // intentionally single-threaded for the first test baseline.
+    void CScriptEngine::GameBegin(bool bLoadMode)
+    {
+        if (scriptsLoaded)
+            return;
+
+        if (activeThreadQueue == nullptr || *activeThreadQueue == nullptr)
+            return;
+
+        scriptsLoaded = true;
+
+        // Preserve GTA's native processing order. CLEO scripts are built into
+        // a separate temporary queue and attached after the native tail.
+        CRunningScript *nativeHead = *activeThreadQueue;
+        CRunningScript *nativeTail = nativeHead;
+        size_t nativeCount = 1;
+
+        while (nativeTail->GetNext() != nullptr)
+        {
+            nativeTail = nativeTail->GetNext();
+            ++nativeCount;
+        }
+
+        TRACE("[engine] GameBegin: preserving native script order");
+
+        *activeThreadQueue = nullptr;
+        LoadCustomScripts(bLoadMode);
+
+        if (*activeThreadQueue != nullptr)
+        {
+            nativeTail->SetNext(*activeThreadQueue);
+            (*activeThreadQueue)->SetPrev(nativeTail);
+        }
+
+        *activeThreadQueue = nativeHead;
+
+        const size_t customCount = CustomScripts.size() + (CustomMission != nullptr ? 1u : 0u);
+        TRACE("[engine] Queue composed: native=%u custom=%u total=%u",
+            static_cast<unsigned>(nativeCount),
+            static_cast<unsigned>(customCount),
+            static_cast<unsigned>(nativeCount + customCount));
+        TRACE("[engine] GameBegin complete: CLEO scripts appended after native scripts");
+        NotifyGameBegin();
+    }
+
+    void CScriptEngine::GameEnd()
+    {
+        if (!scriptsLoaded && CustomMission == nullptr && CustomScripts.empty())
+            return;
+
+        TRACE("[engine] GameEnd: stopping custom runtime");
+
+        // All custom shutdown goes through the central lifecycle path.
+        RemoveAllCustomScripts();
+        scriptsLoaded = false;
+        NotifyGameEnd();
+    }
+
     // called to initialise the scripts (after the main.scm has actually had a chance to set up)
     void OnInitScm1(void)
     {
         TRACE("Scripts initialized");
-        GetInstance().ScriptEngine.RemoveAllCustomScripts();
+        GetInstance().ScriptEngine.GameEnd();
         InitScm();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.LoadCustomScripts(false);
     }
 
     // called on first load before the others
     void OnInitScm2(void)
     {
         TRACE("Scripts exclusively initialized");
-        GetInstance().ScriptEngine.RemoveAllCustomScripts();
+        GetInstance().ScriptEngine.GameEnd();
         InitScm();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.LoadCustomScripts();
     }
 
     // called to load the scripts
     void OnInitScm3(void)
     {
         TRACE("Scripts loaded");
-        GetInstance().ScriptEngine.RemoveAllCustomScripts();
+        GetInstance().ScriptEngine.GameEnd();
         InitScm();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.LoadCustomScripts(true);
     }
 
     extern "C" void __stdcall opcode_004E(CCustomScript *pScript)
     {
-        if (pScript->IsCustom())
+        if (pScript == nullptr)
+            return;
+
+        if (pScript->IsCustom() && !pScript->IsMission())
         {
-            if (!pScript->IsMission())
-            {
-                TRACE("[004E] Incorrect usage of opcode in script '%s'.", pScript->GetName());
-            }
-            else *MissionLoaded = false;
-            GetInstance().ScriptEngine.RemoveCustomScript(pScript);
+            TRACE("[004E] Incorrect usage of opcode in script '%s'.", pScript->GetName());
         }
-        else
-        {
-            if (!pScript->IsMission()) *MissionLoaded = false;
-            RemoveScriptFromQueue(pScript, activeThreadQueue);
-            AddScriptToQueue(pScript, inactiveThreadQueue);
-            StopScript(pScript);
-        }
+
+        GetInstance().ScriptEngine.RemoveScript(reinterpret_cast<CRunningScript*>(pScript));
     }
 
     extern "C" void __declspec(naked) opcode_004E_hook(void)
@@ -285,9 +339,8 @@ namespace CLEO
         gangWeapons[7].weapon3 = 0;
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
-        GetInstance().ScriptEngine.RemoveAllCustomScripts();
+        GetInstance().ScriptEngine.GameEnd();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.LoadCustomScripts();
     }
 
     void OnLoadScmData(void)
@@ -578,8 +631,26 @@ namespace CLEO
 
     void __fastcall HOOK_ProcessScript(CCustomScript * pScript, int)
     {
-        if (pScript->IsCustom()) pScript->Process();
-        else ProcessScript(pScript);
+        // Match CLEO 5 lifecycle: destroy scripts deferred by the previous
+        // processing boundary before attempting to initialize the runtime.
+        GetInstance().ScriptEngine.DeleteWaitingScripts();
+
+        // CLEO 5 retries GameBegin from the script-processing hook because
+        // pActiveScripts may not be ready during the initial SCM callbacks.
+        GetInstance().ScriptEngine.GameBegin();
+
+        if (pScript == nullptr)
+            return;
+
+        if (!NotifyScriptProcessBefore(reinterpret_cast<CRunningScript*>(pScript)))
+            return;
+
+        if (pScript->IsCustom())
+            pScript->Process();
+        else
+            ProcessScript(pScript);
+
+        NotifyScriptProcessAfter(reinterpret_cast<CRunningScript*>(pScript));
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)
@@ -1354,23 +1425,30 @@ namespace CLEO
 
     CRunningScript *CScriptEngine::FindScriptNamed(const char *name)
     {
+        if (name == nullptr || activeThreadQueue == nullptr)
+            return nullptr;
+
+        // pActiveScripts remains the authoritative execution order:
+        // native scripts first, CLEO scripts after them.
         for (auto script = *activeThreadQueue; script; script = script->GetNext())
         {
             if (_stricmp(name, script->GetName()) == 0)
                 return script;
         }
+
         return nullptr;
     }
+
     CCustomScript *CScriptEngine::FindCustomScriptNamed(const char *name)
     {
-        if (CustomMission)
-        {
-            if (_stricmp(name, CustomMission->Name) == 0) return CustomMission;
-        }
+        if (name == nullptr)
+            return nullptr;
 
-        for (auto it = CustomScripts.begin(); it != CustomScripts.end(); ++it)
+        if (CustomMission && _stricmp(name, CustomMission->Name) == 0)
+            return CustomMission;
+
+        for (auto cs : CustomScripts)
         {
-            auto cs = *it;
             if (_stricmp(name, cs->Name) == 0)
                 return cs;
         }
@@ -1378,8 +1456,146 @@ namespace CLEO
         return nullptr;
     }
 
+    static void SkipUnusedScriptParameters(CRunningScript *thread)
+    {
+        if (thread == nullptr)
+            return;
+
+        while (*thread->GetBytePointer())
+            GetScriptParams(thread, 1);
+
+        thread->ReadDataByte();
+    }
+
+    CCustomScript *CScriptEngine::CreateCustomScript(CRunningScript *fromThread, const char *scriptName, int label)
+    {
+        if (scriptName == nullptr)
+            return nullptr;
+
+        CCustomScript *parent = fromThread ? reinterpret_cast<CCustomScript*>(fromThread) : nullptr;
+
+        if (label != 0 && (parent == nullptr || !parent->IsCustom()))
+        {
+            TRACE("[engine] CreateCustomScript rejected: label child requires a custom parent");
+            if (fromThread)
+                SetScriptCondResult(fromThread, false);
+            if (fromThread)
+                SkipUnusedScriptParameters(fromThread);
+            return nullptr;
+        }
+
+        char cwd[MAX_PATH];
+        _getcwd(cwd, sizeof(cwd));
+        _chdir(cleo_dir);
+
+        CCustomScript *cs = new CCustomScript(scriptName, false, parent, label);
+
+        if (fromThread)
+            SetScriptCondResult(fromThread, cs != nullptr && cs->bOK);
+
+        if (cs == nullptr || !cs->bOK)
+        {
+            if (cs)
+                delete cs;
+
+            if (fromThread)
+                SkipUnusedScriptParameters(fromThread);
+
+            TRACE("[engine] CreateCustomScript failed: %s", scriptName);
+            _chdir(cwd);
+            return nullptr;
+        }
+
+        AddCustomScript(cs);
+
+        if (fromThread)
+            TransmitScriptParams(fromThread, cs);
+
+        _chdir(cwd);
+        return cs;
+    }
+
+    bool CScriptEngine::IsActiveScriptPtr(const CRunningScript *script) const
+    {
+        if (script == nullptr || activeThreadQueue == nullptr)
+            return false;
+
+        for (auto current = *activeThreadQueue; current != nullptr; current = current->GetNext())
+        {
+            if (current == script)
+                return current->IsActive();
+        }
+
+        return false;
+    }
+
+    bool CScriptEngine::IsValidScriptPtr(const CRunningScript *script) const
+    {
+        if (script == nullptr)
+            return false;
+
+        if (activeThreadQueue != nullptr)
+        {
+            for (auto current = *activeThreadQueue; current != nullptr; current = current->GetNext())
+            {
+                if (current == script)
+                    return true;
+            }
+        }
+
+        if (inactiveThreadQueue != nullptr)
+        {
+            for (auto current = *inactiveThreadQueue; current != nullptr; current = current->GetNext())
+            {
+                if (current == script)
+                    return true;
+            }
+        }
+
+        for (auto current : CustomScripts)
+        {
+            if (current == script)
+                return true;
+        }
+
+        for (auto current : ScriptsWaitingForDelete)
+        {
+            if (current == script)
+                return true;
+        }
+
+        return false;
+    }
+
+    void CScriptEngine::RemoveScript(CRunningScript *script)
+    {
+        if (script == nullptr)
+            return;
+
+        CCustomScript *custom = reinterpret_cast<CCustomScript*>(script);
+
+        if (custom->IsCustom())
+        {
+            if (custom->IsMission())
+                *MissionLoaded = false;
+
+            RemoveCustomScript(custom);
+            return;
+        }
+
+        // Native GTA script lifecycle stays unchanged: active -> inactive -> stop.
+        if (activeThreadQueue != nullptr)
+            RemoveScriptFromQueue(script, activeThreadQueue);
+        if (inactiveThreadQueue != nullptr)
+            AddScriptToQueue(script, inactiveThreadQueue);
+        StopScript(script);
+    }
+
     void CScriptEngine::AddCustomScript(CCustomScript *cs)
     {
+        if (cs == nullptr || !cs->bOK)
+            return;
+
         if (cs->IsMission())
         {
             TRACE("Registering custom mission named %.*s", 8, cs->Name);
@@ -1390,92 +1606,126 @@ namespace CLEO
             TRACE("Registering custom script named %.*s", 8, cs->Name);
             CustomScripts.push_back(cs);
         }
+
+        // Registry -> GTA queue -> active state.
         AddScriptToQueue(cs, activeThreadQueue);
         cs->SetActive(true);
     }
 
     void CScriptEngine::RemoveCustomScript(CCustomScript *cs)
     {
+        if (cs == nullptr)
+            return;
+
         const bool wasChild = cs->parentThread != nullptr;
 
-        // Detach this script from its parent first so removing a child cannot
-        // leave a stale pointer in the parent's child list.
-        if (cs->parentThread)
+        // 1. Break the parent relation first.
+        if (cs->parentThread != nullptr)
         {
             cs->parentThread->childThreads.remove(cs);
             cs->parentThread = nullptr;
         }
 
-        // Remove children one by one. RemoveCustomScript(child) detaches the
-        // child from this list, so iterating with an explicit front() is safe.
+        // 2. Tear down the complete child subtree before this node.
         while (!cs->childThreads.empty())
         {
-            CCustomScript *childThread = cs->childThreads.front();
-            CScriptEngine::RemoveCustomScript(childThread);
+            CCustomScript *child = cs->childThreads.front();
+            RemoveCustomScript(child);
         }
 
+        // A saved child must not become an independently stopped root.
+        if (cs != CustomMission && cs->bSaveEnabled && !wasChild)
+        {
+            InactiveScriptHashes.insert(cs->dwChecksum);
+            TRACE("Stopping custom script named %.*s", 8, cs->Name);
+        }
+
+        // 3. Mark inactive first.
+        cs->SetActive(false);
+
+        // 4. Remove the script from GTA's active execution list.
+        if (activeThreadQueue != nullptr)
+            RemoveScriptFromQueue(cs, activeThreadQueue);
+
+        // 5. Remove the script from CLEO's registry.
         if (cs == CustomMission)
         {
             TRACE("Unregistering custom mission named %.*s", 8, cs->Name);
-            RemoveScriptFromQueue(CustomMission, activeThreadQueue);
-            ScriptsWaitingForDelete.push_back(cs);
-            CustomMission->SetActive(false);
             CustomMission = nullptr;
             *MissionLoaded = false;
         }
         else
         {
-            if (cs->bSaveEnabled && !wasChild)
-            {
-                InactiveScriptHashes.insert(cs->dwChecksum);
-                TRACE("Stopping custom script named %.*s", 8, cs->Name);
-            }
-            else
-            {
-                TRACE("Unregistering custom script named %.*s", 8, cs->Name);
-                ScriptsWaitingForDelete.push_back(cs);
-            }
-
+            TRACE("Unregistering custom script named %.*s", 8, cs->Name);
             CustomScripts.remove(cs);
-            RemoveScriptFromQueue(cs, activeThreadQueue);
-            cs->SetActive(false);
         }
+
+        // 6. Defer the actual delete until the current runtime boundary is safe.
+        ScriptsWaitingForDelete.push_back(cs);
     }
 
     void CScriptEngine::RemoveAllCustomScripts(void)
     {
+        TRACE("[engine] RemoveAllCustomScripts");
+
         InactiveScriptHashes.clear();
 
-        if (CustomMission)
+        if (CustomMission != nullptr)
             RemoveCustomScript(CustomMission);
 
         while (!CustomScripts.empty())
             RemoveCustomScript(CustomScripts.back());
 
-        for (auto cs : ScriptsWaitingForDelete)
+        DeleteWaitingScripts();
+    }
+
+    void CScriptEngine::DeleteWaitingScripts()
+    {
+        // Destruction is deliberately separated from queue/registry removal.
+        std::list<CCustomScript *> waiting;
+        waiting.swap(ScriptsWaitingForDelete);
+
+        for (auto cs : waiting)
         {
             TRACE("Deleting inactive script named %.*s", 8, cs->Name);
             delete cs;
         }
-        ScriptsWaitingForDelete.clear();
     }
 
     void CScriptEngine::UnregisterAllScripts()
     {
         TRACE("Unregistering all custom scripts");
-        std::for_each(CustomScripts.begin(), CustomScripts.end(), [this](CCustomScript *cs) {
-            RemoveScriptFromQueue(cs, activeThreadQueue);
+
+        for (auto cs : CustomScripts)
+        {
+            if (activeThreadQueue != nullptr)
+                RemoveScriptFromQueue(cs, activeThreadQueue);
             cs->SetActive(false);
-        });
+        }
+
+        if (CustomMission != nullptr)
+        {
+            if (activeThreadQueue != nullptr)
+                RemoveScriptFromQueue(CustomMission, activeThreadQueue);
+            CustomMission->SetActive(false);
+        }
     }
 
     void CScriptEngine::ReregisterAllScripts()
     {
         TRACE("Reregistering all custom scripts");
-        std::for_each(CustomScripts.begin(), CustomScripts.end(), [this](CCustomScript *cs) {
+
+        for (auto cs : CustomScripts)
+        {
             AddScriptToQueue(cs, activeThreadQueue);
             cs->SetActive(true);
-        });
+        }
+
+        if (CustomMission != nullptr)
+        {
+            AddScriptToQueue(CustomMission, activeThreadQueue);
+            CustomMission->SetActive(true);
+        }
     }
 
 

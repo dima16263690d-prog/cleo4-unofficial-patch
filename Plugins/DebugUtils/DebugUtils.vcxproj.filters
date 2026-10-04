@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="source">
+      <UniqueIdentifier>{B3CE7B61-0C89-4D8F-8C7E-1A83F4E2A100}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="sdk">
+      <UniqueIdentifier>{1D83C0A9-6C5A-49AE-B1D6-6D8B7B3E2500}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="DebugUtils.cpp"><Filter>source</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DebugUtils.h"><Filter>source</Filter></ClInclude>
+    <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h"><Filter>sdk</Filter></ClInclude>
+    <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h"><Filter>sdk</Filter></ClInclude>
+  </ItemGroup>
+</Project>

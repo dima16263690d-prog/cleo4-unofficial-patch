@@ -1,6 +1,6 @@
 #pragma once
 #include "CCodeInjector.h"
-#include "CDebug.h"
+#include "CDebugBridge.h"
 #include <direct.h>
 #include <set>
 

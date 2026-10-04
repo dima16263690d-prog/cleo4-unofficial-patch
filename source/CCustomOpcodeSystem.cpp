@@ -6,6 +6,7 @@
 #include "ScmFunction.h"
 #include "CTextManager.h"
 #include "CModelInfo.h"
+#include "CDebugCallbackSystem.h"
 
 namespace CLEO {
 	DWORD FUNC_fopen;
@@ -157,10 +158,39 @@ namespace CLEO {
 		void operator()(CRunningScript *script) { for (auto& f : funcs) f(script); }
 	};
 	ScriptDeleteDelegate scriptDeleteDelegate;
-	void RunScriptDeleteDelegate(CRunningScript *script) { scriptDeleteDelegate(script); }
+	void RunScriptDeleteDelegate(CRunningScript *script)
+	{
+		NotifyScriptDeleted(script);
+		scriptDeleteDelegate(script);
+	}
 
 	_OpcodeHandler *oldOpcodeHandlerTable;
 	_OpcodeHandler newOpcodeHandlerTable[329];
+
+	// Optional low opcode callbacks are owned by optional plugins.
+	CustomOpcodeHandler lowOpcodeHandlers[0x0AF0] = {};
+
+	// DebugUtils observes every opcode through this thin dispatch layer.
+	// The legacy GTA/CLEO opcode handlers remain the actual implementations.
+	_OpcodeHandler debugOriginalOpcodeTable[329];
+
+	OpcodeResult __fastcall debugOpcodeDispatch(CRunningScript *thread, int, unsigned short opcode)
+	{
+		const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
+		if (action == CLEO_DEBUG_OPCODE_HANDLED)
+			return OR_CONTINUE;
+		if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
+			return OR_INTERRUPT;
+
+		OpcodeResult result;
+
+		if (opcode < 0x0AF0 && lowOpcodeHandlers[opcode] != nullptr)
+			result = lowOpcodeHandlers[opcode](thread);
+		else
+			result = debugOriginalOpcodeTable[opcode / 100](thread, opcode);
+
+		return NotifyScriptOpcodeProcessAfter(thread, opcode, result);
+	}
 	CustomOpcodeHandler extraOpcodeHandlers[100][300];
 
 	CBuildingPool		**buildingPool = nullptr;			// add for future CLEO releases
@@ -263,6 +293,12 @@ namespace CLEO {
 
 		// fill the rest with default handler
 		std::fill(newOpcodeHandlerTable + 28, newOpcodeHandlerTable + 329, reinterpret_cast<_OpcodeHandler>(extraOpcodeHandler));
+
+		// Wrap the complete dispatch table for DebugUtils. No legacy handler is
+		// replaced; the wrapper calls the original handler and returns its result.
+		std::copy(newOpcodeHandlerTable, newOpcodeHandlerTable + 329, debugOriginalOpcodeTable);
+		std::fill(newOpcodeHandlerTable, newOpcodeHandlerTable + 329,
+			reinterpret_cast<_OpcodeHandler>(debugOpcodeDispatch));
 
 		FUNC_fopen = gvm.TranslateMemoryAddress(MA_FOPEN_FUNCTION);
 		FUNC_fclose = gvm.TranslateMemoryAddress(MA_FCLOSE_FUNCTION);
@@ -1778,7 +1814,7 @@ namespace CLEO {
 		// stream itself is unchanged: BaseIP, parentThread, childThreads and
 		// save metadata remain owned by CCustomScript/CScriptEngine.
 		scmFunc->retnAddress = thread->GetBytePointer();
-		TRACE("[0AB1] %.8s args=%u %d %d",
+		SCRIPT_TRACE("[function][0AB1] %.8s args=%u %d %d",
 			thread->GetName(), nParams,
 			nParams > 0 ? arguments[0].nParam : 0, nParams > 1 ? arguments[1].nParam : 0);
 
@@ -1842,7 +1878,7 @@ namespace CLEO {
 			memcpy(returnValues, opcodeParams, nRetParams * sizeof(SCRIPT_VAR));
 		}
 
-		TRACE("[0AB2] %.8s ret=%u %d",
+		SCRIPT_TRACE("[function][0AB2] %.8s ret=%u %d",
 			thread->GetName(), nRetParams, nRetParams ? returnValues[0].nParam : 0);
 
 		// Restore caller scope and jump to its return-slot list.
@@ -2835,6 +2871,17 @@ extern "C"
 			GetScriptParams(thread, 1);
 	}
 
+	int WINAPI CLEO_FormatOpcodeString(CRunningScript* thread, char* buffer, int size)
+	{
+		if (thread == nullptr || buffer == nullptr || size <= 0)
+			return -1;
+
+		char formatString[MAX_STR_LEN] = {};
+		CLEO_ReadStringOpcodeParam(thread, formatString, sizeof(formatString));
+
+		return format(thread, buffer, static_cast<size_t>(size), formatString);
+	}
+
 	void WINAPI CLEO_RecordOpcodeParams(CRunningScript *thread, int count)
 	{
 		if (count <= 0)
@@ -2859,8 +2906,22 @@ extern "C"
 
 	BOOL WINAPI CLEO_RegisterOpcode(WORD opcode, CustomOpcodeHandler callback)
 	{
-		if ((opcode > 0x7FFF) || (opcode < 0x0AF0))
+		if (opcode > 0x7FFF || callback == nullptr)
 			return FALSE;
+
+		if (opcode < 0x0AF0)
+		{
+			CustomOpcodeHandler& dst = lowOpcodeHandlers[opcode];
+
+			if (dst != nullptr)
+			{
+				Error("Warning! CLEO couldn't register opcode handler.");
+				return FALSE;
+			}
+
+			dst = callback;
+			return TRUE;
+		}
 
 		CustomOpcodeHandler& dst = extraOpcodeHandlers[opcode % 100][opcode / 100 - 28];
 
@@ -3056,6 +3117,16 @@ extern "C"
 	void WINAPI CLEO_RemoveScriptDeleteDelegate(FuncScriptDeleteDelegateT func)
 	{
 		scriptDeleteDelegate -= func;
+	}
+
+	BOOL WINAPI CLEO_RegisterCallback(int callbackId, uintptr_t callback)
+	{
+		return RegisterCallback(callbackId, callback);
+	}
+
+	BOOL WINAPI CLEO_UnregisterCallback(int callbackId, uintptr_t callback)
+	{
+		return UnregisterCallback(callbackId, callback);
 	}
 
 }

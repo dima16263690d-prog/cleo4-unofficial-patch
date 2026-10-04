@@ -5,6 +5,8 @@
 #pragma once
 
 #include <wtypes.h>
+#include <stdint.h>
+#include "CLEO_Debug.h"
 
 #define CLEO_VERSION 0x04040400
 #define CLEO_VERSIONTEXT "4.4.4"
@@ -126,6 +128,8 @@ extern SCRIPT_VAR *missionLocals;
 void WINAPI CLEO_RetrieveOpcodeParams(CScriptThread *thread, int count);
 void WINAPI CLEO_RecordOpcodeParams(CScriptThread *thread, int count);
 
+int WINAPI CLEO_FormatOpcodeString(CScriptThread* thread, LPSTR buffer, int size);
+
 SCRIPT_VAR * WINAPI CLEO_GetPointerToScriptVariable(CScriptThread *thread);
 
 DWORD WINAPI CLEO_GetScriptTextureById(CScriptThread* thread, int id); // ret RwTexture *
@@ -143,3 +147,4 @@ void WINAPI CLEO_RemoveScriptDeleteDelegate(FuncScriptDeleteDelegateT func);
 #ifdef __cplusplus
 }
 #endif	//__cplusplus
+

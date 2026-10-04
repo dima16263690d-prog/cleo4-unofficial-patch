@@ -1,0 +1,8 @@
+CrashInfo source used by DebugUtils
+
+https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt
+
+The plugin reads a local copy from:
+cleo\\debug\\CrashInfo\\EN-CrashList.txt
+
+Use tools\\Get-CrashInfo.ps1 to download the current source copy for a test installation.
