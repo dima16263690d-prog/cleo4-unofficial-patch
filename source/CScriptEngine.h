@@ -16,18 +16,32 @@ namespace CLEO
         std::list<CCustomScript *> CustomScripts;
         std::list<CCustomScript *> ScriptsWaitingForDelete;
         std::set<unsigned long> InactiveScriptHashes;
+
+        // Central runtime lifecycle state. This is the preparation layer for
+        // the future scheduler/worker architecture; execution remains on the
+        // GTA game thread in this stage.
+        bool scriptsLoaded;
         CCustomScript *CustomMission;
 
         CCustomScript			*	LoadScript(const char *szFilePath);
 
     public:
         static SCRIPT_VAR			CleoVariables[0x400];
+
+        // Script lifecycle, following the useful CLEO 5 engine separation.
+        void							GameBegin(bool bLoadMode = false);
+        void							GameEnd();
+
         inline CCustomScript		*	GetCustomMission() { return CustomMission; }
         void							LoadCustomScripts(bool bMode = false);
         void							SaveState();
         CRunningScript			*	FindScriptNamed(const char *);
         CCustomScript			*	FindCustomScriptNamed(const char*);
+        CCustomScript			*	CreateCustomScript(CRunningScript *fromThread, const char *scriptName, int label);
+        bool							IsActiveScriptPtr(const CRunningScript *script) const;
+        bool							IsValidScriptPtr(const CRunningScript *script) const;
         void							AddCustomScript(CCustomScript*);
+        void							RemoveScript(CRunningScript*);
         void							RemoveCustomScript(CCustomScript*);
         void							RemoveAllCustomScripts();
         void							UnregisterAllScripts();
@@ -40,6 +54,7 @@ namespace CLEO
 
         CScriptEngine()
         {
+            scriptsLoaded = false;
             CustomMission = nullptr;
         }
 
