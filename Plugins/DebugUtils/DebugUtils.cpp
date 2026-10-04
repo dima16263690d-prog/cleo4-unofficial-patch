@@ -1407,6 +1407,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr)
         return;
 
+    WriteOpcodeHistory("crash");
+
     char line[4096];
 
     SYSTEMTIME t{};
@@ -1629,6 +1631,62 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     sprintf_s(line, sizeof(line), "[end_crash] exception=0x%08X",
         info->ExceptionRecord->ExceptionCode);
     WinAppendLine(CrashLogPath(), line);
+}
+
+void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
+{
+    if (thread == nullptr)
+        return;
+
+    OpcodeHistoryEntry entry{};
+    entry.opcode = opcode & 0x7FFF;
+    entry.result = result;
+    entry.offset = static_cast<DWORD>(ScriptOffset(thread));
+    entry.scriptPtr = reinterpret_cast<uintptr_t>(thread);
+    strncpy_s(entry.scriptName, sizeof(entry.scriptName), thread->threadName, _TRUNCATE);
+
+    std::lock_guard<std::mutex> lock(m_opcodeHistoryMutex);
+    m_opcodeHistory[m_opcodeHistoryNext] = entry;
+    m_opcodeHistoryNext = (m_opcodeHistoryNext + 1) % kOpcodeHistorySize;
+    if (m_opcodeHistoryCount < kOpcodeHistorySize)
+        ++m_opcodeHistoryCount;
+}
+
+void DebugUtils::WriteOpcodeHistory(const char* reason)
+{
+    std::array<OpcodeHistoryEntry, kOpcodeHistorySize> snapshot{};
+    size_t count = 0;
+    size_t next = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_opcodeHistoryMutex);
+        count = m_opcodeHistoryCount;
+        next = m_opcodeHistoryNext;
+        snapshot = m_opcodeHistory;
+    }
+
+    WriteCore("[opcode_history] reason='%s' count=%u", reason ? reason : "unknown",
+        static_cast<unsigned>(count));
+
+    if (count == 0)
+        return;
+
+    const size_t start = (count == kOpcodeHistorySize) ? next : 0;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t index = (start + i) % kOpcodeHistorySize;
+        const OpcodeHistoryEntry& e = snapshot[index];
+
+        WriteCore(
+            "[opcode_history] #%03u script='%.8s' ptr=%p opcode=0x%04X result=%u off=0x%08X",
+            static_cast<unsigned>(i + 1),
+            e.scriptName,
+            reinterpret_cast<void*>(e.scriptPtr),
+            e.opcode,
+            e.result,
+            e.offset
+        );
+    }
 }
 
 LONG DebugUtils::HandleException(PEXCEPTION_POINTERS info)
@@ -2164,6 +2222,7 @@ int __stdcall DebugUtils::OnScriptOpcodeAfter(CScriptThread* thread, DWORD opcod
         return 0;
 
     s_instance->m_lastOpcodeResult = static_cast<DWORD>(result);
+    s_instance->RecordOpcode(thread, opcode, static_cast<DWORD>(result));
 
     if (s_instance->m_scriptOpcodeTrace ||
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
