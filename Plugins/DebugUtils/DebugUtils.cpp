@@ -502,6 +502,29 @@ void DebugUtils::ScriptWriterLoop()
     }
 }
 
+void DebugUtils::FlushScriptRepeat()
+{
+    if (!m_scriptLogEnabled || m_lastScriptRepeatCount <= 1 || m_lastScriptMessage.empty())
+    {
+        m_lastScriptMessage.clear();
+        m_lastScriptRepeatCount = 0;
+        return;
+    }
+
+    char repeatLine[768] = {};
+    sprintf_s(
+        repeatLine,
+        sizeof(repeatLine),
+        "[REPEAT] count=%u message=%s",
+        static_cast<unsigned>(m_lastScriptRepeatCount),
+        m_lastScriptMessage.c_str()
+    );
+    QueueScriptLine(repeatLine);
+
+    m_lastScriptMessage.clear();
+    m_lastScriptRepeatCount = 0;
+}
+
 void DebugUtils::WriteScript(const char* format, ...)
 {
     if (!m_scriptLogEnabled)
@@ -514,7 +537,22 @@ void DebugUtils::WriteScript(const char* format, ...)
     SafeFormat(message, sizeof(message), format, args);
     va_end(args);
 
+    if (m_scriptDeduplicate && m_lastScriptMessage == message && m_lastScriptRepeatCount > 0)
+    {
+        ++m_lastScriptRepeatCount;
+        return;
+    }
+
+    if (m_scriptDeduplicate)
+        FlushScriptRepeat();
+
     QueueScriptLine(message);
+
+    if (m_scriptDeduplicate)
+    {
+        m_lastScriptMessage = message;
+        m_lastScriptRepeatCount = 1;
+    }
 }
 
 void DebugUtils::WriteExternal(const std::string& filename, bool timestamp, const char* message)
@@ -1089,16 +1127,22 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_breakpoints.clear();
     s_instance->m_keysReleased = true;
     s_instance->m_lastMemoryLogTick = GetTickCount();
-    s_instance->WriteCore("[GAME] GameBegin");
+    s_instance->WriteCore("//////////////////////// GAME BEGIN ////////////////////////");
     s_instance->WriteCoreQueueSnapshot("GameBegin");
+    s_instance->m_seenScripts.clear();
+    s_instance->m_lastScriptMessage.clear();
+    s_instance->m_lastScriptRepeatCount = 0;
+    s_instance->WriteScript("//////////////////////// SCRIPT EXECUTION ////////////////////////");
     s_instance->WriteCoreMemorySummary();
 }
 
 void __stdcall DebugUtils::OnGameEnd()
 {
     if (!s_instance) return;
-    s_instance->WriteCore("[GAME] GameEnd");
+    s_instance->WriteCore("//////////////////////// GAME END ////////////////////////");
     s_instance->WriteCoreMemorySummary();
+    s_instance->FlushScriptRepeat();
+    s_instance->WriteScript("[GAME_END] runtime stopped");
 }
 
 void __stdcall DebugUtils::OnGameProcessBefore()
@@ -1156,7 +1200,7 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     if (!s_instance) return;
 
     const DWORD now = GetTickCount();
-    if (now - s_instance->m_lastMemoryLogTick >= 2000)
+    if (now - s_instance->m_lastMemoryLogTick >= 10000)
     {
         s_instance->m_lastMemoryLogTick = now;
         s_instance->WriteCoreMemorySummary();
@@ -1178,17 +1222,21 @@ BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
             return FALSE;
     }
 
-    s_instance->WriteScript(
-        "[SCRIPT_BEGIN] ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d mission=%d",
-        thread,
-        thread->threadName,
-        thread->ip,
-        thread->baseIp,
-        ScriptOffset(thread),
-        thread->isActive ? 1 : 0,
-        thread->external ? 1 : 0,
-        thread->missionFlag ? 1 : 0
-    );
+    const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
+    if (s_instance->m_seenScripts.insert(scriptPtr).second)
+    {
+        s_instance->WriteScript(
+            "[SCRIPT_BEGIN] ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d mission=%d",
+            thread,
+            thread->threadName,
+            thread->ip,
+            thread->baseIp,
+            ScriptOffset(thread),
+            thread->isActive ? 1 : 0,
+            thread->external ? 1 : 0,
+            thread->missionFlag ? 1 : 0
+        );
+    }
 
     return TRUE;
 }
@@ -1199,16 +1247,6 @@ void __stdcall DebugUtils::OnScriptProcessAfter(CScriptThread* thread)
         return;
 
     s_instance->m_currentScriptPtr = 0;
-
-    s_instance->WriteScript(
-        "[SCRIPT_END] ptr=%p name='%.8s' ip=%p off=0x%zX active=%d cond=%d",
-        thread,
-        thread->threadName,
-        thread->ip,
-        ScriptOffset(thread),
-        thread->isActive ? 1 : 0,
-        thread->condResult ? 1 : 0
-    );
 }
 
 int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opcode)
@@ -1256,16 +1294,20 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
 
     const bool notFlag = thread->notFlag != 0;
 
-    s_instance->WriteScript(
-        "[OPCODE_BEFORE] script='%.8s' ptr=%p opcode=0x%04X group=%u not=%d ip=%p off=0x%zX",
-        thread->threadName,
-        thread,
-        normalized,
-        static_cast<unsigned>(normalized / 100),
-        notFlag ? 1 : 0,
-        thread->ip,
-        ScriptOffset(thread) >= 2 ? ScriptOffset(thread) - 2 : 0
-    );
+    if (s_instance->m_scriptOpcodeTrace ||
+        s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
+    {
+        s_instance->WriteScript(
+            "[OPCODE_BEFORE] script='%.8s' ptr=%p opcode=0x%04X group=%u not=%d ip=%p off=0x%zX",
+            thread->threadName,
+            thread,
+            normalized,
+            static_cast<unsigned>(normalized / 100),
+            notFlag ? 1 : 0,
+            thread->ip,
+            ScriptOffset(thread) >= 2 ? ScriptOffset(thread) - 2 : 0
+        );
+    }
 
     return 0;
 }
@@ -1285,7 +1327,9 @@ int __stdcall DebugUtils::Opcode_DebugOff(CScriptThread* thread)
     if (!s_instance || !thread)
         return OR_CONTINUE;
 
-    s_instance->m_debugScripts.erase(reinterpret_cast<uintptr_t>(thread));
+    const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
+    s_instance->m_debugScripts.erase(scriptPtr);
+    s_instance->m_seenScripts.erase(scriptPtr);
     s_instance->WriteCore("[DEBUG] disabled script='%.8s' ptr=%p", thread->threadName, thread);
     return OR_CONTINUE;
 }
@@ -1507,16 +1551,20 @@ int __stdcall DebugUtils::OnScriptOpcodeAfter(CScriptThread* thread, DWORD opcod
 
     s_instance->m_lastOpcodeResult = static_cast<DWORD>(result);
 
-    s_instance->WriteScript(
-        "[OPCODE_AFTER] script='%.8s' ptr=%p opcode=0x%04X result=%d cond=%d ip=%p off=0x%zX",
-        thread->threadName,
-        thread,
-        opcode & 0x7FFF,
-        result,
-        thread->condResult ? 1 : 0,
-        thread->ip,
-        ScriptOffset(thread)
-    );
+    if (s_instance->m_scriptOpcodeTrace ||
+        s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
+    {
+        s_instance->WriteScript(
+            "[OPCODE_AFTER] script='%.8s' ptr=%p opcode=0x%04X result=%d cond=%d ip=%p off=0x%zX",
+            thread->threadName,
+            thread,
+            opcode & 0x7FFF,
+            result,
+            thread->condResult ? 1 : 0,
+            thread->ip,
+            ScriptOffset(thread)
+        );
+    }
 
     return 0;
 }
