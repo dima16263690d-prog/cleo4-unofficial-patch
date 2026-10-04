@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "ScmFunction.h"
+#include "ScriptUtils.h"
 #include <cstdint>
 
 namespace CLEO
@@ -197,9 +198,13 @@ namespace CLEO
         // a separate temporary queue and attached after the native tail.
         CRunningScript *nativeHead = *activeThreadQueue;
         CRunningScript *nativeTail = nativeHead;
+        size_t nativeCount = 1;
 
         while (nativeTail->GetNext() != nullptr)
+        {
             nativeTail = nativeTail->GetNext();
+            ++nativeCount;
+        }
 
         TRACE("[ENGINE] GameBegin: preserving native script order");
 
@@ -214,6 +219,11 @@ namespace CLEO
 
         *activeThreadQueue = nativeHead;
 
+        const size_t customCount = CustomScripts.size() + (CustomMission != nullptr ? 1u : 0u);
+        TRACE("[ENGINE] Queue composed: native=%u custom=%u total=%u",
+            static_cast<unsigned>(nativeCount),
+            static_cast<unsigned>(customCount),
+            static_cast<unsigned>(nativeCount + customCount));
         TRACE("[ENGINE] GameBegin complete: CLEO scripts appended after native scripts");
     }
 
@@ -1450,8 +1460,11 @@ namespace CLEO
             return nullptr;
         }
 
-        const char *fileName = scriptName;
-        CCustomScript *cs = new CCustomScript(fileName, false, parent, label);
+        std::string fileName = scriptName;
+        if (parent != nullptr)
+            fileName = parent->ResolvePath(scriptName, cleo_dir);
+
+        CCustomScript *cs = new CCustomScript(fileName.c_str(), false, parent, label);
 
         if (fromThread)
             SetScriptCondResult(fromThread, cs != nullptr && cs->bOK);
@@ -1464,7 +1477,7 @@ namespace CLEO
             if (fromThread)
                 SkipUnusedVarArgs(fromThread);
 
-            TRACE("[ENGINE] CreateCustomScript failed: %s", fileName);
+            TRACE("[ENGINE] CreateCustomScript failed: %s", fileName.c_str());
             return nullptr;
         }
 
