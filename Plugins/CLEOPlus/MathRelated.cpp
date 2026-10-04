@@ -477,7 +477,7 @@ OpcodeResult WINAPI GET_NORMALISED_QUAT(CScriptThread* thread)
 	dst = (CQuaternion *)CLEO_GetIntOpcodeParam(thread);
 
 	quat = *src;
-	quat.Normalize();
+	quat.Normalise();
 	*dst = quat;
 	return OR_CONTINUE;
 }

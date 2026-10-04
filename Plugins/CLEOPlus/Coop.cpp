@@ -76,7 +76,8 @@ OpcodeResult WINAPI SET_CHAR_SECOND_PLAYER(CScriptThread* thread) {
 		ped->m_pIntelligence->m_fDmRadius = 30.0;
 		ped->m_pIntelligence->m_nDmNumPedsToScan = 2;
 
-		ped->bUsedForReplay = false;
+		uint32_t *flags = (uint32_t*)(&ped->m_nPedFlags);
+		flags[3] ^= (flags[3] ^ (false << 21)) & 0x200000;
 
 
 		// ----- Post setup

@@ -1743,7 +1743,7 @@ OpcodeResult WINAPI GET_CHAR_FEAR(CScriptThread* thread)
 OpcodeResult WINAPI IS_CAR_CONVERTIBLE(CScriptThread* thread)
 {
 	CVehicle *vehicle = CPools::GetVehicle(CLEO_GetIntOpcodeParam(thread));
-	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(vehicle->m_pHandlingData->m_nModelFlags.m_bConvertible); // for current plugin-sdk version need to add m_nModelFlags to union struct
+	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(vehicle->m_pHandlingData->m_bConvertible); // for current plugin-sdk version need to add m_nModelFlags to union struct
 	return OR_CONTINUE;
 }
  
