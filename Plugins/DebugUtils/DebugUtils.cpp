@@ -585,17 +585,20 @@ void DebugUtils::WriteCoreMemorySummary()
     if (CLEO_GetGameVersion() != GV_US10)
         return;
 
-    PROCESS_MEMORY_COUNTERS pmc{};
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
 
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+    if (GetProcessMemoryInfo(
+        GetCurrentProcess(),
+        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+        sizeof(pmc)))
     {
         WriteCore(
-            "[MEMORY] working_set=%llu peak_working_set=%llu private_usage=%llu pagefile_usage=%llu",
-            static_cast<unsigned long long>(pmc.WorkingSetSize),
-            static_cast<unsigned long long>(pmc.PeakWorkingSetSize),
-            static_cast<unsigned long long>(pmc.PrivateUsage),
-            static_cast<unsigned long long>(pmc.PagefileUsage)
+            "[MEMORY] working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
+            static_cast<unsigned __int64>(pmc.WorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PrivateUsage),
+            static_cast<unsigned __int64>(pmc.PagefileUsage)
         );
     }
 
@@ -836,17 +839,20 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         WinAppendLine(CrashLogPath(), line);
     }
 
-    PROCESS_MEMORY_COUNTERS pmc{};
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+    if (GetProcessMemoryInfo(
+        GetCurrentProcess(),
+        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+        sizeof(pmc)))
     {
         sprintf_s(
             line, sizeof(line),
-            "[PROCESS_MEMORY] working_set=%llu peak=%llu private=%llu pagefile=%llu",
-            static_cast<unsigned long long>(pmc.WorkingSetSize),
-            static_cast<unsigned long long>(pmc.PeakWorkingSetSize),
-            static_cast<unsigned long long>(pmc.PrivateUsage),
-            static_cast<unsigned long long>(pmc.PagefileUsage)
+            "[PROCESS_MEMORY] working_set=%I64u peak=%I64u private=%I64u pagefile=%I64u",
+            static_cast<unsigned __int64>(pmc.WorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PrivateUsage),
+            static_cast<unsigned __int64>(pmc.PagefileUsage)
         );
         WinAppendLine(CrashLogPath(), line);
     }
@@ -967,9 +973,15 @@ void DebugUtils::RegisterCallbacks()
     for (const auto& callback : callbacks)
     {
         if (!CLEO_RegisterCallback(callback.id, callback.fn))
-            WriteCore("[CALLBACK] register failed: %s", CallbackName(callback.id));
+        {
+            if (s_instance != nullptr)
+                s_instance->WriteCore("[CALLBACK] register failed: %s", CallbackName(callback.id));
+        }
         else
-            WriteCore("[CALLBACK] registered: %s", CallbackName(callback.id));
+        {
+            if (s_instance != nullptr)
+                s_instance->WriteCore("[CALLBACK] registered: %s", CallbackName(callback.id));
+        }
     }
 }
 
