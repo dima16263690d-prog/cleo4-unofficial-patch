@@ -122,18 +122,18 @@ DebugUtils::DebugUtils()
     {
         m_scriptWriterStop.store(false, std::memory_order_release);
         m_scriptWriterThread = std::thread(&DebugUtils::ScriptWriterLoop, this);
-        WriteScript("//////////////////////// SCRIPTS ////////////////////////");
+        WriteScript("//////////////////////// scripts ////////////////////////");
         if (m_functionTrace)
-            WriteScript("//////////////////////// FUNCTION CALL CHECK ////////////////////////");
+            WriteScript("//////////////////////// function call check (0AB1 / 0AB2) ////////////////////////");
         if (m_scriptOpcodeTrace)
-            WriteScript("//////////////////////// OPCODE CHECK ////////////////////////");
+            WriteScript("//////////////////////// opcode check ////////////////////////");
     }
 
     if (m_memoryLogEnabled)
         WriteMemory("//////////////////////// MEMORY ////////////////////////");
 
     if (m_diagnosticLogEnabled)
-        WriteDiagnostic("//////////////////////// DIAGNOSTIC ////////////////////////");
+        WriteDiagnostic("//////////////////////// diagnostic ////////////////////////");
 
     CLEO_DebugSetLogCallback(&DebugUtils::OnCoreLog);
 
@@ -151,7 +151,7 @@ DebugUtils::DebugUtils()
     }
 
     WriteCore(
-        "[DEBUGUTILS] initialized version=0x%08X game=%d callbacks=active script_log=%d "
+        "[debugutils] initialized version=0x%08X game=%d callbacks=active script_log=%d "
         "opcode_trace=%d function_trace=%d deduplicate=%d command_limit=%u time_limit=%u "
         "memory_log=%d memory_trace=%d diagnostic_log=%d legacy_debug=%d",
         CLEO_GetVersion(),
@@ -182,7 +182,7 @@ DebugUtils::~DebugUtils()
     if (m_scriptWriterThread.joinable())
         m_scriptWriterThread.join();
 
-    WriteCore("[DEBUGUTILS] shutting down");
+    WriteCore("[debugutils] shutting down");
     CloseLogs();
 
     for (auto& entry : m_externalLogs)
@@ -264,7 +264,7 @@ void DebugUtils::LoadConfig()
 
     m_diagnosticLogEnabled =
         GetPrivateProfileIntA(
-            "DebugUtils.Logs", "Diagnostic",
+            "DebugUtils.Logs", "diagnostic",
             0,
             path.c_str()
         ) != 0;
@@ -325,19 +325,6 @@ void DebugUtils::OpenLogs()
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
     if (m_diagnosticLogEnabled)
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
-
-    {
-        std::ofstream crashLog(CrashLogPath(), std::ios::out | std::ios::app);
-        if (crashLog.is_open())
-        {
-            SYSTEMTIME t{};
-            GetLocalTime(&t);
-            crashLog << "[DebugUtils] crash log ready "
-                     << t.wYear << '-' << t.wMonth << '-' << t.wDay << ' '
-                     << t.wHour << ':' << t.wMinute << ':' << t.wSecond
-                     << std::endl;
-        }
-    }
 
     if (!m_coreLog.is_open())
         OutputDebugStringA("[DebugUtils] Failed to open cleo_core.log\n");
@@ -580,7 +567,7 @@ void DebugUtils::ScriptWriterLoop()
 
         const uint32_t dropped = m_droppedScriptEvents.exchange(0, std::memory_order_acq_rel);
         if (dropped != 0)
-            WriteCore("[SCRIPT_QUEUE] dropped_events=%u", static_cast<unsigned>(dropped));
+            WriteCore("[script_queue] dropped_events=%u", static_cast<unsigned>(dropped));
     }
 }
 
@@ -597,7 +584,7 @@ void DebugUtils::FlushScriptRepeat()
     sprintf_s(
         repeatLine,
         sizeof(repeatLine),
-        "[REPEAT] count=%u message=%s",
+        "[repeat] count=%u message=%s",
         static_cast<unsigned>(m_lastScriptRepeatCount),
         m_lastScriptMessage.c_str()
     );
@@ -832,12 +819,12 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
         return;
     }
 
-    const char* levelName = "Info";
+    const char* levelName = "info";
     switch (level)
     {
-    case CLEO_DEBUG_WARNING: levelName = "Warning"; break;
-    case CLEO_DEBUG_ERROR: levelName = "Error"; break;
-    case CLEO_DEBUG_DIAGNOSTIC: levelName = "Diagnostic"; break;
+    case CLEO_DEBUG_WARNING: levelName = "warning"; break;
+    case CLEO_DEBUG_ERROR: levelName = "error"; break;
+    case CLEO_DEBUG_DIAGNOSTIC: levelName = "diagnostic"; break;
     default: break;
     }
 
@@ -855,7 +842,7 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
 
 void DebugUtils::WriteCoreHeader()
 {
-    WriteCore("//////////////////////// MODULE ////////////////////////");
+    WriteCore("//////////////////////// module ////////////////////////");
 
     HMODULE cleo = GetModuleHandleA("CLEO.asi");
     MODULEINFO info{};
@@ -868,7 +855,7 @@ void DebugUtils::WriteCoreHeader()
         );
     }
 
-    WriteCore("//////////////////////// GAME / API ////////////////////////");
+    WriteCore("//////////////////////// game / api ////////////////////////");
     WriteCore("[GAME] GTA SA version enum=%d", CLEO_GetGameVersion());
     WriteCore("[API] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
     WriteCore("[API] CLEO_RegisterOpcode=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterOpcode)));
@@ -881,9 +868,9 @@ void DebugUtils::WriteCoreHeader()
 
 void DebugUtils::WriteCoreThreadLayout()
 {
-    WriteCore("//////////////////////// SCRIPT THREAD ////////////////////////");
+    WriteCore("//////////////////////// script thread ////////////////////////");
     WriteCore(
-        "[THREAD_LAYOUT] sizeof(CScriptThread)=%u next=0x00 prev=0x04 name=0x08 base=0x10 ip=0x14 "
+        "[thread_layout] sizeof(CScriptThread)=%u next=0x00 prev=0x04 name=0x08 base=0x10 ip=0x14 "
         "stack=0x18 sp=0x38 tls=0x3C active=0xC4 cond=0xC5 external=0xC7 wake=0xCC logical=0xD0 "
         "not=0xD2 mission=0xDC size=0xE0",
         static_cast<unsigned>(sizeof(CScriptThread))
@@ -907,19 +894,19 @@ void DebugUtils::WriteCoreQueueSnapshot(const char* reason)
 {
     if (CLEO_GetGameVersion() != GV_US10)
     {
-        WriteCore("[QUEUE] snapshot skipped: supported diagnostic layout is SA 1.0 US");
+        WriteCore("[queue] snapshot skipped: supported diagnostic layout is SA 1.0 US");
         return;
     }
 
     auto head = *reinterpret_cast<CScriptThread**>(kGtaSa10ActiveScripts);
     size_t count = 0;
 
-    WriteCore("[QUEUE] snapshot reason=%s head=%p", reason ? reason : "unknown", head);
+    WriteCore("[queue] snapshot reason=%s head=%p", reason ? reason : "unknown", head);
 
     for (auto thread = head; thread != nullptr && count < 2048; thread = thread->next)
     {
         WriteCore(
-            "[THREAD] #%u ptr=%p name='%.8s' prev=%p next=%p base=%p ip=%p off=0x%zX active=%d cond=%d "
+            "[thread] #%u ptr=%p name='%.8s' prev=%p next=%p base=%p ip=%p off=0x%zX active=%d cond=%d "
             "external=%d mission=%d wake=%u",
             static_cast<unsigned>(count),
             thread,
@@ -939,9 +926,9 @@ void DebugUtils::WriteCoreQueueSnapshot(const char* reason)
     }
 
     if (count == 2048)
-        WriteCore("[QUEUE] snapshot truncated at 2048 threads");
+        WriteCore("[queue] snapshot truncated at 2048 threads");
 
-    WriteCore("[QUEUE] count=%u", static_cast<unsigned>(count));
+    WriteCore("[queue] count=%u", static_cast<unsigned>(count));
 }
 
 void DebugUtils::WriteCoreMemorySummary()
@@ -952,6 +939,23 @@ void DebugUtils::WriteCoreMemorySummary()
     if (CLEO_GetGameVersion() != GV_US10)
         return;
 
+    auto head = *reinterpret_cast<CScriptThread**>(kGtaSa10ActiveScripts);
+    size_t queueCount = 0;
+    size_t nativeCount = 0;
+    size_t customCount = 0;
+
+    for (auto thread = head; thread != nullptr && queueCount < 4096; thread = thread->next)
+    {
+        ++queueCount;
+
+        // On the verified GTA SA 1.0 US layout, CLEO custom scripts have a
+        // private code base while native SCM threads use baseIp == nullptr.
+        if (thread->baseIp != nullptr)
+            ++customCount;
+        else
+            ++nativeCount;
+    }
+
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
 
@@ -961,7 +965,10 @@ void DebugUtils::WriteCoreMemorySummary()
         sizeof(pmc)))
     {
         WriteMemory(
-            "working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
+            "[memory] queue=%u native=%u custom=%u working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
+            static_cast<unsigned>(queueCount),
+            static_cast<unsigned>(nativeCount),
+            static_cast<unsigned>(customCount),
             static_cast<unsigned __int64>(pmc.WorkingSetSize),
             static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
             static_cast<unsigned __int64>(pmc.PrivateUsage),
@@ -974,7 +981,7 @@ void DebugUtils::WriteCoreMemorySummary()
     if (GlobalMemoryStatusEx(&memory))
     {
         WriteMemory(
-            "system_load=%u%% physical=%llu/%llu virtual=%llu/%llu",
+            "[memory] system_load=%u%% physical=%llu/%llu virtual=%llu/%llu",
             memory.dwMemoryLoad,
             static_cast<unsigned long long>(memory.ullAvailPhys),
             static_cast<unsigned long long>(memory.ullTotalPhys),
@@ -982,18 +989,7 @@ void DebugUtils::WriteCoreMemorySummary()
             static_cast<unsigned long long>(memory.ullTotalVirtual)
         );
     }
-
-    auto head = *reinterpret_cast<CScriptThread**>(kGtaSa10ActiveScripts);
-    size_t count = 0;
-    for (auto thread = head; thread != nullptr && count < 4096; thread = thread->next)
-        ++count;
-
-    WriteCore(
-        "[RUNTIME] active_queue_count=%u callbacks=GameBegin/GameEnd/GameProcess/ScriptProcess/OpcodeProcess",
-        static_cast<unsigned>(count)
-    );
 }
-
 void DebugUtils::LoadCrashInfoList()
 {
     m_crashInfo.clear();
@@ -1002,7 +998,7 @@ void DebugUtils::LoadCrashInfoList()
     if (!file.is_open())
     {
         WriteCore(
-            "[CRASHINFO] database not found at %s; source=%s",
+            "[crashinfo] database not found at %s; source=%s",
             CrashInfoPath().c_str(),
             "https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt"
         );
@@ -1045,7 +1041,7 @@ void DebugUtils::LoadCrashInfoList()
         }
     }
 
-    WriteCore("[CRASHINFO] loaded entries=%u path=%s",
+    WriteCore("[crashinfo] loaded entries=%u path=%s",
         static_cast<unsigned>(m_crashInfo.size()),
         CrashInfoPath().c_str());
 }
@@ -1120,7 +1116,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     sprintf_s(
         line, sizeof(line),
-        "[CRASH] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X address=0x%08X module=%s",
+        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X address=0x%08X module=%s",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         info->ExceptionRecord->ExceptionCode,
         reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress),
@@ -1135,7 +1131,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         sprintf_s(
             line, sizeof(line),
-            "[CRASHINFO_MATCH] address=0x%08X %s",
+            "[crashinfo_match] address=0x%08X %s",
             match->address,
             match->description.c_str()
         );
@@ -1145,7 +1141,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         WinAppendLine(
             CrashLogPath(),
-            "[CRASHINFO_MATCH] no exact address match in local CrashInfo database"
+            "[crashinfo_match] no exact address match in local CrashInfo database"
         );
     }
 
@@ -1153,14 +1149,14 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     sprintf_s(
         line, sizeof(line),
-        "[REGS] EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EIP=%08X EFLAGS=%08X",
+        "[regs] EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EIP=%08X EFLAGS=%08X",
         c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Ebp, c->Esp, c->Eip, c->EFlags
     );
     WinAppendLine(CrashLogPath(), line);
 
     sprintf_s(
         line, sizeof(line),
-        "[LAST_SCRIPT] ptr=%p name='%.8s' opcode=0x%04X offset=0x%08X result=%d",
+        "[last_script] ptr=%p name='%.8s' opcode=0x%04X offset=0x%08X result=%d",
         reinterpret_cast<void*>(static_cast<uintptr_t>(m_lastScriptPtr)),
         m_lastScriptName,
         m_lastOpcode == 0xFFFFFFFF ? 0xFFFF : (m_lastOpcode & 0x7FFF),
@@ -1171,7 +1167,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     sprintf_s(
         line, sizeof(line),
-        "[EXCEPTION] flags=0x%08X parameters=%u",
+        "[exception] flags=0x%08X parameters=%u",
         info->ExceptionRecord->ExceptionFlags,
         info->ExceptionRecord->NumberParameters
     );
@@ -1181,7 +1177,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         sprintf_s(
             line, sizeof(line),
-            "[EXCEPTION] access_type=%llu address=0x%08llX",
+            "[exception] access_type=%llu address=0x%08llX",
             static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[0]),
             static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1])
         );
@@ -1195,7 +1191,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         sprintf_s(
             line, sizeof(line),
-            "[MEMORY_REGION] base=%p allocation_base=%p size=0x%08X state=0x%08X protect=0x%08X type=0x%08X",
+            "[memory_region] base=%p allocation_base=%p size=0x%08X state=0x%08X protect=0x%08X type=0x%08X",
             mbi.BaseAddress,
             mbi.AllocationBase,
             static_cast<unsigned>(mbi.RegionSize),
@@ -1215,7 +1211,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         sprintf_s(
             line, sizeof(line),
-            "[PROCESS_MEMORY] working_set=%I64u peak=%I64u private=%I64u pagefile=%I64u",
+            "[process_memory] working_set=%I64u peak=%I64u private=%I64u pagefile=%I64u",
             static_cast<unsigned __int64>(pmc.WorkingSetSize),
             static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
             static_cast<unsigned __int64>(pmc.PrivateUsage),
@@ -1239,7 +1235,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
         sprintf_s(
             line, sizeof(line),
-            "[BACKTRACE] #%u frame=0x%08X return=0x%08X module=%s",
+            "[backtrace] #%u frame=0x%08X return=0x%08X module=%s",
             i,
             frame,
             ret,
@@ -1256,14 +1252,14 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     if (head != nullptr)
     {
-        WinAppendLine(CrashLogPath(), "[QUEUE_AT_CRASH] active script queue:");
+        WinAppendLine(CrashLogPath(), "[queue_at_crash] active script queue:");
 
         unsigned index = 0;
         for (auto thread = head; thread != nullptr && index < 256; thread = thread->next)
         {
             sprintf_s(
                 line, sizeof(line),
-                "[QUEUE_SCRIPT] #%u ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d",
+                "[queue_script] #%u ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d",
                 index,
                 thread,
                 thread->threadName,
@@ -1278,7 +1274,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         }
     }
 
-    sprintf_s(line, sizeof(line), "[END_CRASH] exception=0x%08X",
+    sprintf_s(line, sizeof(line), "[end_crash] exception=0x%08X",
         info->ExceptionRecord->ExceptionCode);
     WinAppendLine(CrashLogPath(), line);
 }
@@ -1342,12 +1338,12 @@ void DebugUtils::RegisterCallbacks()
         if (!CLEO_RegisterCallback(callback.id, callback.fn))
         {
             if (s_instance != nullptr)
-                s_instance->WriteCore("[CALLBACK] register failed: %s", CallbackName(callback.id));
+                s_instance->WriteCore("[callback] register failed: %s", CallbackName(callback.id));
         }
         else
         {
             if (s_instance != nullptr)
-                s_instance->WriteCore("[CALLBACK] registered: %s", CallbackName(callback.id));
+                s_instance->WriteCore("[callback] registered: %s", CallbackName(callback.id));
         }
     }
 }
@@ -1385,23 +1381,23 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_breakpoints.clear();
     s_instance->m_keysReleased = true;
     s_instance->m_lastMemoryLogTick = GetTickCount();
-    s_instance->WriteCore("//////////////////////// GAME BEGIN ////////////////////////");
+    s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->WriteCoreQueueSnapshot("GameBegin");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
     s_instance->m_lastScriptRepeatCount = 0;
-    s_instance->WriteScript("//////////////////////// SCRIPT EXECUTION ////////////////////////");
+    s_instance->WriteScript("//////////////////////// script execution ////////////////////////");
     if (s_instance->m_scriptOpcodeTrace)
-        s_instance->WriteScript("//////////////////////// OPCODE CHECK ////////////////////////");
+        s_instance->WriteScript("//////////////////////// opcode check ////////////////////////");
     if (s_instance->m_functionTrace)
-        s_instance->WriteScript("//////////////////////// FUNCTION CALL CHECK ////////////////////////");
+        s_instance->WriteScript("//////////////////////// function call check (0AB1 / 0AB2) ////////////////////////");
     s_instance->WriteCoreMemorySummary();
 }
 
 void __stdcall DebugUtils::OnGameEnd()
 {
     if (!s_instance) return;
-    s_instance->WriteCore("//////////////////////// GAME END ////////////////////////");
+    s_instance->WriteCore("//////////////////////// game end ////////////////////////");
     s_instance->WriteCoreMemorySummary();
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[GAME_END] runtime stopped");
@@ -1437,7 +1433,7 @@ void __stdcall DebugUtils::OnGameProcessBefore()
                 continue;
 
             s_instance->WriteCore(
-                "[BREAKPOINT] continued script='%.8s' key=F%d",
+                "[breakpoint] continued script='%.8s' key=F%d",
                 s_instance->m_breakpoints[i].name.c_str(),
                 5 + static_cast<int>(i)
             );
@@ -1488,7 +1484,7 @@ BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
     if (s_instance->m_seenScripts.insert(scriptPtr).second)
     {
         s_instance->WriteScript(
-            "[SCRIPT_BEGIN] ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d mission=%d",
+            "[script_begin] ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d mission=%d",
             thread,
             thread->threadName,
             thread->ip,
@@ -1524,7 +1520,7 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
     if (s_instance->m_commandLimit > 0 && s_instance->m_currentScriptCommands > s_instance->m_commandLimit)
     {
         s_instance->WriteCore(
-            "[HANG_GUARD] script='%.8s' command_limit=%u",
+            "[hang_guard] script='%.8s' command_limit=%u",
             thread->threadName,
             static_cast<unsigned>(s_instance->m_commandLimit)
         );
@@ -1537,7 +1533,7 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
         if (s_instance->m_timeLimitSeconds > 0 && elapsed > s_instance->m_timeLimitSeconds * 1000u)
         {
             s_instance->WriteScript(
-                "[HANG_GUARD] script='%.8s' elapsed_ms=%u time_limit_seconds=%u",
+                "[hang_guard] script='%.8s' elapsed_ms=%u time_limit_seconds=%u",
                 thread->threadName,
                 static_cast<unsigned>(elapsed),
                 static_cast<unsigned>(s_instance->m_timeLimitSeconds)
@@ -1580,7 +1576,7 @@ int __stdcall DebugUtils::Opcode_DebugOn(CScriptThread* thread)
         return OR_CONTINUE;
 
     s_instance->m_debugScripts.insert(reinterpret_cast<uintptr_t>(thread));
-    s_instance->WriteCore("[DEBUG] enabled script='%.8s' ptr=%p", thread->threadName, thread);
+    s_instance->WriteCore("[debug] enabled script='%.8s' ptr=%p", thread->threadName, thread);
     return OR_CONTINUE;
 }
 
@@ -1592,7 +1588,7 @@ int __stdcall DebugUtils::Opcode_DebugOff(CScriptThread* thread)
     const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
     s_instance->m_debugScripts.erase(scriptPtr);
     s_instance->m_seenScripts.erase(scriptPtr);
-    s_instance->WriteCore("[DEBUG] disabled script='%.8s' ptr=%p", thread->threadName, thread);
+    s_instance->WriteCore("[debug] disabled script='%.8s' ptr=%p", thread->threadName, thread);
     return OR_CONTINUE;
 }
 
@@ -1630,7 +1626,7 @@ int __stdcall DebugUtils::Opcode_Breakpoint(CScriptThread* thread)
     );
 
     s_instance->WriteCore(
-        "[BREAKPOINT] script='%.8s' ptr=%p blocking=%d message='%s' off=0x%zX",
+        "[breakpoint] script='%.8s' ptr=%p blocking=%d message='%s' off=0x%zX",
         thread->threadName,
         thread,
         blocking ? 1 : 0,
@@ -1641,7 +1637,7 @@ int __stdcall DebugUtils::Opcode_Breakpoint(CScriptThread* thread)
     if (blocking)
     {
         CTimer::m_CodePause = true;
-        s_instance->WriteCore("[BREAKPOINT] game paused");
+        s_instance->WriteCore("[breakpoint] game paused");
     }
 
     return OR_INTERRUPT;
@@ -1664,14 +1660,14 @@ int __stdcall DebugUtils::Opcode_Trace(CScriptThread* thread)
         return OR_CONTINUE;
 
     s_instance->WriteCore(
-        "[TRACE] script='%.8s' ptr=%p message='%s'",
+        "[trace] script='%.8s' ptr=%p message='%s'",
         thread->threadName,
         thread,
         message
     );
 
     s_instance->WriteScript(
-        "[TRACE] script='%.8s' ptr=%p %s",
+        "[trace] script='%.8s' ptr=%p %s",
         thread->threadName,
         thread,
         message
@@ -1694,7 +1690,7 @@ int __stdcall DebugUtils::Opcode_LogToFile(CScriptThread* thread)
     if (CLEO_FormatOpcodeString(thread, message, sizeof(message)) < 0)
     {
         s_instance->WriteCore(
-            "[LOG_TO_FILE] formatting failed script='%.8s' file='%s'",
+            "[log_to_file] formatting failed script='%.8s' file='%s'",
             thread->threadName,
             filename
         );
@@ -1704,7 +1700,7 @@ int __stdcall DebugUtils::Opcode_LogToFile(CScriptThread* thread)
     s_instance->WriteExternal(filename, timestamp != 0, message);
 
     s_instance->WriteCore(
-        "[LOG_TO_FILE] script='%.8s' file='%s' timestamp=%d",
+        "[log_to_file] script='%.8s' file='%s' timestamp=%d",
         thread->threadName,
         filename,
         timestamp
@@ -1729,12 +1725,12 @@ int __stdcall DebugUtils::Opcode_PrintString(CScriptThread* thread)
     CLEO_ReadStringOpcodeParam(thread, label, sizeof(label));
 
     s_instance->WriteCore(
-        "[LEGACY_DEBUG] script='%.8s' printstring='%s'",
+        "[legacy_debug] script='%.8s' printstring='%s'",
         thread->threadName,
         label
     );
     s_instance->WriteScript(
-        "[LEGACY_DEBUG] script='%.8s' printstring='%s'",
+        "[legacy_debug] script='%.8s' printstring='%s'",
         thread->threadName,
         label
     );
@@ -1759,13 +1755,13 @@ int __stdcall DebugUtils::Opcode_PrintInt(CScriptThread* thread)
     const DWORD value = CLEO_GetIntOpcodeParam(thread);
 
     s_instance->WriteCore(
-        "[LEGACY_DEBUG] script='%.8s' printint='%s: %lu'",
+        "[legacy_debug] script='%.8s' printint='%s: %lu'",
         thread->threadName,
         label,
         static_cast<unsigned long>(value)
     );
     s_instance->WriteScript(
-        "[LEGACY_DEBUG] script='%.8s' printint='%s: %lu'",
+        "[legacy_debug] script='%.8s' printint='%s: %lu'",
         thread->threadName,
         label,
         static_cast<unsigned long>(value)
@@ -1791,13 +1787,13 @@ int __stdcall DebugUtils::Opcode_PrintFloat(CScriptThread* thread)
     const float value = CLEO_GetFloatOpcodeParam(thread);
 
     s_instance->WriteCore(
-        "[LEGACY_DEBUG] script='%.8s' printfloat='%s: %.6f'",
+        "[legacy_debug] script='%.8s' printfloat='%s: %.6f'",
         thread->threadName,
         label,
         static_cast<double>(value)
     );
     s_instance->WriteScript(
-        "[LEGACY_DEBUG] script='%.8s' printfloat='%s: %.6f'",
+        "[legacy_debug] script='%.8s' printfloat='%s: %.6f'",
         thread->threadName,
         label,
         static_cast<double>(value)
