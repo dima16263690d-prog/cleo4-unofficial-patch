@@ -1322,7 +1322,7 @@ OpcodeResult WINAPI GENERATE_RANDOM_FLOAT_IN_RANGE_WITH_SEED(CScriptThread* thre
 	unsigned int resetSeed = rand() / 2;
 	srand(seed);
 	CLEO_SetFloatOpcodeParam(thread, fmaf((float)rand() / RAND_MAX, max - min, min));
-	srand((time(0) / 2) + resetSeed); // reset
+	srand(static_cast<unsigned int>((time(0) / 2) + resetSeed)); // reset
 	return OR_CONTINUE;
 }
 
