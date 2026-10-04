@@ -68,6 +68,10 @@ private:
     std::set<uintptr_t> m_seenScripts;
 
     DWORD m_lastMemoryLogTick = 0;
+    uint64_t m_lastPrivateUsage = 0;
+    size_t m_lastMemoryQueueCount = 0;
+    size_t m_lastMemoryCustomCount = 0;
+    bool m_memoryBaselineReady = false;
     size_t m_scriptBytes = 0;
     size_t m_scriptCommands = 0;
     bool m_crashHandlerInstalled = false;
