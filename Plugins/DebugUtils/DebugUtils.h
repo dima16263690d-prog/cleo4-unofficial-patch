@@ -33,7 +33,11 @@ private:
 
     std::ofstream m_coreLog;
     std::ofstream m_scriptLog;
+    std::ofstream m_diagnosticLog;
+    std::ofstream m_memoryLog;
     std::mutex m_coreMutex;
+    std::mutex m_diagnosticMutex;
+    std::mutex m_memoryMutex;
     std::string m_lastCoreMessage;
     size_t m_lastCoreRepeatCount = 0;
     size_t m_corePendingWrites = 0;
@@ -57,6 +61,10 @@ private:
     std::vector<CrashInfoEntry> m_crashInfo;
     std::string m_lastScriptMessage;
     size_t m_lastScriptRepeatCount = 0;
+    std::string m_lastDiagnosticMessage;
+    size_t m_lastDiagnosticRepeatCount = 0;
+    std::string m_lastMemoryMessage;
+    size_t m_lastMemoryRepeatCount = 0;
     std::set<uintptr_t> m_seenScripts;
 
     DWORD m_lastMemoryLogTick = 0;
@@ -78,7 +86,10 @@ private:
     DWORD m_timeLimitSeconds = 5;
     bool m_scriptLogEnabled = true;
     bool m_scriptOpcodeTrace = false;
+    bool m_functionTrace = false;
     bool m_scriptDeduplicate = true;
+    bool m_memoryLogEnabled = true;
+    bool m_diagnosticLogEnabled = false;
     bool m_legacyDebugOpcodes = false;
 
     std::set<uintptr_t> m_debugScripts;
@@ -98,6 +109,8 @@ private:
     std::string DebugDir() const;
     std::string CoreLogPath() const;
     std::string ScriptLogPath() const;
+    std::string DiagnosticLogPath() const;
+    std::string MemoryLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
     std::string ConfigPath() const;
@@ -107,8 +120,12 @@ private:
     void CloseLogs();
     void WriteCore(const char* format, ...);
     void WriteScript(const char* format, ...);
+    void WriteDiagnostic(const char* format, ...);
+    void WriteMemory(const char* format, ...);
     void FlushCoreRepeatLocked();
     void FlushScriptRepeat();
+    void FlushDiagnosticRepeatLocked();
+    void FlushMemoryRepeatLocked();
     void QueueScriptLine(const char* line);
     void ScriptWriterLoop();
     void WriteExternal(const std::string& filename, bool timestamp, const char* message);
