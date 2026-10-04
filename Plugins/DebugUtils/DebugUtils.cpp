@@ -287,8 +287,42 @@ void DebugUtils::OpenLogs()
         OutputDebugStringA("[DebugUtils] Failed to open cleo_script.log\n");
 }
 
+void DebugUtils::FlushCoreRepeatLocked()
+{
+    if (m_lastCoreRepeatCount <= 1 || m_lastCoreMessage.empty() || !m_coreLog.is_open())
+    {
+        m_lastCoreMessage.clear();
+        m_lastCoreRepeatCount = 0;
+        return;
+    }
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    char ms[4];
+    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
+
+    m_coreLog
+        << t.wYear << '-'
+        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
+        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
+        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
+        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
+        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
+        << ms << " [REPEAT] count=" << m_lastCoreRepeatCount
+        << " message=" << m_lastCoreMessage << '\n';
+
+    m_lastCoreMessage.clear();
+    m_lastCoreRepeatCount = 0;
+}
+
 void DebugUtils::CloseLogs()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_coreMutex);
+        FlushCoreRepeatLocked();
+    }
+
     if (m_coreLog.is_open())
     {
         m_coreLog.flush();
@@ -315,6 +349,14 @@ void DebugUtils::WriteCore(const char* format, ...)
     if (!m_coreLog.is_open())
         return;
 
+    if (m_lastCoreMessage == message && m_lastCoreRepeatCount > 0)
+    {
+        ++m_lastCoreRepeatCount;
+        return;
+    }
+
+    FlushCoreRepeatLocked();
+
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
@@ -329,7 +371,15 @@ void DebugUtils::WriteCore(const char* format, ...)
     char ms[4];
     sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
     m_coreLog << ms << " " << message << '\n';
-    m_coreLog.flush();
+
+    m_lastCoreMessage = message;
+    m_lastCoreRepeatCount = 1;
+
+    if (++m_corePendingWrites >= 32)
+    {
+        m_coreLog.flush();
+        m_corePendingWrites = 0;
+    }
 }
 
 void DebugUtils::RotateScriptLogIfNeeded(size_t incomingBytes)
