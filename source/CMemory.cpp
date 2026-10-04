@@ -62,7 +62,7 @@ namespace CLEO
         if (!m_active)
             return;
 
-        TRACE("Restoring memory protection at 0x%08X (size: 0x%08X, old: 0x%08X)",
+        MEMORY_TRACE("PROTECT_RESTORE address=0x%08X size=0x%08X old=0x%08X",
             (DWORD)m_address,
             (DWORD)m_size,
             (DWORD)m_oldProtection
