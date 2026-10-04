@@ -87,6 +87,21 @@ private:
     volatile uintptr_t m_lastScriptPtr = 0;
     char m_lastScriptName[9] = "none";
 
+    struct OpcodeHistoryEntry
+    {
+        DWORD opcode = 0xFFFFFFFF;
+        DWORD result = 0xFFFFFFFF;
+        DWORD offset = 0;
+        uintptr_t scriptPtr = 0;
+        char scriptName[9] = "none";
+    };
+
+    static constexpr size_t kOpcodeHistorySize = 256;
+    std::array<OpcodeHistoryEntry, kOpcodeHistorySize> m_opcodeHistory{};
+    size_t m_opcodeHistoryNext = 0;
+    size_t m_opcodeHistoryCount = 0;
+    std::mutex m_opcodeHistoryMutex;
+
     uintptr_t m_currentScriptPtr = 0;
     DWORD m_currentScriptStartTick = 0;
     size_t m_currentScriptCommands = 0;
@@ -175,6 +190,8 @@ private:
 
     LONG HandleException(PEXCEPTION_POINTERS info);
     void WriteCrashReport(PEXCEPTION_POINTERS info);
+    void RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result);
+    void WriteOpcodeHistory(const char* reason);
 
     static std::string Basename(const std::string& path);
     static std::string ModuleNameForAddress(DWORD address);
