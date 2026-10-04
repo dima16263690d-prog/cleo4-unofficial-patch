@@ -80,6 +80,37 @@ namespace
         thread->ip++;
     }
 
+    void ExtractHexAddresses(const std::string& line, size_t start, std::vector<DWORD>& out)
+    {
+        size_t pos = start;
+        while ((pos = line.find("0x", pos)) != std::string::npos)
+        {
+            const size_t valueStart = pos + 2;
+            if (valueStart < line.size() && line[valueStart] == '*')
+            {
+                pos = valueStart + 1;
+                continue;
+            }
+
+            char* end = nullptr;
+            const unsigned long value = strtoul(line.c_str() + valueStart, &end, 16);
+            if (end != line.c_str() + valueStart)
+            {
+                out.push_back(static_cast<DWORD>(value));
+                pos = static_cast<size_t>(end - line.c_str());
+            }
+            else
+            {
+                pos = valueStart + 1;
+            }
+        }
+    }
+
+    bool ContainsAddress(const std::vector<DWORD>& values, DWORD address)
+    {
+        return std::find(values.begin(), values.end(), address) != values.end();
+    }
+
     const char* CallbackName(int id)
     {
         switch (id)
@@ -1030,34 +1061,41 @@ void DebugUtils::LoadCrashInfoList()
 
     while (std::getline(file, line))
     {
-        if (line.rfind("Error: 0x", 0) == 0 && line.size() >= 12)
+        if (line.rfind("Error: ", 0) == 0)
         {
-            const DWORD address = static_cast<DWORD>(strtoul(line.c_str() + 9, nullptr, 16));
             if (m_crashInfo.size() >= 4096)
                 break;
 
             m_crashInfo.push_back({});
             current = &m_crashInfo.back();
-            current->address = address;
+
+            ExtractHexAddresses(line, 7, current->errorAddresses);
+            if (line.find("0x*", 7) != std::string::npos)
+                current->wildcardError = true;
+
             continue;
         }
 
         if (current == nullptr)
             continue;
 
-        if (line.rfind("Problem:", 0) == 0 ||
-            line.rfind("Issue:", 0) == 0 ||
-            line.rfind("Solution:", 0) == 0 ||
-            line.rfind("About:", 0) == 0 ||
-            line.rfind("Type:", 0) == 0)
+        if (line.rfind("Backtrace:", 0) == 0)
+        {
+            ExtractHexAddresses(line, 10, current->backtraceAddresses);
+            continue;
+        }
+
+        // Preserve the useful human diagnosis text, including "Problem 1:",
+        // "Solution 2:", "About:", and other variants used by CrashInfo.
+        if (!line.empty())
         {
             if (!current->description.empty())
                 current->description += " | ";
 
             current->description += line;
 
-            if (current->description.size() > 1000)
-                current->description.resize(1000);
+            if (current->description.size() > 4000)
+                current->description.resize(4000);
         }
     }
 
@@ -1066,15 +1104,46 @@ void DebugUtils::LoadCrashInfoList()
         CrashInfoPath().c_str());
 }
 
-const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(DWORD address) const
+const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
+    DWORD address,
+    const std::vector<DWORD>& backtrace) const
 {
+    const CrashInfoEntry* best = nullptr;
+    int bestScore = -1;
+
     for (const auto& entry : m_crashInfo)
     {
-        if (entry.address == address)
-            return &entry;
+        const bool exactError = ContainsAddress(entry.errorAddresses, address);
+        const bool wildcardError = entry.wildcardError;
+
+        if (!exactError && !wildcardError)
+            continue;
+
+        int score = exactError ? 100 : 10;
+
+        if (!entry.backtraceAddresses.empty())
+        {
+            int backtraceMatches = 0;
+            for (DWORD expected : entry.backtraceAddresses)
+            {
+                if (ContainsAddress(backtrace, expected))
+                    ++backtraceMatches;
+            }
+
+            if (backtraceMatches == 0)
+                continue;
+
+            score += backtraceMatches * 20;
+        }
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = &entry;
+        }
     }
 
-    return nullptr;
+    return best;
 }
 
 std::string DebugUtils::Basename(const std::string& path)
@@ -1134,36 +1203,20 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     );
     WinAppendLine(CrashLogPath(), line);
 
+    const DWORD faultAddress = reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
+    const std::string faultModule = ModuleNameForAddress(faultAddress);
+
     sprintf_s(
         line, sizeof(line),
-        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X address=0x%08X module=%s",
+        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X address=0x%08X module=%s pid=%u tid=%u",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         info->ExceptionRecord->ExceptionCode,
-        reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress),
-        ModuleNameForAddress(reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress)).c_str()
+        faultAddress,
+        faultModule.c_str(),
+        GetCurrentProcessId(),
+        GetCurrentThreadId()
     );
     WinAppendLine(CrashLogPath(), line);
-
-    const CrashInfoEntry* match =
-        FindCrashInfo(reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress));
-
-    if (match != nullptr)
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[crashinfo_match] address=0x%08X %s",
-            match->address,
-            match->description.c_str()
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-    else
-    {
-        WinAppendLine(
-            CrashLogPath(),
-            "[crashinfo_match] no exact address match in local CrashInfo database"
-        );
-    }
 
     CONTEXT* c = info->ContextRecord;
 
@@ -1171,6 +1224,13 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         line, sizeof(line),
         "[regs] EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EIP=%08X EFLAGS=%08X",
         c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Ebp, c->Esp, c->Eip, c->EFlags
+    );
+    WinAppendLine(CrashLogPath(), line);
+
+    sprintf_s(
+        line, sizeof(line),
+        "[context] CS=%04X DS=%04X ES=%04X FS=%04X GS=%04X SS=%04X",
+        c->SegCs, c->SegDs, c->SegEs, c->SegFs, c->SegGs, c->SegSs
     );
     WinAppendLine(CrashLogPath(), line);
 
@@ -1240,6 +1300,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         WinAppendLine(CrashLogPath(), line);
     }
 
+    std::vector<DWORD> backtraceAddresses;
     DWORD frame = c->Ebp;
     for (unsigned i = 0; i < 32 && frame != 0; ++i)
     {
@@ -1253,6 +1314,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         if (next <= frame || next - frame > 0x10000)
             break;
 
+        backtraceAddresses.push_back(ret);
+
         sprintf_s(
             line, sizeof(line),
             "[backtrace] #%u frame=0x%08X return=0x%08X module=%s",
@@ -1264,6 +1327,28 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         WinAppendLine(CrashLogPath(), line);
 
         frame = next;
+    }
+
+    const CrashInfoEntry* match = FindCrashInfo(faultAddress, backtraceAddresses);
+    if (match != nullptr)
+    {
+        const DWORD matchedAddress = match->errorAddresses.empty() ? 0 : match->errorAddresses.front();
+        sprintf_s(
+            line, sizeof(line),
+            "[crashinfo_match] mode=%s address=0x%08X backtrace_rules=%u %s",
+            match->wildcardError ? "wildcard" : "exact",
+            matchedAddress,
+            static_cast<unsigned>(match->backtraceAddresses.size()),
+            match->description.c_str()
+        );
+        WinAppendLine(CrashLogPath(), line);
+    }
+    else
+    {
+        WinAppendLine(
+            CrashLogPath(),
+            "[crashinfo_match] no matching entry in local CrashInfo database"
+        );
     }
 
     auto head = (CLEO_GetGameVersion() == GV_US10)
