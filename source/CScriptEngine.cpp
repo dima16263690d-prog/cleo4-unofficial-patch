@@ -628,6 +628,10 @@ namespace CLEO
 
     void __fastcall HOOK_ProcessScript(CCustomScript * pScript, int)
     {
+        // Match CLEO 5 lifecycle: destroy scripts deferred by the previous
+        // processing boundary before attempting to initialize the runtime.
+        GetInstance().ScriptEngine.DeleteWaitingScripts();
+
         // CLEO 5 retries GameBegin from the script-processing hook because
         // pActiveScripts may not be ready during the initial SCM callbacks.
         GetInstance().ScriptEngine.GameBegin();
