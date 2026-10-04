@@ -12,7 +12,6 @@
 #include "CCustomOpcodeSystem.h"
 #include "CTextManager.h"
 #include "CSoundSystem.h"
-#include "FileEnumerator.h"
 #include "crc32.h"
 
 namespace CLEO
@@ -37,17 +36,17 @@ namespace CLEO
 
         void Start()
         {
-            // CLEO runtime directories. Keep resource ownership separated:
+            // CLEO 4 runtime directories. Keep resource ownership simple:
             // .cs/.cs3/.cs4 -> ScriptEngine
             // .cleo          -> PluginSystem
-            // cleo_modules   -> module resources
             // cleo_saves     -> save sidecar data
+            // cleo_text      -> text subsystem
+            //
+            // No cleo_modules directory: this patch intentionally keeps the
+            // classic CLEO 4 script model without a separate .s module layer.
             CreateDirectoryA("cleo", nullptr);
-            CreateDirectoryA("cleo\\cleo_modules", nullptr);
             CreateDirectoryA("cleo\\cleo_plugins", nullptr);
             CreateDirectoryA("cleo\\cleo_saves", nullptr);
-
-            // Existing CLEO 4 text subsystem still owns cleo_text.
             CreateDirectoryA("cleo\\cleo_text", nullptr);
 
             CodeInjector.OpenReadWriteAccess(); // must do this earlier to ensure plugins write access on init
@@ -65,9 +64,8 @@ namespace CLEO
             OpcodeSystem.Inject(CodeInjector);
             ScriptEngine.Inject(CodeInjector);
 
-            // Load plugins only after the core CLEO subsystems have been
-            // injected. This keeps plugin loading separate from script
-            // execution while preserving legacy CLEO 4 plugin placement.
+            // Plugins are loaded only after the CLEO core is injected.
+            // CPluginSystem performs CLEO 5-style discovery and load ordering.
             PluginSystem.LoadPlugins();
 
             m_bStarted = true;
@@ -76,6 +74,10 @@ namespace CLEO
         void Stop()
         {
             if (!m_bStarted) return;
+
+            PluginSystem.UnloadPlugins();
+            ScriptEngine.GameEnd();
+            m_bStarted = false;
         }
 
         CDmaFix                    DmaFix;
@@ -88,7 +90,6 @@ namespace CLEO
         CCustomOpcodeSystem        OpcodeSystem;
         CSoundSystem               SoundSystem;
         CPluginSystem              PluginSystem;
-        //CLegacy                   Legacy;
     };
 
     CCleoInstance& GetInstance();
