@@ -550,7 +550,7 @@ void DebugUtils::WriteCoreLimitNoticeLocked()
     char line[128];
     sprintf_s(
         line, sizeof(line),
-        "%04u-%02u-%02u %02u:%02u:%02u.%03u%s\\n",
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u%s\n",
         t.wYear, t.wMonth, t.wDay,
         t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         notice
@@ -1177,12 +1177,21 @@ void DebugUtils::LoadCrashInfoList()
 {
     m_crashInfo.clear();
 
-    std::ifstream file(CrashInfoPath());
+    std::string loadedPath = CrashInfoPath();
+    std::ifstream file(loadedPath);
+
+    // A build output may place the bundled database beside DebugUtils.cleo.
+    // Prefer the documented debug path, then fall back to the plugin folder.
+    if (!file.is_open())
+    {
+        loadedPath = "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
+        file.open(loadedPath);
+    }
     if (!file.is_open())
     {
         WriteCore(
             "[crashinfo] database not found at %s; source=%s",
-            CrashInfoPath().c_str(),
+            loadedPath.c_str(),
             "https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt"
         );
         return;
@@ -1233,7 +1242,7 @@ void DebugUtils::LoadCrashInfoList()
 
     WriteCore("[crashinfo] loaded entries=%u path=%s",
         static_cast<unsigned>(m_crashInfo.size()),
-        CrashInfoPath().c_str());
+        loadedPath.c_str());
 }
 
 const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
@@ -1377,6 +1386,37 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         m_lastOpcodeResult == 0xFFFFFFFF ? -1 : static_cast<int>(m_lastOpcodeResult)
     );
     WinAppendLine(CrashLogPath(), line);
+
+    HMODULE faultModuleHandle = nullptr;
+    MODULEINFO faultModuleInfo{};
+    DWORD faultModuleBase = 0;
+    DWORD faultModuleRva = 0;
+
+    if (GetModuleHandleExA(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCSTR>(faultAddress),
+        &faultModuleHandle) &&
+        GetModuleInformation(
+            GetCurrentProcess(),
+            faultModuleHandle,
+            &faultModuleInfo,
+            sizeof(faultModuleInfo)))
+    {
+        faultModuleBase = reinterpret_cast<DWORD>(faultModuleInfo.lpBaseOfDll);
+        if (faultAddress >= faultModuleBase)
+            faultModuleRva = faultAddress - faultModuleBase;
+
+        sprintf_s(
+            line, sizeof(line),
+            "[module_at_fault] name=%s base=0x%08X rva=0x%08X image_size=0x%08X",
+            faultModule.c_str(),
+            faultModuleBase,
+            faultModuleRva,
+            static_cast<unsigned>(faultModuleInfo.SizeOfImage)
+        );
+        WinAppendLine(CrashLogPath(), line);
+    }
 
     sprintf_s(
         line, sizeof(line),
