@@ -19,7 +19,7 @@ namespace CLEO
 {
     class CCleoInstance
     {
-        bool			m_bStarted;
+        bool            m_bStarted;
 
     public:
         CCleoInstance()
@@ -37,10 +37,20 @@ namespace CLEO
 
         void Start()
         {
-            CreateDirectory("cleo", NULL);
-            CreateDirectory("cleo/cleo_saves", NULL);
-            CreateDirectory("cleo/cleo_text", NULL);
-            CodeInjector.OpenReadWriteAccess();		// must do this earlier to ensure plugins write access on init
+            // CLEO runtime directories. Keep resource ownership separated:
+            // .cs/.cs3/.cs4 -> ScriptEngine
+            // .cleo          -> PluginSystem
+            // cleo_modules   -> module resources
+            // cleo_saves     -> save sidecar data
+            CreateDirectoryA("cleo", nullptr);
+            CreateDirectoryA("cleo\\cleo_modules", nullptr);
+            CreateDirectoryA("cleo\\cleo_plugins", nullptr);
+            CreateDirectoryA("cleo\\cleo_saves", nullptr);
+
+            // Existing CLEO 4 text subsystem still owns cleo_text.
+            CreateDirectoryA("cleo\\cleo_text", nullptr);
+
+            CodeInjector.OpenReadWriteAccess(); // must do this earlier to ensure plugins write access on init
             GameMenu.Inject(CodeInjector);
             DmaFix.Inject(CodeInjector);
             UpdateGameLogics = VersionManager.TranslateMemoryAddress(MA_UPDATE_GAME_LOGICS_FUNCTION);
@@ -54,6 +64,13 @@ namespace CLEO
             SoundSystem.Inject(CodeInjector);
             OpcodeSystem.Inject(CodeInjector);
             ScriptEngine.Inject(CodeInjector);
+
+            // Load plugins only after the core CLEO subsystems have been
+            // injected. This keeps plugin loading separate from script
+            // execution while preserving legacy CLEO 4 plugin placement.
+            PluginSystem.LoadPlugins();
+
+            m_bStarted = true;
         }
 
         void Stop()
@@ -61,17 +78,17 @@ namespace CLEO
             if (!m_bStarted) return;
         }
 
-        CDmaFix					DmaFix;
-        CGameMenu				GameMenu;
-        CHookSystem				HookSystem;
-        CCodeInjector			CodeInjector;
-        CGameVersionManager		VersionManager;
-        CScriptEngine			ScriptEngine;
-        CTextManager				TextManager;
-        CCustomOpcodeSystem		OpcodeSystem;
-        CSoundSystem				SoundSystem;
-        CPluginSystem			PluginSystem;
-        //CLegacy					Legacy;
+        CDmaFix                    DmaFix;
+        CGameMenu                 GameMenu;
+        CHookSystem               HookSystem;
+        CCodeInjector             CodeInjector;
+        CGameVersionManager       VersionManager;
+        CScriptEngine              ScriptEngine;
+        CTextManager              TextManager;
+        CCustomOpcodeSystem        OpcodeSystem;
+        CSoundSystem               SoundSystem;
+        CPluginSystem              PluginSystem;
+        //CLegacy                   Legacy;
     };
 
     CCleoInstance& GetInstance();
