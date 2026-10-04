@@ -67,6 +67,12 @@ Important finding: CLEO 5 does **not** provide a worker-pool scheduler that make
 
 ## What was changed in our CLEO 4 engine
 
+### CLEO 5 lifecycle connection correction
+
+The first port incorrectly called `GameBegin()` from `OnInitScm1/2/3` and `OnNewGame`. This was not the CLEO 5 connection model and could load custom scripts before GTA finished rebuilding the native script queue. `GameBegin()` is now called only from `HOOK_ProcessScript()`, where it can wait for a valid active-script queue.
+
+The first retry implementation also logged the "queue not ready" condition on every script-processing call, which could expand `cleo.log` dramatically. The readiness path is now silent and simply retries on the next processing call.
+
 ### 1. Central lifecycle
 
 Added:
@@ -74,7 +80,7 @@ Added:
 - `CScriptEngine::GameBegin(bool bLoadMode)`
 - `CScriptEngine::GameEnd()`
 
-The existing `OnInitScm1/2/3` and new-game path now go through these lifecycle functions instead of directly manipulating custom scripts.
+The existing `OnInitScm1/2/3` and new-game path use `GameEnd()` to tear down the previous CLEO runtime before GTA reinitializes SCM state. `GameBegin()` is intentionally **not** called from these SCM initialization hooks. Following CLEO 5, `GameBegin()` is first driven from the script-processing hook, after GTA has a valid `pActiveScripts` list.
 
 ### 2. Native queue order
 
