@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CLEO.h"
-#include "CLEO_Debug.h"
+#include "../cleo_sdk/CLEO_Debug.h"
 #include "CTheScripts.h"
 #include <windows.h>
 #include <vector>
