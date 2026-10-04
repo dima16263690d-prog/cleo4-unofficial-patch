@@ -1,6 +1,6 @@
 #pragma once
 
-#include "CLEO_Debug.h"
+#include "../cleo_sdk/CLEO_Debug.h"
 
 #ifdef DEBUGIT
 #define TRACE(format,...) CLEO_DebugLog(CLEO_DEBUG_INFO, format __VA_OPT__(,) __VA_ARGS__)
