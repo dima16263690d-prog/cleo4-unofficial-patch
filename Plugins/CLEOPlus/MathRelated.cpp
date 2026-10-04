@@ -546,10 +546,10 @@ OpcodeResult WINAPI CONVERT_DIRECTION_TO_QUAT(CScriptThread* thread)
 	vector.Normalize();
 
 	CVector vector2;
-	vector2.Cross(up, vector);
+	(void)vector2.Cross(up, vector);
 
 	CVector vector3;
-	vector3.Cross(vector, vector2);
+	(void)vector3.Cross(vector, vector2);
 
 	float m00 = vector2.x;
 	float m01 = vector2.y;
