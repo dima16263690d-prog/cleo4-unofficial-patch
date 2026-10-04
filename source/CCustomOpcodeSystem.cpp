@@ -1814,7 +1814,7 @@ namespace CLEO {
 		// stream itself is unchanged: BaseIP, parentThread, childThreads and
 		// save metadata remain owned by CCustomScript/CScriptEngine.
 		scmFunc->retnAddress = thread->GetBytePointer();
-		TRACE("[0AB1] %.8s args=%u %d %d",
+		SCRIPT_TRACE("[FUNCTION][0AB1] %.8s args=%u %d %d",
 			thread->GetName(), nParams,
 			nParams > 0 ? arguments[0].nParam : 0, nParams > 1 ? arguments[1].nParam : 0);
 
@@ -1878,7 +1878,7 @@ namespace CLEO {
 			memcpy(returnValues, opcodeParams, nRetParams * sizeof(SCRIPT_VAR));
 		}
 
-		TRACE("[0AB2] %.8s ret=%u %d",
+		SCRIPT_TRACE("[FUNCTION][0AB2] %.8s ret=%u %d",
 			thread->GetName(), nRetParams, nRetParams ? returnValues[0].nParam : 0);
 
 		// Restore caller scope and jump to its return-slot list.
