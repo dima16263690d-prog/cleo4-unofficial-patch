@@ -140,7 +140,7 @@ private:
     void ScriptWriterLoop();
     void WriteExternal(const std::string& filename, bool timestamp, const char* message);
     void RotateScriptLogIfNeeded(size_t incomingBytes);
-    static const char* ExceptionName(DWORD code);
+    void WriteCoreLimitNoticeLocked();
 
     void LoadCrashInfoList();
     const CrashInfoEntry* FindCrashInfo(DWORD address, const std::vector<DWORD>& backtrace) const;
