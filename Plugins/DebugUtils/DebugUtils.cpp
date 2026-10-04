@@ -122,7 +122,18 @@ DebugUtils::DebugUtils()
     {
         m_scriptWriterStop.store(false, std::memory_order_release);
         m_scriptWriterThread = std::thread(&DebugUtils::ScriptWriterLoop, this);
+        WriteScript("//////////////////////// SCRIPTS ////////////////////////");
+        if (m_functionTrace)
+            WriteScript("//////////////////////// FUNCTION CALL CHECK ////////////////////////");
+        if (m_scriptOpcodeTrace)
+            WriteScript("//////////////////////// OPCODE CHECK ////////////////////////");
     }
+
+    if (m_memoryLogEnabled)
+        WriteMemory("//////////////////////// MEMORY ////////////////////////");
+
+    if (m_diagnosticLogEnabled)
+        WriteDiagnostic("//////////////////////// DIAGNOSTIC ////////////////////////");
 
     CLEO_DebugSetLogCallback(&DebugUtils::OnCoreLog);
 
@@ -141,14 +152,18 @@ DebugUtils::DebugUtils()
 
     WriteCore(
         "[DEBUGUTILS] initialized version=0x%08X game=%d callbacks=active script_log=%d "
-        "opcode_trace=%d deduplicate=%d command_limit=%u time_limit=%u legacy_debug=%d",
+        "opcode_trace=%d function_trace=%d deduplicate=%d command_limit=%u time_limit=%u "
+        "memory_log=%d diagnostic_log=%d legacy_debug=%d",
         CLEO_GetVersion(),
         CLEO_GetGameVersion(),
         m_scriptLogEnabled ? 1 : 0,
         m_scriptOpcodeTrace ? 1 : 0,
+        m_functionTrace ? 1 : 0,
         m_scriptDeduplicate ? 1 : 0,
         static_cast<unsigned>(m_commandLimit),
         static_cast<unsigned>(m_timeLimitSeconds),
+        m_memoryLogEnabled ? 1 : 0,
+        m_diagnosticLogEnabled ? 1 : 0,
         m_legacyDebugOpcodes ? 1 : 0
     );
 }
@@ -218,10 +233,31 @@ void DebugUtils::LoadConfig()
             path.c_str()
         ) != 0;
 
+    m_functionTrace =
+        GetPrivateProfileIntA(
+            "DebugUtils.ScriptLog", "FunctionTrace",
+            0,
+            path.c_str()
+        ) != 0;
+
     m_scriptDeduplicate =
         GetPrivateProfileIntA(
             "DebugUtils.ScriptLog", "Deduplicate",
             1,
+            path.c_str()
+        ) != 0;
+
+    m_memoryLogEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "Memory",
+            1,
+            path.c_str()
+        ) != 0;
+
+    m_diagnosticLogEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "Diagnostic",
+            0,
             path.c_str()
         ) != 0;
 
@@ -250,6 +286,16 @@ std::string DebugUtils::ScriptLogPath() const
     return DebugDir() + "cleo_script.log";
 }
 
+std::string DebugUtils::DiagnosticLogPath() const
+{
+    return DebugDir() + "cleo_diagnostic.log";
+}
+
+std::string DebugUtils::MemoryLogPath() const
+{
+    return DebugDir() + "cleo_memory.log";
+}
+
 std::string DebugUtils::CrashLogPath() const
 {
     return DebugDir() + "gta_crashinfo.log";
@@ -267,6 +313,10 @@ void DebugUtils::OpenLogs()
 
     m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
     m_scriptLog.open(ScriptLogPath(), std::ios::out | std::ios::trunc);
+    if (m_memoryLogEnabled)
+        m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
+    if (m_diagnosticLogEnabled)
+        m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
 
     {
         std::ofstream crashLog(CrashLogPath(), std::ios::out | std::ios::app);
@@ -285,6 +335,10 @@ void DebugUtils::OpenLogs()
         OutputDebugStringA("[DebugUtils] Failed to open cleo_core.log\n");
     if (!m_scriptLog.is_open())
         OutputDebugStringA("[DebugUtils] Failed to open cleo_script.log\n");
+    if (m_memoryLogEnabled && !m_memoryLog.is_open())
+        OutputDebugStringA("[DebugUtils] Failed to open cleo_memory.log\n");
+    if (m_diagnosticLogEnabled && !m_diagnosticLog.is_open())
+        OutputDebugStringA("[DebugUtils] Failed to open cleo_diagnostic.log\n");
 }
 
 void DebugUtils::FlushCoreRepeatLocked()
@@ -322,6 +376,14 @@ void DebugUtils::CloseLogs()
         std::lock_guard<std::mutex> lock(m_coreMutex);
         FlushCoreRepeatLocked();
     }
+    {
+        std::lock_guard<std::mutex> lock(m_diagnosticMutex);
+        FlushDiagnosticRepeatLocked();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_memoryMutex);
+        FlushMemoryRepeatLocked();
+    }
 
     if (m_coreLog.is_open())
     {
@@ -333,6 +395,18 @@ void DebugUtils::CloseLogs()
     {
         m_scriptLog.flush();
         m_scriptLog.close();
+    }
+
+    if (m_diagnosticLog.is_open())
+    {
+        m_diagnosticLog.flush();
+        m_diagnosticLog.close();
+    }
+
+    if (m_memoryLog.is_open())
+    {
+        m_memoryLog.flush();
+        m_memoryLog.close();
     }
 }
 
@@ -555,6 +629,147 @@ void DebugUtils::WriteScript(const char* format, ...)
     }
 }
 
+
+void DebugUtils::FlushDiagnosticRepeatLocked()
+{
+    if (m_lastDiagnosticRepeatCount <= 1 || m_lastDiagnosticMessage.empty() || !m_diagnosticLog.is_open())
+    {
+        m_lastDiagnosticMessage.clear();
+        m_lastDiagnosticRepeatCount = 0;
+        return;
+    }
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    char ms[4];
+    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
+
+    m_diagnosticLog
+        << t.wYear << '-'
+        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
+        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
+        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
+        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
+        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
+        << ms << " [REPEAT] count=" << m_lastDiagnosticRepeatCount
+        << " message=" << m_lastDiagnosticMessage << '\n';
+
+    m_lastDiagnosticMessage.clear();
+    m_lastDiagnosticRepeatCount = 0;
+}
+
+void DebugUtils::WriteDiagnostic(const char* format, ...)
+{
+    if (!m_diagnosticLogEnabled)
+        return;
+
+    char message[4096];
+    va_list args;
+    va_start(args, format);
+    SafeFormat(message, sizeof(message), format, args);
+    va_end(args);
+
+    std::lock_guard<std::mutex> lock(m_diagnosticMutex);
+
+    if (!m_diagnosticLog.is_open())
+        return;
+
+    if (m_lastDiagnosticMessage == message && m_lastDiagnosticRepeatCount > 0)
+    {
+        ++m_lastDiagnosticRepeatCount;
+        return;
+    }
+
+    FlushDiagnosticRepeatLocked();
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    char ms[4];
+    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
+
+    m_diagnosticLog
+        << t.wYear << '-'
+        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
+        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
+        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
+        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
+        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
+        << ms << ' ' << message << '\n';
+
+    m_lastDiagnosticMessage = message;
+    m_lastDiagnosticRepeatCount = 1;
+}
+
+void DebugUtils::FlushMemoryRepeatLocked()
+{
+    if (m_lastMemoryRepeatCount <= 1 || m_lastMemoryMessage.empty() || !m_memoryLog.is_open())
+    {
+        m_lastMemoryMessage.clear();
+        m_lastMemoryRepeatCount = 0;
+        return;
+    }
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    char ms[4];
+    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
+
+    m_memoryLog
+        << t.wYear << '-'
+        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
+        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
+        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
+        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
+        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
+        << ms << " [REPEAT] count=" << m_lastMemoryRepeatCount
+        << " message=" << m_lastMemoryMessage << '\n';
+
+    m_lastMemoryMessage.clear();
+    m_lastMemoryRepeatCount = 0;
+}
+
+void DebugUtils::WriteMemory(const char* format, ...)
+{
+    if (!m_memoryLogEnabled)
+        return;
+
+    char message[4096];
+    va_list args;
+    va_start(args, format);
+    SafeFormat(message, sizeof(message), format, args);
+    va_end(args);
+
+    std::lock_guard<std::mutex> lock(m_memoryMutex);
+
+    if (!m_memoryLog.is_open())
+        return;
+
+    if (m_lastMemoryMessage == message && m_lastMemoryRepeatCount > 0)
+    {
+        ++m_lastMemoryRepeatCount;
+        return;
+    }
+
+    FlushMemoryRepeatLocked();
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    char ms[4];
+    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
+
+    m_memoryLog
+        << t.wYear << '-'
+        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
+        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
+        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
+        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
+        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
+        << ms << ' ' << message << '\n';
+
+    m_lastMemoryMessage = message;
+    m_lastMemoryRepeatCount = 1;
+}
+
 void DebugUtils::WriteExternal(const std::string& filename, bool timestamp, const char* message)
 {
     if (filename.empty() || message == nullptr)
@@ -590,6 +805,25 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
     char message[4096];
     SafeFormat(message, sizeof(message), format, args);
 
+    if (strncmp(message, "[SCRIPT] ", 9) == 0)
+    {
+        const char* payload = message + 9;
+        if (strncmp(payload, "[FUNCTION]", 10) == 0 && !s_instance->m_functionTrace)
+            return;
+
+        s_instance->WriteScript("%s", payload);
+        return;
+    }
+
+    if (strncmp(message, "[MEMORY] ", 9) == 0)
+    {
+        if (!s_instance->m_memoryLogEnabled)
+            return;
+
+        s_instance->WriteMemory("%s", message + 9);
+        return;
+    }
+
     const char* levelName = "Info";
     switch (level)
     {
@@ -597,6 +831,15 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
     case CLEO_DEBUG_ERROR: levelName = "Error"; break;
     case CLEO_DEBUG_DIAGNOSTIC: levelName = "Diagnostic"; break;
     default: break;
+    }
+
+    if (level == CLEO_DEBUG_DIAGNOSTIC)
+    {
+        if (!s_instance->m_diagnosticLogEnabled)
+            return;
+
+        s_instance->WriteDiagnostic("[%s] %s", levelName, message);
+        return;
     }
 
     s_instance->WriteCore("[%s] %s", levelName, message);
@@ -695,6 +938,9 @@ void DebugUtils::WriteCoreQueueSnapshot(const char* reason)
 
 void DebugUtils::WriteCoreMemorySummary()
 {
+    if (!m_memoryLogEnabled)
+        return;
+
     if (CLEO_GetGameVersion() != GV_US10)
         return;
 
@@ -706,8 +952,8 @@ void DebugUtils::WriteCoreMemorySummary()
         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
         sizeof(pmc)))
     {
-        WriteCore(
-            "[MEMORY] working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
+        WriteMemory(
+            "working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
             static_cast<unsigned __int64>(pmc.WorkingSetSize),
             static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
             static_cast<unsigned __int64>(pmc.PrivateUsage),
@@ -719,8 +965,8 @@ void DebugUtils::WriteCoreMemorySummary()
     memory.dwLength = sizeof(memory);
     if (GlobalMemoryStatusEx(&memory))
     {
-        WriteCore(
-            "[MEMORY_SYSTEM] load=%u%% physical=%llu/%llu virtual=%llu/%llu",
+        WriteMemory(
+            "system_load=%u%% physical=%llu/%llu virtual=%llu/%llu",
             memory.dwMemoryLoad,
             static_cast<unsigned long long>(memory.ullAvailPhys),
             static_cast<unsigned long long>(memory.ullTotalPhys),
@@ -1137,6 +1383,10 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastScriptMessage.clear();
     s_instance->m_lastScriptRepeatCount = 0;
     s_instance->WriteScript("//////////////////////// SCRIPT EXECUTION ////////////////////////");
+    if (s_instance->m_scriptOpcodeTrace)
+        s_instance->WriteScript("//////////////////////// OPCODE CHECK ////////////////////////");
+    if (s_instance->m_functionTrace)
+        s_instance->WriteScript("//////////////////////// FUNCTION CALL CHECK ////////////////////////");
     s_instance->WriteCoreMemorySummary();
 }
 
