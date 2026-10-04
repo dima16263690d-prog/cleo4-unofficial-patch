@@ -46,9 +46,11 @@ cleo_memory.log:
 cleo_diagnostic.log:
 //////////////////////// diagnostic ////////////////////////
 
-Repeated identical lines are collapsed into a single [repeat] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1. Low-level memory protection tracing is disabled unless MemoryTrace=1; periodic memory summaries remain enabled.
+Repeated identical lines are collapsed into a single [repeat] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1. Low-level memory protection tracing is disabled unless MemoryTrace=1.
 
-Each periodic memory sample stays compact: it records process memory together with the active script queue, native/custom counts, and queue/custom/private-memory deltas. No extra per-frame memory or script lines are generated.
+The core log has a hard 8 KiB limit. Once the limit is reached, no further core records are appended.
+
+Each periodic memory sample stays compact: it records process memory together with the active script queue, native/custom counts, queue/custom/private-memory deltas, loaded CLEO/DebugUtils image sizes, active custom-script object storage, unique custom code-buffer bytes, and a combined known CLEO footprint. The process totals are exact; the CLEO footprint is explicitly limited to measured CLEO-owned categories and does not pretend to account for arbitrary GTA-owned allocations. No extra per-frame memory or script lines are generated.
 
 ## Performance model
 
@@ -109,3 +111,5 @@ powershell -ExecutionPolicy Bypass -File tools\Get-CrashInfo.ps1 -GtaPath "C:\Ga
 Expected local database:
 
 cleo\debug\CrashInfo\EN-CrashList.txt
+
+DebugUtils also understands exact Error addresses, wildcard Error entries such as 0x*, and Backtrace rules. Crash reports include the exception type/code, fault module/base/RVA, registers, segment context, last script/opcode, exception parameters, memory region, process memory, a bounded backtrace, CrashInfo match details, and the active script queue. A bundled GTA SA 1.0 US database is included in the project output, with runtime fallback to cleo\cleo_plugins\CrashInfo\EN-CrashList.txt.
