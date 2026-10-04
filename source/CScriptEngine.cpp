@@ -212,8 +212,8 @@ namespace CLEO
 
         if (*activeThreadQueue != nullptr)
         {
-            nativeTail->Next = *activeThreadQueue;
-            (*activeThreadQueue)->Previous = nativeTail;
+            nativeTail->SetNext(*activeThreadQueue);
+            (*activeThreadQueue)->SetPrev(nativeTail);
         }
 
         *activeThreadQueue = nativeHead;
@@ -1442,6 +1442,17 @@ namespace CLEO
         return nullptr;
     }
 
+    static void SkipUnusedScriptParameters(CRunningScript *thread)
+    {
+        if (thread == nullptr)
+            return;
+
+        while (*thread->GetBytePointer())
+            GetScriptParams(thread, 1);
+
+        thread->ReadDataByte();
+    }
+
     CCustomScript *CScriptEngine::CreateCustomScript(CRunningScript *fromThread, const char *scriptName, int label)
     {
         if (scriptName == nullptr)
@@ -1455,15 +1466,15 @@ namespace CLEO
             if (fromThread)
                 SetScriptCondResult(fromThread, false);
             if (fromThread)
-                SkipUnusedParameters(fromThread);
+                SkipUnusedScriptParameters(fromThread);
             return nullptr;
         }
 
-        std::string fileName = scriptName;
-        if (parent != nullptr)
-            fileName = parent->ResolvePath(scriptName, cleo_dir);
+        char cwd[MAX_PATH];
+        _getcwd(cwd, sizeof(cwd));
+        _chdir(cleo_dir);
 
-        CCustomScript *cs = new CCustomScript(fileName.c_str(), false, parent, label);
+        CCustomScript *cs = new CCustomScript(scriptName, false, parent, label);
 
         if (fromThread)
             SetScriptCondResult(fromThread, cs != nullptr && cs->bOK);
@@ -1476,17 +1487,17 @@ namespace CLEO
             if (fromThread)
                 SkipUnusedParameters(fromThread);
 
-            TRACE("[ENGINE] CreateCustomScript failed: %s", fileName.c_str());
+            TRACE("[ENGINE] CreateCustomScript failed: %s", scriptName);
+            _chdir(cwd);
             return nullptr;
         }
 
         AddCustomScript(cs);
 
         if (fromThread)
-            reinterpret_cast<CRunningScript*>(fromThread)->ReadParametersForNewlyStartedScript(
-                reinterpret_cast<CRunningScript*>(cs)
-            );
+            TransmitScriptParams(fromThread, cs);
 
+        _chdir(cwd);
         return cs;
     }
 
