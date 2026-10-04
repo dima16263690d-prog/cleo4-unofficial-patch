@@ -186,10 +186,7 @@ namespace CLEO
             return;
 
         if (activeThreadQueue == nullptr || *activeThreadQueue == nullptr)
-        {
-            TRACE("[ENGINE] GameBegin deferred: active GTA script queue is not ready");
             return;
-        }
 
         scriptsLoaded = true;
 
@@ -247,7 +244,6 @@ namespace CLEO
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.GameBegin(false);
     }
 
     // called on first load before the others
@@ -259,7 +255,6 @@ namespace CLEO
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.GameBegin(false);
     }
 
     // called to load the scripts
@@ -271,7 +266,6 @@ namespace CLEO
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.GameBegin(true);
     }
 
     extern "C" void __stdcall opcode_004E(CCustomScript *pScript)
@@ -344,7 +338,6 @@ namespace CLEO
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().ScriptEngine.GameEnd();
         GetInstance().SoundSystem.UnloadAllStreams();
-        GetInstance().ScriptEngine.GameBegin(false);
     }
 
     void OnLoadScmData(void)
