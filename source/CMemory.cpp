@@ -1,6 +1,6 @@
 #include "stdafx.h"
 #include "CMemory.h"
-#include "CDebug.h"
+#include "CDebugBridge.h"
 
 namespace CLEO
 {

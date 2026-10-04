@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "ScmFunction.h"
+#include "CDebugCallbackSystem.h"
 #include <cstdint>
 
 namespace CLEO
@@ -221,6 +222,7 @@ namespace CLEO
             static_cast<unsigned>(customCount),
             static_cast<unsigned>(nativeCount + customCount));
         TRACE("[ENGINE] GameBegin complete: CLEO scripts appended after native scripts");
+        NotifyGameBegin();
     }
 
     void CScriptEngine::GameEnd()
@@ -233,6 +235,7 @@ namespace CLEO
         // All custom shutdown goes through the central lifecycle path.
         RemoveAllCustomScripts();
         scriptsLoaded = false;
+        NotifyGameEnd();
     }
 
     // called to initialise the scripts (after the main.scm has actually had a chance to set up)
@@ -636,10 +639,18 @@ namespace CLEO
         // pActiveScripts may not be ready during the initial SCM callbacks.
         GetInstance().ScriptEngine.GameBegin();
 
+        if (pScript == nullptr)
+            return;
+
+        if (!NotifyScriptProcessBefore(reinterpret_cast<CRunningScript*>(pScript)))
+            return;
+
         if (pScript->IsCustom())
             pScript->Process();
         else
             ProcessScript(pScript);
+
+        NotifyScriptProcessAfter(reinterpret_cast<CRunningScript*>(pScript));
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)

@@ -1,6 +1,6 @@
 #include "stdafx.h"
 #include "cleo.h"
-#include "CDebug.h"
+#include "CDebugBridge.h"
 
 class Starter
 {

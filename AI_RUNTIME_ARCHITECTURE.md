@@ -235,3 +235,47 @@ Future:
 ```
 
 The purpose of this branch is to establish a stable, measurable, single-threaded baseline before touching `CCustomScript`, VM design, memory workers, or true multithreading.
+
+
+## Debug gate before further runtime work
+
+The project now treats diagnostics as a prerequisite for additional scheduler/runtime changes.
+
+A separate Plugins/DebugUtils plugin is introduced, inspired by the CLEO 5 DebugUtils split. The core exposes a narrow public callback API so the plugin can observe game, script and opcode lifecycle without replacing the legacy execution engine.
+
+Three diagnostic streams are intentionally separated:
+
+1. cleo/debug/cleo_core.log — CLEO runtime/module/thread/queue/process-memory diagnostics.
+2. cleo/debug/cleo_script.log — script and opcode execution trace, with last-opcode state retained for crash attribution.
+3. cleo/debug/gta_crashinfo.log — Windows/GTA exception context, registers, memory region, backtrace, active queue, last script/opcode, and optional address lookup against the external CrashInfo database.
+
+External CrashInfo reference:
+https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt
+
+The full external database is not embedded in the core repository. A development copy can be placed at cleo/debug/CrashInfo/EN-CrashList.txt using tools/Get-CrashInfo.ps1.
+
+This debug layer does not enable worker threads, does not modify the separate Memory Engine, and does not add the GTA-CLEO bridge. Further runtime refactoring should be based on data from these logs.
+
+
+## Debug subsystem prerequisite
+
+Before further scheduler or worker-pool work, runtime diagnostics must be available independently from the CLEO engine.
+
+The old CDebug and CDiagnosticLog in-core writers have been removed. DebugUtils is the sole diagnostics backend.
+
+Core responsibilities are intentionally minimal:
+
+- forward core log messages through CLEO_DebugLog only when DebugUtils has registered a callback;
+- dispatch lifecycle callbacks through fixed function slots;
+- route low debug opcodes without implementing their behavior in the core.
+
+DebugUtils owns file I/O and background script-log writing.
+
+Diagnostic outputs:
+
+1. cleo/debug/cleo_core.log
+2. cleo/debug/cleo_script.log
+3. cleo/debug/gta_crashinfo.log
+
+DebugUtils does not include the separate Memory Engine, GTA-CLEO bridge, scheduler or worker pool.
+

@@ -21,13 +21,16 @@
     <ClCompile Include="source\CCustomOpcodeSystem.cpp">
       <Filter>source</Filter>
     </ClCompile>
+    <ClCompile Include="source\CDebugCallbackSystem.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="source\CDebugBridge.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
     <ClCompile Include="source\CCustomScript.cpp">
       <Filter>source</Filter>
     </ClCompile>
     <ClCompile Include="source\ScmFunction.cpp">
-      <Filter>source</Filter>
-    </ClCompile>
-    <ClCompile Include="source\CDebug.cpp">
       <Filter>source</Filter>
     </ClCompile>
     <ClCompile Include="source\CDmaFix.cpp">
@@ -71,6 +74,12 @@
     <ClInclude Include="source\CCodeInjector.h">
       <Filter>source</Filter>
     </ClInclude>
+    <ClInclude Include="source\CDebugCallbackSystem.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CDebugBridge.h">
+      <Filter>source</Filter>
+    </ClInclude>
     <ClInclude Include="source\CMemory.h">
       <Filter>source</Filter>
     </ClInclude>
@@ -84,9 +93,6 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\ScmFunction.h">
-      <Filter>source</Filter>
-    </ClInclude>
-    <ClInclude Include="source\CDebug.h">
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CDmaFix.h">
@@ -132,6 +138,9 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="cleo_sdk\CLEO.h">
+      <Filter>cleo_sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="cleo_sdk\CLEO_Debug.h">
       <Filter>cleo_sdk</Filter>
     </ClInclude>
     <ClInclude Include="source\resource.h">

@@ -1,17 +1,19 @@
 #include "stdafx.h"
 #include "cleo.h"
+#include "CDebugCallbackSystem.h"
 
 namespace CLEO
 {
     CCleoInstance CleoInstance;
     CCleoInstance& GetInstance() { return CleoInstance; }
 
-    void __declspec(naked) CCleoInstance::OnUpdateGameLogics()
+    void __cdecl CCleoInstance::OnUpdateGameLogics()
     {
-        //GetInstance().UpdateGameLogics(); // !
+        NotifyGameProcessBefore();
+
         GetInstance().SoundSystem.Update();
-        static DWORD dwFunc;
-        dwFunc = (DWORD)(GetInstance().UpdateGameLogics);
-        _asm jmp dwFunc
+        GetInstance().UpdateGameLogics();
+
+        NotifyGameProcessAfter();
     }
 }

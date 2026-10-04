@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "CGameMenu.h"
 #include "cleo.h"
-#include "CDebug.h"
+#include "CDebugBridge.h"
 #include <sstream>
 
 namespace CLEO

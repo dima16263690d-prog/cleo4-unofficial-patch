@@ -12,12 +12,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\CCodeInjector.cpp" />
+    <ClCompile Include="source\CDebugBridge.cpp" />
     <ClCompile Include="source\CMemory.cpp" />
     <ClCompile Include="source\CHookSystem.cpp" />
     <ClCompile Include="source\CCustomOpcodeSystem.cpp" />
     <ClCompile Include="source\CCustomScript.cpp" />
     <ClCompile Include="source\ScmFunction.cpp" />
-    <ClCompile Include="source\CDebug.cpp" />
     <ClCompile Include="source\CDmaFix.cpp" />
     <ClCompile Include="source\CGameMenu.cpp" />
     <ClCompile Include="source\CGameVersionManager.cpp" />
@@ -37,12 +37,12 @@
   <ItemGroup>
     <ClInclude Include="cleo_sdk\CLEO.h" />
     <ClInclude Include="source\CCodeInjector.h" />
+    <ClInclude Include="source\CDebugBridge.h" />
     <ClInclude Include="source\CMemory.h" />
     <ClInclude Include="source\CHookSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.h" />
     <ClInclude Include="source\CCustomScript.h" />
     <ClInclude Include="source\ScmFunction.h" />
-    <ClInclude Include="source\CDebug.h" />
     <ClInclude Include="source\CDmaFix.h" />
     <ClInclude Include="source\CGameMenu.h" />
     <ClInclude Include="source\CGameVersionManager.h" />

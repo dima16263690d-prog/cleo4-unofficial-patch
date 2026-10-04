@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "CSoundSystem.h"
 #include "bass.h"
-#include "CDebug.h"
+#include "CDebugBridge.h"
 #include "cleo.h"
 #include <windows.h>
 
