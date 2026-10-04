@@ -65,6 +65,9 @@ namespace CLEO
         }
 
         void DrawScriptStuff(char bBeforeFade);
+
+      private:
+        void DeleteWaitingScripts();
     };
 
     extern void(__thiscall * AddScriptToQueue)(CRunningScript *, CRunningScript **queue);
