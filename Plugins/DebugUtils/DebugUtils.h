@@ -34,6 +34,9 @@ private:
     std::ofstream m_coreLog;
     std::ofstream m_scriptLog;
     std::mutex m_coreMutex;
+    std::string m_lastCoreMessage;
+    size_t m_lastCoreRepeatCount = 0;
+    size_t m_corePendingWrites = 0;
 
     struct ScriptLogEvent
     {
@@ -52,6 +55,9 @@ private:
     std::atomic<bool> m_scriptWriterStop{ false };
     std::thread m_scriptWriterThread;
     std::vector<CrashInfoEntry> m_crashInfo;
+    std::string m_lastScriptMessage;
+    size_t m_lastScriptRepeatCount = 0;
+    std::set<uintptr_t> m_seenScripts;
 
     DWORD m_lastMemoryLogTick = 0;
     size_t m_scriptBytes = 0;
@@ -70,7 +76,9 @@ private:
 
     size_t m_commandLimit = 2000000;
     DWORD m_timeLimitSeconds = 5;
-    bool m_scriptLogEnabled = false;
+    bool m_scriptLogEnabled = true;
+    bool m_scriptOpcodeTrace = false;
+    bool m_scriptDeduplicate = true;
     bool m_legacyDebugOpcodes = false;
 
     std::set<uintptr_t> m_debugScripts;
@@ -99,6 +107,8 @@ private:
     void CloseLogs();
     void WriteCore(const char* format, ...);
     void WriteScript(const char* format, ...);
+    void FlushCoreRepeatLocked();
+    void FlushScriptRepeat();
     void QueueScriptLine(const char* line);
     void ScriptWriterLoop();
     void WriteExternal(const std::string& filename, bool timestamp, const char* message);
