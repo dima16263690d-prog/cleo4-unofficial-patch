@@ -1,5 +1,5 @@
 #pragma once
-#include "CDebug.h"
+#include "CDebugBridge.h"
 #include "CMemory.h"
 #include <vector>
 
