@@ -43,6 +43,9 @@ private:
     std::string m_lastCoreMessage;
     size_t m_lastCoreRepeatCount = 0;
     size_t m_corePendingWrites = 0;
+    size_t m_coreBytes = 0;
+    bool m_coreLimitNoticeWritten = false;
+    static constexpr size_t kCoreLogMaxBytes = 8u * 1024u;
 
     struct ScriptLogEvent
     {
@@ -137,6 +140,7 @@ private:
     void ScriptWriterLoop();
     void WriteExternal(const std::string& filename, bool timestamp, const char* message);
     void RotateScriptLogIfNeeded(size_t incomingBytes);
+    static const char* ExceptionName(DWORD code);
 
     void LoadCrashInfoList();
     const CrashInfoEntry* FindCrashInfo(DWORD address, const std::vector<DWORD>& backtrace) const;
