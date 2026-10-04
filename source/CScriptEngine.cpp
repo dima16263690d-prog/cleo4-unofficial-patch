@@ -203,7 +203,7 @@ namespace CLEO
             ++nativeCount;
         }
 
-        TRACE("[ENGINE] GameBegin: preserving native script order");
+        TRACE("[engine] GameBegin: preserving native script order");
 
         *activeThreadQueue = nullptr;
         LoadCustomScripts(bLoadMode);
@@ -217,11 +217,11 @@ namespace CLEO
         *activeThreadQueue = nativeHead;
 
         const size_t customCount = CustomScripts.size() + (CustomMission != nullptr ? 1u : 0u);
-        TRACE("[ENGINE] Queue composed: native=%u custom=%u total=%u",
+        TRACE("[engine] Queue composed: native=%u custom=%u total=%u",
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
             static_cast<unsigned>(nativeCount + customCount));
-        TRACE("[ENGINE] GameBegin complete: CLEO scripts appended after native scripts");
+        TRACE("[engine] GameBegin complete: CLEO scripts appended after native scripts");
         NotifyGameBegin();
     }
 
@@ -230,7 +230,7 @@ namespace CLEO
         if (!scriptsLoaded && CustomMission == nullptr && CustomScripts.empty())
             return;
 
-        TRACE("[ENGINE] GameEnd: stopping custom runtime");
+        TRACE("[engine] GameEnd: stopping custom runtime");
 
         // All custom shutdown goes through the central lifecycle path.
         RemoveAllCustomScripts();
@@ -1476,7 +1476,7 @@ namespace CLEO
 
         if (label != 0 && (parent == nullptr || !parent->IsCustom()))
         {
-            TRACE("[ENGINE] CreateCustomScript rejected: label child requires a custom parent");
+            TRACE("[engine] CreateCustomScript rejected: label child requires a custom parent");
             if (fromThread)
                 SetScriptCondResult(fromThread, false);
             if (fromThread)
@@ -1501,7 +1501,7 @@ namespace CLEO
             if (fromThread)
                 SkipUnusedScriptParameters(fromThread);
 
-            TRACE("[ENGINE] CreateCustomScript failed: %s", scriptName);
+            TRACE("[engine] CreateCustomScript failed: %s", scriptName);
             _chdir(cwd);
             return nullptr;
         }
@@ -1666,7 +1666,7 @@ namespace CLEO
 
     void CScriptEngine::RemoveAllCustomScripts(void)
     {
-        TRACE("[ENGINE] RemoveAllCustomScripts");
+        TRACE("[engine] RemoveAllCustomScripts");
 
         InactiveScriptHashes.clear();
 
