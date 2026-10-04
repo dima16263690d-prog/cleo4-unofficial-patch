@@ -956,6 +956,13 @@ void DebugUtils::WriteCoreMemorySummary()
             ++nativeCount;
     }
 
+    const long long queueDelta = m_memoryBaselineReady
+        ? static_cast<long long>(queueCount) - static_cast<long long>(m_lastMemoryQueueCount)
+        : 0;
+    const long long customDelta = m_memoryBaselineReady
+        ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
+        : 0;
+
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
 
@@ -964,16 +971,25 @@ void DebugUtils::WriteCoreMemorySummary()
         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
         sizeof(pmc)))
     {
+        const long long privateDelta = m_memoryBaselineReady
+            ? static_cast<long long>(pmc.PrivateUsage) - static_cast<long long>(m_lastPrivateUsage)
+            : 0;
+
         WriteMemory(
-            "[memory] queue=%u native=%u custom=%u working_set=%I64u peak_working_set=%I64u private_usage=%I64u pagefile_usage=%I64u",
+            "[memory] queue=%u queue_delta=%I64d native=%u custom=%u custom_delta=%I64d working_set=%I64u peak_working_set=%I64u private_usage=%I64u private_delta=%I64d pagefile_usage=%I64u",
             static_cast<unsigned>(queueCount),
+            queueDelta,
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
+            customDelta,
             static_cast<unsigned __int64>(pmc.WorkingSetSize),
             static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
             static_cast<unsigned __int64>(pmc.PrivateUsage),
+            privateDelta,
             static_cast<unsigned __int64>(pmc.PagefileUsage)
         );
+
+        m_lastPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
     }
 
     MEMORYSTATUSEX memory{};
@@ -989,6 +1005,10 @@ void DebugUtils::WriteCoreMemorySummary()
             static_cast<unsigned long long>(memory.ullTotalVirtual)
         );
     }
+
+    m_lastMemoryQueueCount = queueCount;
+    m_lastMemoryCustomCount = customCount;
+    m_memoryBaselineReady = true;
 }
 void DebugUtils::LoadCrashInfoList()
 {
@@ -1381,6 +1401,10 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_breakpoints.clear();
     s_instance->m_keysReleased = true;
     s_instance->m_lastMemoryLogTick = GetTickCount();
+    s_instance->m_lastPrivateUsage = 0;
+    s_instance->m_lastMemoryQueueCount = 0;
+    s_instance->m_lastMemoryCustomCount = 0;
+    s_instance->m_memoryBaselineReady = false;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->WriteCoreQueueSnapshot("GameBegin");
     s_instance->m_seenScripts.clear();
