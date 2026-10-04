@@ -10,6 +10,11 @@
 #include <sstream>
 #include <CTimer.h>
 
+// plugin-sdk declares this GTA SA 1.0 US static reference but does not
+// provide a definition in the CLEO/DebugUtils link. Resolve it directly to
+// the verified game global used by CTimer::m_CodePause.
+bool& CTimer::m_CodePause = *(bool*)0xB7CB48;
+
 DebugUtils* DebugUtils::s_instance = nullptr;
 
 namespace
