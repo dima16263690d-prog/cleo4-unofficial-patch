@@ -18,11 +18,35 @@ cleo\cleo_plugins\DebugUtils.ini
 
 DebugUtils owns all diagnostic files:
 
-- cleo\debug\cleo_core.log
-- cleo\debug\cleo_script.log
-- cleo\debug\gta_crashinfo.log
+- cleo\debug\cleo_core.log — ядро, API, lifecycle, ошибки
+- cleo\debug\cleo_script.log — скрипты, 0AB1/0AB2 и opcode checks
+- cleo\debug\cleo_memory.log — память и VirtualProtect
+- cleo\debug\cleo_diagnostic.log — низкоуровневая диагностика, по умолчанию выключена
+- cleo\debug\gta_crashinfo.log — аварийные отчёты
 
 The old cleo.log debug writer is removed from the core.
+
+## Log architecture
+
+Each log uses ordered visual sections instead of one mixed stream:
+
+//////////////////////// MODULE ////////////////////////
+//////////////////////// GAME / API ////////////////////////
+//////////////////////// SCRIPT THREAD ////////////////////////
+
+cleo_script.log:
+//////////////////////// SCRIPTS ////////////////////////
+//////////////////////// SCRIPT EXECUTION ////////////////////////
+//////////////////////// OPCODE CHECK ////////////////////////
+//////////////////////// FUNCTION CALL CHECK ////////////////////////
+
+cleo_memory.log:
+//////////////////////// MEMORY ////////////////////////
+
+cleo_diagnostic.log:
+//////////////////////// DIAGNOSTIC ////////////////////////
+
+Repeated identical lines are collapsed into a single [REPEAT] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1.
 
 ## Performance model
 
@@ -35,7 +59,14 @@ Script/opcode tracing is the expensive mode and is disabled by default. When ena
 ## Configuration
 
 [DebugUtils.ScriptLog]
-Enabled=0
+Enabled=1
+OpcodeTrace=0
+FunctionTrace=0
+Deduplicate=1
+
+[DebugUtils.Logs]
+Memory=1
+Diagnostic=0
 
 [DebugUtils.Limits]
 Command=2000000
