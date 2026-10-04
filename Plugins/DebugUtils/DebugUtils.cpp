@@ -8,6 +8,7 @@
 #include <cstring>
 #include <chrono>
 #include <cstddef>
+#include <fstream>
 #include <sstream>
 #include <CTimer.h>
 
@@ -305,6 +306,36 @@ std::string DebugUtils::ConfigPath() const
 void DebugUtils::LoadConfig()
 {
     const std::string path = ConfigPath();
+
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        std::ofstream config(path, std::ios::out | std::ios::trunc);
+
+        if (config.is_open())
+        {
+            config << "; DebugUtils configuration\r\n";
+            config << "; Changes are loaded when GTA starts.\r\n";
+            config << "; 1 = enabled, 0 = disabled.\r\n\r\n";
+
+            config << "[DebugUtils.General]\r\n";
+            config << "LegacyDebugOpcodes=0\r\n\r\n";
+
+            config << "[DebugUtils.Limits]\r\n";
+            config << "Command=2000000\r\n";
+            config << "Time=5\r\n\r\n";
+
+            config << "[DebugUtils.ScriptLog]\r\n";
+            config << "Enabled=1\r\n";
+            config << "OpcodeTrace=0\r\n";
+            config << "FunctionTrace=0\r\n";
+            config << "Deduplicate=1\r\n\r\n";
+
+            config << "[DebugUtils.Logs]\r\n";
+            config << "Memory=1\r\n";
+            config << "MemoryTrace=0\r\n";
+            config << "Diagnostic=0\r\n";
+        }
+    }
 
     m_commandLimit = static_cast<size_t>(
         GetPrivateProfileIntA(
