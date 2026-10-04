@@ -604,6 +604,8 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
 
 void DebugUtils::WriteCoreHeader()
 {
+    WriteCore("//////////////////////// MODULE ////////////////////////");
+
     HMODULE cleo = GetModuleHandleA("CLEO.asi");
     MODULEINFO info{};
     if (cleo && GetModuleInformation(GetCurrentProcess(), cleo, &info, sizeof(info)))
@@ -615,6 +617,7 @@ void DebugUtils::WriteCoreHeader()
         );
     }
 
+    WriteCore("//////////////////////// GAME / API ////////////////////////");
     WriteCore("[GAME] GTA SA version enum=%d", CLEO_GetGameVersion());
     WriteCore("[API] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
     WriteCore("[API] CLEO_RegisterOpcode=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterOpcode)));
@@ -627,6 +630,7 @@ void DebugUtils::WriteCoreHeader()
 
 void DebugUtils::WriteCoreThreadLayout()
 {
+    WriteCore("//////////////////////// SCRIPT THREAD ////////////////////////");
     WriteCore(
         "[THREAD_LAYOUT] sizeof(CScriptThread)=%u next=0x00 prev=0x04 name=0x08 base=0x10 ip=0x14 "
         "stack=0x18 sp=0x38 tls=0x3C active=0xC4 cond=0xC5 external=0xC7 wake=0xCC logical=0xD0 "
