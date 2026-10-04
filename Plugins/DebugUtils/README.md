@@ -46,7 +46,7 @@ cleo_memory.log:
 cleo_diagnostic.log:
 //////////////////////// DIAGNOSTIC ////////////////////////
 
-Repeated identical lines are collapsed into a single [REPEAT] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1.
+Repeated identical lines are collapsed into a single [REPEAT] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1. Low-level memory protection tracing is disabled unless MemoryTrace=1; periodic memory summaries remain enabled.
 
 ## Performance model
 
@@ -66,6 +66,7 @@ Deduplicate=1
 
 [DebugUtils.Logs]
 Memory=1
+MemoryTrace=0
 Diagnostic=0
 
 [DebugUtils.Limits]
