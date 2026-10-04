@@ -13,6 +13,7 @@ namespace CLEO
     {
         std::list<HMODULE> plugins;
         std::set<std::string> loadedPluginPaths;
+        bool initialized = false;
 
         void LoadDirectory(const char* directory, const char* mask)
         {
@@ -42,20 +43,24 @@ namespace CLEO
         }
 
     public:
-        CPluginSystem()
-        {
-            CreateDirectoryA("cleo", nullptr);
-            CreateDirectoryA("cleo\\cleo_plugins", nullptr);
+        CPluginSystem() = default;
 
-            // Load DebugUtils first so the optional diagnostic backend is
-            // attached before other optional plugins start their work.
+        void LoadPlugins()
+        {
+            if (initialized)
+                return;
+
+            initialized = true;
+
+            // CLEO 5-style plugin location.
+            // Keep DebugUtils first because the diagnostic backend is used
+            // by the optional plugins that may load after it.
             LoadDirectory("cleo/cleo_plugins", "DebugUtils.cleo");
+            LoadDirectory("cleo/cleo_plugins", "SA.*.cleo");
+            LoadDirectory("cleo/cleo_plugins", "*.cleo");
 
             // Keep legacy CLEO 4 plugin placement working.
             LoadDirectory("cleo", "*.cleo");
-
-            // New plugins use the CLEO 5-style location.
-            LoadDirectory("cleo/cleo_plugins", "*.cleo");
         }
 
         ~CPluginSystem()
