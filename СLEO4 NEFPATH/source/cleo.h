@@ -1,0 +1,80 @@
+#ifndef __CLEO_H
+#define __CLEO_H
+
+#include "CCodeInjector.h"
+#include "CHookSystem.h"
+#include "CGameVersionManager.h"
+#include "CDebug.h"
+#include "CDmaFix.h"
+#include "CGameMenu.h"
+#include "CPluginSystem.h"
+#include "CScriptEngine.h"
+#include "CCustomOpcodeSystem.h"
+#include "CTextManager.h"
+#include "CSoundSystem.h"
+#include "FileEnumerator.h"
+#include "crc32.h"
+
+namespace CLEO
+{
+    class CCleoInstance
+    {
+        bool			m_bStarted;
+
+    public:
+        CCleoInstance()
+        {
+            m_bStarted = false;
+        }
+
+        virtual ~CCleoInstance()
+        {
+            Stop();
+        }
+
+        void(__cdecl * UpdateGameLogics)();
+        static void __cdecl OnUpdateGameLogics();
+
+        void Start()
+        {
+            CreateDirectory("cleo", NULL);
+            CreateDirectory("cleo/cleo_saves", NULL);
+            CreateDirectory("cleo/cleo_text", NULL);
+            CodeInjector.OpenReadWriteAccess();		// must do this earlier to ensure plugins write access on init
+            GameMenu.Inject(CodeInjector);
+            DmaFix.Inject(CodeInjector);
+            UpdateGameLogics = VersionManager.TranslateMemoryAddress(MA_UPDATE_GAME_LOGICS_FUNCTION);
+            HookSystem.InstallCall(
+                CodeInjector,
+                "UpdateGameLogics",
+                VersionManager.TranslateMemoryAddress(MA_CALL_UPDATE_GAME_LOGICS),
+                (size_t)&OnUpdateGameLogics
+            );
+            TextManager.Inject(CodeInjector);
+            SoundSystem.Inject(CodeInjector);
+            OpcodeSystem.Inject(CodeInjector);
+            ScriptEngine.Inject(CodeInjector);
+        }
+
+        void Stop()
+        {
+            if (!m_bStarted) return;
+        }
+
+        CDmaFix					DmaFix;
+        CGameMenu				GameMenu;
+        CHookSystem				HookSystem;
+        CCodeInjector			CodeInjector;
+        CGameVersionManager		VersionManager;
+        CScriptEngine			ScriptEngine;
+        CTextManager				TextManager;
+        CCustomOpcodeSystem		OpcodeSystem;
+        CSoundSystem				SoundSystem;
+        CPluginSystem			PluginSystem;
+        //CLegacy					Legacy;
+    };
+
+    CCleoInstance& GetInstance();
+}
+
+#endif
