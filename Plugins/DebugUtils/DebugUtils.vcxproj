@@ -79,6 +79,9 @@
     <None Include="DebugUtils.ini" />
     <None Include="CrashInfoSource.txt" />
     <None Include="README.md" />
+    <None Include="CrashInfo\EN-CrashList.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h" />
