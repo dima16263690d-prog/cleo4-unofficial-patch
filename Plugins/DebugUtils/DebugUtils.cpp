@@ -803,7 +803,7 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
     if (strncmp(message, "[SCRIPT] ", 9) == 0)
     {
         const char* payload = message + 9;
-        if (strncmp(payload, "[FUNCTION]", 10) == 0 && !s_instance->m_functionTrace)
+        if (strncmp(payload, "[function]", 10) == 0 && !s_instance->m_functionTrace)
             return;
 
         s_instance->WriteScript("%s", payload);
@@ -849,21 +849,21 @@ void DebugUtils::WriteCoreHeader()
     if (cleo && GetModuleInformation(GetCurrentProcess(), cleo, &info, sizeof(info)))
     {
         WriteCore(
-            "[MODULE] CLEO.asi base=%p size=0x%08X",
+            "[module] CLEO.asi base=%p size=0x%08X",
             info.lpBaseOfDll,
             static_cast<unsigned>(info.SizeOfImage)
         );
     }
 
     WriteCore("//////////////////////// game / api ////////////////////////");
-    WriteCore("[GAME] GTA SA version enum=%d", CLEO_GetGameVersion());
-    WriteCore("[API] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
-    WriteCore("[API] CLEO_RegisterOpcode=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterOpcode)));
-    WriteCore("[API] CLEO_CreateCustomScript=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_CreateCustomScript)));
-    WriteCore("[API] CLEO_GetLastCreatedCustomScript=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetLastCreatedCustomScript)));
-    WriteCore("[API] CLEO_RegisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterCallback)));
-    WriteCore("[API] CLEO_UnregisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_UnregisterCallback)));
-    WriteCore("[GTA] pActiveScripts address=0x%08X", kGtaSa10ActiveScripts);
+    WriteCore("[game] GTA SA version enum=%d", CLEO_GetGameVersion());
+    WriteCore("[api] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
+    WriteCore("[api] CLEO_RegisterOpcode=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterOpcode)));
+    WriteCore("[api] CLEO_CreateCustomScript=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_CreateCustomScript)));
+    WriteCore("[api] CLEO_GetLastCreatedCustomScript=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetLastCreatedCustomScript)));
+    WriteCore("[api] CLEO_RegisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterCallback)));
+    WriteCore("[api] CLEO_UnregisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_UnregisterCallback)));
+    WriteCore("[gta] pActiveScripts address=0x%08X", kGtaSa10ActiveScripts);
 }
 
 void DebugUtils::WriteCoreThreadLayout()
@@ -1400,7 +1400,7 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteCore("//////////////////////// game end ////////////////////////");
     s_instance->WriteCoreMemorySummary();
     s_instance->FlushScriptRepeat();
-    s_instance->WriteScript("[GAME_END] runtime stopped");
+    s_instance->WriteScript("[game_end] runtime stopped");
 }
 
 void __stdcall DebugUtils::OnGameProcessBefore()
@@ -1556,7 +1556,7 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
     {
         s_instance->WriteScript(
-            "[OPCODE_BEFORE] script='%.8s' ptr=%p opcode=0x%04X group=%u not=%d ip=%p off=0x%zX",
+            "[opcode_before] script='%.8s' ptr=%p opcode=0x%04X group=%u not=%d ip=%p off=0x%zX",
             thread->threadName,
             thread,
             normalized,
@@ -1813,7 +1813,7 @@ int __stdcall DebugUtils::OnScriptOpcodeAfter(CScriptThread* thread, DWORD opcod
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
     {
         s_instance->WriteScript(
-            "[OPCODE_AFTER] script='%.8s' ptr=%p opcode=0x%04X result=%d cond=%d ip=%p off=0x%zX",
+            "[opcode_after] script='%.8s' ptr=%p opcode=0x%04X result=%d cond=%d ip=%p off=0x%zX",
             thread->threadName,
             thread,
             opcode & 0x7FFF,
@@ -1847,7 +1847,7 @@ void __stdcall DebugUtils::OnScriptDeleted(CScriptThread* thread)
     );
 
     s_instance->WriteCore(
-        "[THREAD_DELETE] ptr=%p name='%.8s' base=%p ip=%p off=0x%zX",
+        "[thread_delete] ptr=%p name='%.8s' base=%p ip=%p off=0x%zX",
         thread,
         thread->threadName,
         thread->baseIp,
