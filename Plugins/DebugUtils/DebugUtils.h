@@ -89,6 +89,7 @@ private:
     bool m_functionTrace = false;
     bool m_scriptDeduplicate = true;
     bool m_memoryLogEnabled = true;
+    bool m_memoryTrace = false;
     bool m_diagnosticLogEnabled = false;
     bool m_legacyDebugOpcodes = false;
 
