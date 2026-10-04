@@ -1121,15 +1121,21 @@ void DebugUtils::WriteCoreMemorySummary()
             ? static_cast<long long>(pmc.PrivateUsage) - static_cast<long long>(m_lastPrivateUsage)
             : 0;
 
-        const size_t cleoKnownBytes =
-            GetModuleImageSize(GetModuleHandleA("CLEO.asi")) +
-            customObjectBytes +
-            customCodeBytes;
+        const size_t cleoImage = GetModuleImageSize(GetModuleHandleA("CLEO.asi"));
 
         size_t debugUtilsImage = 0;
         debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.cleo"));
         if (debugUtilsImage == 0)
             debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.dll"));
+
+        // Known CLEO footprint only: loaded images plus active custom-script
+        // object storage and unique custom code buffers. GTA-owned allocations
+        // outside these measured categories are intentionally not claimed here.
+        const size_t cleoKnownBytes =
+            cleoImage +
+            debugUtilsImage +
+            customObjectBytes +
+            customCodeBytes;
 
         WriteMemory(
             "[memory] process_private=%I64u delta=%I64d working_set=%I64u peak_working_set=%I64u pagefile=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
@@ -1144,7 +1150,7 @@ void DebugUtils::WriteCoreMemorySummary()
             m_memoryBaselineReady
                 ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
                 : 0,
-            static_cast<unsigned>(GetModuleImageSize(GetModuleHandleA("CLEO.asi"))),
+            static_cast<unsigned>(cleoImage),
             static_cast<unsigned>(debugUtilsImage),
             static_cast<unsigned>(customObjectBytes),
             static_cast<unsigned>(customCodeBytes),
