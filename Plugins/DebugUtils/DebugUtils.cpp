@@ -130,7 +130,7 @@ DebugUtils::DebugUtils()
     }
 
     if (m_memoryLogEnabled)
-        WriteMemory("//////////////////////// MEMORY ////////////////////////");
+        WriteMemory("//////////////////////// memory ////////////////////////");
 
     if (m_diagnosticLogEnabled)
         WriteDiagnostic("//////////////////////// diagnostic ////////////////////////");
@@ -1411,10 +1411,10 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastScriptMessage.clear();
     s_instance->m_lastScriptRepeatCount = 0;
     s_instance->WriteScript("//////////////////////// script execution ////////////////////////");
-    if (s_instance->m_scriptOpcodeTrace)
-        s_instance->WriteScript("//////////////////////// opcode check ////////////////////////");
     if (s_instance->m_functionTrace)
         s_instance->WriteScript("//////////////////////// function call check (0AB1 / 0AB2) ////////////////////////");
+    if (s_instance->m_scriptOpcodeTrace)
+        s_instance->WriteScript("//////////////////////// opcode check ////////////////////////");
     s_instance->WriteCoreMemorySummary();
 }
 
