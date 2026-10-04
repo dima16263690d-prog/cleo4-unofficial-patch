@@ -433,6 +433,10 @@ void DebugUtils::FlushCoreRepeatLocked()
         m_coreLog.write(line, static_cast<std::streamsize>(bytes));
         m_coreBytes += bytes;
     }
+    else
+    {
+        WriteCoreLimitNoticeLocked();
+    }
 
     m_lastCoreMessage.clear();
     m_lastCoreRepeatCount = 0;
@@ -527,12 +531,41 @@ void DebugUtils::WriteCore(const char* format, ...)
         return;
     }
 
-    // Hard stop: core log can never grow past 8 KiB.
-    // Do not append a marker here because even the marker could exceed the cap.
-    m_coreLimitNoticeWritten = true;
+    WriteCoreLimitNoticeLocked();
     m_lastCoreMessage.clear();
     m_lastCoreRepeatCount = 0;
 }
+void DebugUtils::WriteCoreLimitNoticeLocked()
+{
+    if (m_coreLimitNoticeWritten || !m_coreLog.is_open() || m_coreBytes >= kCoreLogMaxBytes)
+    {
+        m_coreLimitNoticeWritten = true;
+        return;
+    }
+
+    const char* notice = " [core] log_limit=8192_bytes";
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    char line[128];
+    sprintf_s(
+        line, sizeof(line),
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u%s\\n",
+        t.wYear, t.wMonth, t.wDay,
+        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        notice
+    );
+
+    const size_t bytes = strlen(line);
+    if (m_coreBytes + bytes <= kCoreLogMaxBytes)
+    {
+        m_coreLog.write(line, static_cast<std::streamsize>(bytes));
+        m_coreBytes += bytes;
+    }
+
+    m_coreLimitNoticeWritten = true;
+}
+
 void DebugUtils::RotateScriptLogIfNeeded(size_t incomingBytes)
 {
     if (m_scriptBytes + incomingBytes <= kScriptLogMaxBytes)
@@ -902,29 +935,32 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
     }
 
     // Script lifecycle belongs to the script log, not the 8 KiB core log.
-    if (strstr(message, "Loading custom script ") != nullptr ||
-        strstr(message, "Registering custom script") != nullptr ||
-        strstr(message, "Unregistering custom script") != nullptr ||
-        strstr(message, "Deleting inactive script") != nullptr ||
-        strstr(message, "Starting new custom script") != nullptr ||
-        strstr(message, "[0A92] ") != nullptr)
+    if (level == CLEO_DEBUG_INFO)
     {
-        s_instance->WriteScript("[lifecycle] %s", message);
-        return;
-    }
+        if (strstr(message, "Loading custom script ") != nullptr ||
+            strstr(message, "Registering custom script") != nullptr ||
+            strstr(message, "Unregistering custom script") != nullptr ||
+            strstr(message, "Deleting inactive script") != nullptr ||
+            strstr(message, "Starting new custom script") != nullptr ||
+            strstr(message, "[0A92] ") != nullptr)
+        {
+            s_instance->WriteScript("[lifecycle] %s", message);
+            return;
+        }
 
-    // High-volume initialization details are not core diagnostics.
-    if (strncmp(message, "[PluginSystem] ", 15) == 0 ||
-        strncmp(message, "[HookSystem] ", 13) == 0 ||
-        strncmp(message, "Injecting ", 10) == 0 ||
-        strncmp(message, "Replacing call: ", 16) == 0 ||
-        strncmp(message, "Found sound device ", 19) == 0 ||
-        strncmp(message, "On system found ", 16) == 0 ||
-        strncmp(message, "Creating main window", 20) == 0 ||
-        strncmp(message, "Floating-point audio supported!", 32) == 0 ||
-        strncmp(message, "Audio hardware acceleration", 27) == 0)
-    {
-        return;
+        // High-volume initialization details are not core diagnostics.
+        if (strncmp(message, "[PluginSystem] ", 15) == 0 ||
+            strncmp(message, "[HookSystem] ", 13) == 0 ||
+            strncmp(message, "Injecting ", 10) == 0 ||
+            strncmp(message, "Replacing call: ", 16) == 0 ||
+            strncmp(message, "Found sound device ", 19) == 0 ||
+            strncmp(message, "On system found ", 16) == 0 ||
+            strncmp(message, "Creating main window", 20) == 0 ||
+            strncmp(message, "Floating-point audio supported!", 32) == 0 ||
+            strncmp(message, "Audio hardware acceleration", 27) == 0)
+        {
+            return;
+        }
     }
 
     const char* levelName = "info";
@@ -1096,10 +1132,12 @@ void DebugUtils::WriteCoreMemorySummary()
             debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.dll"));
 
         WriteMemory(
-            "[memory] process_private=%I64u delta=%I64d working_set=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
+            "[memory] process_private=%I64u delta=%I64d working_set=%I64u peak_working_set=%I64u pagefile=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
             static_cast<unsigned __int64>(pmc.PrivateUsage),
             privateDelta,
             static_cast<unsigned __int64>(pmc.WorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+            static_cast<unsigned __int64>(pmc.PagefileUsage),
             static_cast<unsigned>(queueCount),
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
@@ -1302,9 +1340,10 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     sprintf_s(
         line, sizeof(line),
-        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X address=0x%08X module=%s pid=%u tid=%u",
+        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X type=%s address=0x%08X module=%s pid=%u tid=%u",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         info->ExceptionRecord->ExceptionCode,
+        ExceptionName(info->ExceptionRecord->ExceptionCode),
         faultAddress,
         faultModule.c_str(),
         GetCurrentProcessId(),
