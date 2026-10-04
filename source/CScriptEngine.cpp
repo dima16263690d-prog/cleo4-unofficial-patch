@@ -2,7 +2,6 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "ScmFunction.h"
-#include "ScriptUtils.h"
 #include <cstdint>
 
 namespace CLEO
@@ -1456,7 +1455,7 @@ namespace CLEO
             if (fromThread)
                 SetScriptCondResult(fromThread, false);
             if (fromThread)
-                SkipUnusedVarArgs(fromThread);
+                SkipUnusedParameters(fromThread);
             return nullptr;
         }
 
@@ -1475,7 +1474,7 @@ namespace CLEO
                 delete cs;
 
             if (fromThread)
-                SkipUnusedVarArgs(fromThread);
+                SkipUnusedParameters(fromThread);
 
             TRACE("[ENGINE] CreateCustomScript failed: %s", fileName.c_str());
             return nullptr;
