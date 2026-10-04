@@ -25,7 +25,9 @@ public:
 private:
     struct CrashInfoEntry
     {
-        DWORD address = 0;
+        std::vector<DWORD> errorAddresses;
+        bool wildcardError = false;
+        std::vector<DWORD> backtraceAddresses;
         std::string description;
     };
 
@@ -137,7 +139,7 @@ private:
     void RotateScriptLogIfNeeded(size_t incomingBytes);
 
     void LoadCrashInfoList();
-    const CrashInfoEntry* FindCrashInfo(DWORD address) const;
+    const CrashInfoEntry* FindCrashInfo(DWORD address, const std::vector<DWORD>& backtrace) const;
 
     void WriteCoreHeader();
     void WriteCoreThreadLayout();
