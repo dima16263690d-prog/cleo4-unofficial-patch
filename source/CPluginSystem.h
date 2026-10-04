@@ -16,11 +16,6 @@ namespace CLEO
         std::set<std::string> loadedPluginNames;
         bool initialized = false;
 
-        static bool SameName(const std::string& a, const std::string& b)
-        {
-            return _stricmp(a.c_str(), b.c_str()) == 0;
-        }
-
         void LoadDirectory(const char* directory, const char* prefix, const char* extension)
         {
             char searchPath[MAX_PATH] = {};
@@ -31,8 +26,6 @@ namespace CLEO
                 files.emplace_back(libName);
             });
 
-            // Keep plugin discovery deterministic. CLEO 5 builds its plugin
-            // list first and only then loads it, so discovery order matters.
             std::sort(files.begin(), files.end(),
                 [](const std::string& a, const std::string& b) {
                     return _stricmp(a.c_str(), b.c_str()) < 0;
@@ -43,9 +36,8 @@ namespace CLEO
                 char libPath[MAX_PATH] = {};
                 sprintf_s(libPath, sizeof(libPath), "%s/%s", directory, libName.c_str());
 
-                // CLEO 5 treats the plugin filename as the identity. This
-                // prevents the same plugin from being loaded twice when it
-                // exists in both cleo_plugins and the legacy cleo directory.
+                // A plugin filename is its identity. This prevents the same
+                // plugin from being loaded twice by overlapping scan groups.
                 if (std::find_if(loadedPluginNames.begin(), loadedPluginNames.end(),
                     [&libName](const std::string& name) {
                         return _stricmp(name.c_str(), libName.c_str()) == 0;
@@ -57,9 +49,6 @@ namespace CLEO
 
                 loadedPluginNames.insert(libName);
                 TRACE("[PluginSystem] Found plugin %s", libPath);
-
-                // Store the path now. Actual loading is deliberately deferred
-                // until all four CLEO 5-style scan groups are collected.
                 pluginPaths.emplace_back(libPath);
             }
         }
@@ -79,18 +68,22 @@ namespace CLEO
             loadedPluginNames.clear();
 
             TRACE("");
-            TRACE("[PluginSystem] Listing CLEO plugins:");
+            TRACE("[PluginSystem] Listing CLEO plugins from cleo/cleo_plugins:");
 
-            // Same discovery groups as CLEO 5:
-            // 1) SA.*.cleo in cleo_plugins
-            // 2) legacy *.cleo in cleo_plugins
-            // 3) legacy *.cleo in cleo
+            // All native CLEO plugins belong to ONE dedicated directory.
+            // This deliberately keeps *.cleo separate from *.cs/*.cs3/*.cs4.
+            //
+            // First collect SA.*.cleo, then the remaining *.cleo files.
+            // CLEO+ (CLEO+.cleo) is therefore loaded from cleo/cleo_plugins
+            // just like every other native CLEO plugin.
             LoadDirectory("cleo/cleo_plugins", "SA.", ".cleo");
             LoadDirectory("cleo/cleo_plugins", "", ".cleo");
-            LoadDirectory("cleo", "", ".cleo");
 
-            // CLEO 5 loads the collected list in reverse order so that
-            // newer CLEO plugins can overwrite handlers from legacy plugins.
+            // Do not scan cleo/*.cleo. The CLEO root is reserved for scripts
+            // and resource directories; plugins must live in cleo_plugins.
+
+            // Load in reverse discovery order, matching the CLEO 5 override
+            // principle while keeping discovery deterministic.
             for (auto it = pluginPaths.rbegin(); it != pluginPaths.rend(); ++it)
             {
                 TRACE("");
@@ -118,14 +111,13 @@ namespace CLEO
             if (!initialized)
                 return;
 
-            TRACE("[PluginSystem] Unloading plugins...");
+            TRACE("[PluginSystem] Unloading CLEO plugins...");
 
-            // Plugins were loaded in reverse discovery order. Unload in the
-            // same order as CLEO 5 to preserve dependency/override symmetry.
-            for (HMODULE hlib : plugins)
+            // Reverse the actual load order during shutdown.
+            for (auto it = plugins.rbegin(); it != plugins.rend(); ++it)
             {
-                if (hlib)
-                    FreeLibrary(hlib);
+                if (*it)
+                    FreeLibrary(*it);
             }
 
             plugins.clear();
