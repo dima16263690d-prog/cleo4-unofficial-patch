@@ -1310,7 +1310,7 @@ OpcodeResult WINAPI GENERATE_RANDOM_INT_IN_RANGE_WITH_SEED(CScriptThread* thread
 	unsigned int resetSeed = rand() / 2;
 	srand(seed);
 	CLEO_SetIntOpcodeParam(thread, RandomNumberInRange<int>(min, max));
-	srand((time(0) / 2) + resetSeed); // reset
+	srand(static_cast<unsigned int>((time(0) / 2) + resetSeed)); // reset
 	return OR_CONTINUE;
 }
  
@@ -1931,7 +1931,7 @@ OpcodeResult WINAPI SET_CAMERA_ROTATION_INPUT_VALUES(CScriptThread* thread)
 
 OpcodeResult WINAPI SET_ON_MISSION(CScriptThread* thread)
 {
-	*(scriptSpace + CTheScripts::OnAMissionFlag) = CLEO_GetIntOpcodeParam(thread);;
+	*(scriptSpace + CTheScripts::OnAMissionFlag) = static_cast<char>(CLEO_GetIntOpcodeParam(thread));
 	return OR_CONTINUE;
 }
 
