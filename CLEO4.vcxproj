@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\CCodeInjector.cpp" />
+    <ClCompile Include="source\CDebugCallbackSystem.cpp" />
     <ClCompile Include="source\CDebugBridge.cpp" />
     <ClCompile Include="source\CMemory.cpp" />
     <ClCompile Include="source\CHookSystem.cpp" />
