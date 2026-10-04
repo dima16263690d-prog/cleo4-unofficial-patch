@@ -635,8 +635,14 @@ namespace CLEO
 
     void __fastcall HOOK_ProcessScript(CCustomScript * pScript, int)
     {
-        if (pScript->IsCustom()) pScript->Process();
-        else ProcessScript(pScript);
+        // CLEO 5 retries GameBegin from the script-processing hook because
+        // pActiveScripts may not be ready during the initial SCM callbacks.
+        GetInstance().ScriptEngine.GameBegin();
+
+        if (pScript->IsCustom())
+            pScript->Process();
+        else
+            ProcessScript(pScript);
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)
