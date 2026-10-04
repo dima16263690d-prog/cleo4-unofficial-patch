@@ -66,7 +66,8 @@ namespace CLEO
 
         void DrawScriptStuff(char bBeforeFade);
 
-      private:
+        // CLEO 5 performs deferred destruction at the beginning of every
+        // ProcessScript hook. Keep the same lifecycle boundary here.
         void DeleteWaitingScripts();
     };
 
