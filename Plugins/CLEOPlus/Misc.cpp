@@ -610,7 +610,7 @@ OpcodeResult WINAPI DOES_CAR_HAVE_PART_NODE(CScriptThread* thread)
 OpcodeResult WINAPI GET_CURRENT_CHAR_WEAPONINFO(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	eWeaponType weaponType = ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_eWeaponType;
+	eWeaponType weaponType = ped->m_aWeapons[ped->m_nSelectedWepSlot].m_eWeaponType;
 	CWeaponInfo *weaponInfo = CWeaponInfo::GetWeaponInfo(weaponType, ped->GetWeaponSkill(weaponType));
 	CLEO_SetIntOpcodeParam(thread, (DWORD)weaponInfo);
 	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(weaponInfo != nullptr);
@@ -646,7 +646,7 @@ OpcodeResult WINAPI GET_WEAPONINFO(CScriptThread* thread)
 OpcodeResult WINAPI GET_WEAPONINFO_MODELS(CScriptThread* thread)
 {
 	CWeaponInfo *weaponInfo = (CWeaponInfo *)CLEO_GetIntOpcodeParam(thread);
-	int modelA = weaponInfo->m_nModelId1;
+	int modelA = weaponInfo->m_nModelId;
 	int modelB = weaponInfo->m_nModelId2;
 	CLEO_SetIntOpcodeParam(thread, modelA);
 	CLEO_SetIntOpcodeParam(thread, modelB);
@@ -691,14 +691,14 @@ OpcodeResult WINAPI GET_WEAPONINFO_SLOT(CScriptThread* thread)
 OpcodeResult WINAPI GET_CHAR_WEAPON_STATE(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nState);
+	CLEO_SetIntOpcodeParam(thread, ped->m_aWeapons[ped->m_nSelectedWepSlot].m_nState);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI GET_CHAR_WEAPON_CLIP(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nAmmoInClip);
+	CLEO_SetIntOpcodeParam(thread, ped->m_aWeapons[ped->m_nSelectedWepSlot].m_nAmmoInClip);
 	return OR_CONTINUE;
 }
 
@@ -733,21 +733,21 @@ OpcodeResult WINAPI GET_CAR_COLLISION_LIGHTING(CScriptThread* thread)
 OpcodeResult WINAPI IS_CHAR_REALLY_IN_AIR(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!ped->m_nPhysicalFlags.bOnSolidSurface && !ped->m_nPhysicalFlags.bSubmergedInWater);
+	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!ped->bOnSolidSurface && !ped->bSubmergedInWater);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI IS_CAR_REALLY_IN_AIR(CScriptThread* thread)
 {
 	CVehicle *vehicle = CPools::GetVehicle(CLEO_GetIntOpcodeParam(thread));
-	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!vehicle->m_nPhysicalFlags.bOnSolidSurface && !vehicle->m_nPhysicalFlags.bSubmergedInWater);
+	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!vehicle->bOnSolidSurface && !vehicle->bSubmergedInWater);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI IS_OBJECT_REALLY_IN_AIR(CScriptThread* thread)
 {
 	CObject *object = CPools::GetObject(CLEO_GetIntOpcodeParam(thread));
-	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!object->m_nPhysicalFlags.bOnSolidSurface && !object->m_nPhysicalFlags.bSubmergedInWater);
+	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(!object->bOnSolidSurface && !object->bSubmergedInWater);
 	return OR_CONTINUE;
 }
 
@@ -1102,47 +1102,47 @@ OpcodeResult WINAPI GET_ANY_OBJECT_NO_SAVE_RECURSIVE(CScriptThread* thread)
 OpcodeResult WINAPI SET_CHAR_ARRESTED(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	ped->m_nPedState = ePedState::PEDSTATE_ARRESTED;
+	ped->m_ePedState = ePedState::PEDSTATE_ARRESTED;
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI GET_CHAR_PEDSTATE(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPedState);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_ePedState);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI GET_CHAR_PROOFS(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPhysicalFlags.bBulletProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPhysicalFlags.bFireProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPhysicalFlags.bExplosionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPhysicalFlags.bCollisionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->m_nPhysicalFlags.bMeleeProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->bBulletProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->bFireProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->bExplosionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->bCollisionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)ped->bMeleeProof);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI GET_CAR_PROOFS(CScriptThread* thread)
 {
 	CVehicle *vehicle = CPools::GetVehicle(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->m_nPhysicalFlags.bBulletProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->m_nPhysicalFlags.bFireProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->m_nPhysicalFlags.bExplosionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->m_nPhysicalFlags.bCollisionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->m_nPhysicalFlags.bMeleeProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->bBulletProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->bFireProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->bExplosionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->bCollisionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)vehicle->bMeleeProof);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI GET_OBJECT_PROOFS(CScriptThread* thread)
 {
 	CObject *object = CPools::GetObject(CLEO_GetIntOpcodeParam(thread));
-	CLEO_SetIntOpcodeParam(thread, (DWORD)object->m_nPhysicalFlags.bBulletProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)object->m_nPhysicalFlags.bFireProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)object->m_nPhysicalFlags.bExplosionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)object->m_nPhysicalFlags.bCollisionProof);
-	CLEO_SetIntOpcodeParam(thread, (DWORD)object->m_nPhysicalFlags.bMeleeProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)object->bBulletProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)object->bFireProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)object->bExplosionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)object->bCollisionProof);
+	CLEO_SetIntOpcodeParam(thread, (DWORD)object->bMeleeProof);
 	return OR_CONTINUE;
 }
 
@@ -1175,7 +1175,7 @@ OpcodeResult WINAPI GET_OFFSET_FROM_CAMERA_IN_WORLD_COORDS(CScriptThread* thread
 	offset.z = CLEO_GetFloatOpcodeParam(thread);
 
 	CVector posReturn;
-	CMatrixLink* matrix = TheCamera.GetMatrix();
+	CMatrixLink* matrix = &TheCamera.GetMatrix();
 	if (matrix) {
 		RwV3dTransformPoint((RwV3d*)&posReturn, (RwV3d*)&offset, (RwMatrix*)matrix);
 
@@ -1309,7 +1309,7 @@ OpcodeResult WINAPI GENERATE_RANDOM_INT_IN_RANGE_WITH_SEED(CScriptThread* thread
 	int max = CLEO_GetIntOpcodeParam(thread) - 1;
 	unsigned int resetSeed = rand() / 2;
 	srand(seed);
-	CLEO_SetIntOpcodeParam(thread, Random(min, max));
+	CLEO_SetIntOpcodeParam(thread, RandomNumberInRange<int>(min, max));
 	srand((time(0) / 2) + resetSeed); // reset
 	return OR_CONTINUE;
 }
@@ -1498,8 +1498,8 @@ OpcodeResult WINAPI DONT_DELETE_CHAR_UNTIL_TIME(CScriptThread* thread)
 {
 	CPed *ped = CPools::GetPed(CLEO_GetIntOpcodeParam(thread));
 	unsigned int time = CLEO_GetIntOpcodeParam(thread) + CTimer::m_snTimeInMilliseconds;
-	if ((unsigned int)ped->field_54C < time) { // m_nTimeTillWeNeedThisPed
-		ped->field_54C = time;
+	if ((unsigned int)ped->m_nTimeTillWeNeedThisPed < time) { // m_nTimeTillWeNeedThisPed
+		ped->m_nTimeTillWeNeedThisPed = time;
 	}
 	return OR_CONTINUE;
 }
@@ -1700,14 +1700,14 @@ OpcodeResult WINAPI GET_ENTITY_HEADING(CScriptThread* thread)
 OpcodeResult WINAPI IS_CAR_OWNED_BY_PLAYER(CScriptThread* thread)
 {
 	CVehicle *vehicle = CPools::GetVehicle(CLEO_GetIntOpcodeParam(thread));
-	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(vehicle->m_nVehicleFlags.bHasBeenOwnedByPlayer);
+	reinterpret_cast<CRunningScript*>(thread)->UpdateCompareFlag(vehicle->bHasBeenOwnedByPlayer);
 	return OR_CONTINUE;
 }
 
 OpcodeResult WINAPI SET_CAR_OWNED_BY_PLAYER(CScriptThread* thread)
 {
 	CVehicle *vehicle = CPools::GetVehicle(CLEO_GetIntOpcodeParam(thread));
-	vehicle->m_nVehicleFlags.bHasBeenOwnedByPlayer = (CLEO_GetIntOpcodeParam(thread) == 1);
+	vehicle->bHasBeenOwnedByPlayer = (CLEO_GetIntOpcodeParam(thread) == 1);
 	return OR_CONTINUE;
 }
 
@@ -1867,7 +1867,7 @@ OpcodeResult WINAPI GET_DISTANCE_MULTIPLIER(CScriptThread* thread)
 
 OpcodeResult WINAPI GET_ACTIVE_CAMERA_ROTATION(CScriptThread* thread)
 {
-	CMatrixLink* matrix = TheCamera.GetMatrix();
+	CMatrixLink* matrix = &TheCamera.GetMatrix();
 
 	if (matrix) {
 		float x = matrix->right.x;

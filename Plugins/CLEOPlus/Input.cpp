@@ -33,7 +33,7 @@ OpcodeResult WINAPI IS_MOUSE_WHEEL_DOWN(CScriptThread* thread)
 
 OpcodeResult WINAPI GET_MOUSE_SENSIBILITY(CScriptThread* thread)
 {
-	CLEO_SetFloatOpcodeParam(thread, TheCamera.m_fMouseAccelHorzntl);
+	CLEO_SetFloatOpcodeParam(thread, CCamera::m_fMouseAccelHorzntal);
 	return OR_CONTINUE;
 }
 

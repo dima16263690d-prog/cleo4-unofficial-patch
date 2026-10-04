@@ -53,7 +53,7 @@ OpcodeResult WINAPI QUAT_SLERP(CScriptThread* thread)
  * Functions taken from Tween.js - Licensed under the MIT license
  * at https://github.com/sole/tween.js
  */
-const float PI = 3.14159265359f;
+const float CLEOPLUS_PI = 3.14159265359f;
 
 float EaseBounceOut(float k)
 {
@@ -179,17 +179,17 @@ OpcodeResult WINAPI EASE(CScriptThread* thread)
 			{
 				case 0: //In
 				{
-					result = 1.0f - cosf(k*PI / 2.0f);
+					result = 1.0f - cosf(k*CLEOPLUS_PI / 2.0f);
 					break;
 				}
 				case 1: //Out
 				{
-					result = sinf(k*PI / 2.0f);
+					result = sinf(k*CLEOPLUS_PI / 2.0f);
 					break;
 				}
 				case 2: //InOut
 				{
-					result = 0.5f*(1.0f - cosf(PI*k));
+					result = 0.5f*(1.0f - cosf(CLEOPLUS_PI*k));
 					break;
 				}
 			}
@@ -251,20 +251,20 @@ OpcodeResult WINAPI EASE(CScriptThread* thread)
 				{
 					if (k == 0) result = 0;
 					if (k == 1) result = 1;
-					result = -powf(2.0f, 10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*PI) / 0.4f);
+					result = -powf(2.0f, 10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*CLEOPLUS_PI) / 0.4f);
 					break;
 				}
 				case 1: //Out
 				{
 					if (k == 0) result = 0;
 					if (k == 1) result = 1;
-					result = powf(2.0f, -10.0f*k)*sinf((k - 0.1f)*(2.0f*PI) / 0.4f) + 1.0f;
+					result = powf(2.0f, -10.0f*k)*sinf((k - 0.1f)*(2.0f*CLEOPLUS_PI) / 0.4f) + 1.0f;
 					break;
 				}
 				case 2: //InOut
 				{
-					if ((k *= 2.0f) < 1.0f) result = -0.5f*powf(2.0f, 10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*PI) / 0.4f);
-					else result = powf(2.0f, -10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*PI) / 0.4f)*0.5f + 1.0f;
+					if ((k *= 2.0f) < 1.0f) result = -0.5f*powf(2.0f, 10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*CLEOPLUS_PI) / 0.4f);
+					else result = powf(2.0f, -10.0f*(k -= 1.0f))*sinf((k - 0.1f)*(2.0f*CLEOPLUS_PI) / 0.4f)*0.5f + 1.0f;
 					break;
 				}
 			}
@@ -477,7 +477,7 @@ OpcodeResult WINAPI GET_NORMALISED_QUAT(CScriptThread* thread)
 	dst = (CQuaternion *)CLEO_GetIntOpcodeParam(thread);
 
 	quat = *src;
-	quat.Normalise();
+	quat.Normalize();
 	*dst = quat;
 	return OR_CONTINUE;
 }
@@ -528,7 +528,7 @@ OpcodeResult WINAPI CONVERT_DIRECTION_TO_QUAT(CScriptThread* thread)
 	dir.z = CLEO_GetFloatOpcodeParam(thread);
 
 	CVector forward = dir;
-	forward.Normalise();
+	forward.Normalize();
 
 	// Fixes a bug, I don't know...
 	if (forward.x == 0.0f) forward.x = 0.001f;
@@ -538,12 +538,12 @@ OpcodeResult WINAPI CONVERT_DIRECTION_TO_QUAT(CScriptThread* thread)
 	CVector up = { 0.0f, 0.0, 1.0f };
 
 	up = up - (forward * dotProduct(&up, &forward));
-	up.Normalise();
+	up.Normalize();
 
 	///////////////////////
 
 	CVector vector = forward;
-	vector.Normalise();
+	vector.Normalize();
 
 	CVector vector2;
 	vector2.Cross(up, vector);

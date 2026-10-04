@@ -999,7 +999,7 @@ public:
 					if (CPed* ped = pedsPool->GetAt(index))
 					{
 						// Call char process script event if invisible, because our ped render hook will not call it
-						if (ped->m_nPedState == 50) {
+						if (ped->m_ePedState == 50) {
 							if (scriptEvents[ScriptEvent::List::CharProcess].size() > 0) {
 								int ref = CPools::GetPedRef(ped);
 								for (auto scriptEvent : scriptEvents[ScriptEvent::List::CharProcess]) scriptEvent->RunScriptEvent(ref);
@@ -1138,7 +1138,7 @@ public:
 					ObjExtended& xdata = objExtData.Get(object);
 					if (&xdata != nullptr && xdata.renderObjects.size() > 0)
 					{
-						CMatrixLink* matrix = object->GetMatrix();
+						CMatrixLink* matrix = &object->GetMatrix();
 						if (matrix) {
 							for (RenderObject* renderObject : xdata.renderObjects)
 							{
@@ -1204,7 +1204,7 @@ public:
 				PedExtended& xdata = extData.Get(ped);
 
 				// -- Render objects
-				if (ped->m_bIsVisible && ped->m_pRwObject)
+				if (ped->bIsVisible && ped->m_pRwObject)
 				{
 					if (&xdata != nullptr && xdata.renderObjects.size() > 0)
 					{
@@ -1212,9 +1212,9 @@ public:
 						{
 							if (renderObject->isVisible)
 							{
-								if (renderObject->hideIfCar && ped->m_nPedFlags.bInVehicle) continue;
+								if (renderObject->hideIfCar && ped->bInVehicle) continue;
 								if (renderObject->hideIfDead && ped->m_fHealth <= 0.0f) continue;
-								if (renderObject->hideIfWeapon && ped->m_nActiveWeaponSlot > 0) continue;
+								if (renderObject->hideIfWeapon && ped->m_nSelectedWepSlot > 0) continue;
 
 								RwFrame* frame = renderObject->frame;
 								RpAtomic* atomic = renderObject->atomic;

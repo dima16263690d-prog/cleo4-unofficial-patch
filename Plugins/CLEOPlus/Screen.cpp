@@ -73,7 +73,7 @@ OpcodeResult WINAPI IS_RADAR_VISIBLE(CScriptThread* thread)
 	if (CEntryExitManager::ms_exitEnterState != 1
 		&& CEntryExitManager::ms_exitEnterState != 2
 		&& !CHud::bScriptDontDisplayRadar
-		&& FrontEndMenuManager.m_nRadarMode != 2
+		&& FrontEndMenuManager.m_nPrefsRadarMode != 2
 		&& (CHud::m_ItemToFlash != 8 || CTimer::m_FrameCounter & 8)
 		&& CReplay::Mode != 1
 		&& !CWeapon::ms_bTakePhoto
@@ -88,7 +88,7 @@ OpcodeResult WINAPI IS_RADAR_VISIBLE(CScriptThread* thread)
 OpcodeResult WINAPI IS_HUD_VISIBLE(CScriptThread* thread)
 {
 	bool bResult = false;
-	if (FrontEndMenuManager.m_bHudOn
+	if (FrontEndMenuManager.m_bPrefsShowHud
 		&& CTheScripts::bDisplayHud
 		&& !TheCamera.m_bWideScreenOn
 		&& CReplay::Mode != 1

@@ -19,7 +19,7 @@ OpcodeResult WINAPI GET_PICKUP_THIS_COORD(CScriptThread* thread)
 		CPickup *pickup = (CPickup *)(startPickups + (i * sizeOfCPickup));
 		CVector pickupCoord = pickup->GetPosn();
 
-		if (DistanceBetweenPoints(pickupCoord, coord) < 0.5f)
+		if (CVector::Distance(pickupCoord, coord) < 0.5f)
 		{
 			int pickupRef = i | (pickup->m_nReferenceIndex << 16);
 			if (!onlyAvailable || pickup->m_nPickupType)

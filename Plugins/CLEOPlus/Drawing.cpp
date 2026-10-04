@@ -123,46 +123,46 @@ void DrawMySprites(vector<MySprite*> &spritesList)
 			if (mySprite->maskTrisCount > 0)
 			{
 				if (mySprite->maskTrisArray != nullptr) {
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTURERASTER, 0);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEZTESTENABLE, 0);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)1);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEALPHATESTFUNCTION, (void*)8);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTURERASTER, 0);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEZTESTENABLE, 0);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)1);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEALPHATESTFUNCTION, (void*)8);
 
 					MySetMaskVertices(mySprite->maskTrisCount, (RwV2d *)mySprite->maskTrisArray, CSprite2d::NearScreenZ + mySprite->depth);
-					RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
+					RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
 					RwIm2DRenderPrimitive(RwPrimitiveType::rwPRIMTYPETRISTRIP, maskVertexBuffer, mySprite->maskTrisCount);
 				}
 
 				// Sprite render state compatible with mask
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)1); //rwRENDERSTATETEXTURERASTER
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEZWRITEENABLE, 0);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)3); //D3DTADDRESS_CLAMP
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, 0);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEALPHATESTFUNCTION, (void*)5);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)1); //rwRENDERSTATETEXTURERASTER
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEZWRITEENABLE, 0);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)3); //D3DTADDRESS_CLAMP
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, 0);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEALPHATESTFUNCTION, (void*)5);
 			} 
 			else
 			{
 				// Sprite render state NOT compatible with mask
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2u);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)2); //D3DTADDRESS_CLAMP
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, 0);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESRCBLEND, (void*)5u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)6u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)2u);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATESHADEMODE, (void*)1); //D3DSHADE_FLAT
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)2); //D3DTADDRESS_CLAMP
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, 0);
 			}
 
 			float v8 = (mySprite->cornerB_X + mySprite->cornerA_X) * 0.5f;
@@ -191,13 +191,13 @@ void DrawMySprites(vector<MySprite*> &spritesList)
 				CSprite2d::SetVertices(4, verts2, texCoors, mySprite->rgba);
 				CSprite2d::NearScreenZ -= mySprite->depth;
 
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
 				RwIm2DRenderPrimitive(RwPrimitiveType::rwPRIMTYPETRISTRIP, CSprite2d::maVertices, 4);
 			}
 			else
 			{
 				CSprite2d::SetVertices(verts2[0], verts2[1], verts2[2], verts2[3], verts2[4], verts2[5], verts2[6], verts2[7], mySprite->rgba, mySprite->rgba, mySprite->rgba, mySprite->rgba);
-				RwEngineInstance->dOpenDevice.fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
+				RWSRCGLOBAL(dOpenDevice).fpRenderStateSet(rwRENDERSTATETEXTURERASTER, raster);
 				RwIm2DRenderPrimitive(RwPrimitiveType::rwPRIMTYPETRIFAN, CSprite2d::maVertices, 4);
 			}
 

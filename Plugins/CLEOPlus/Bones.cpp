@@ -15,7 +15,7 @@ OpcodeResult WINAPI GET_CHAR_BONE_MATRIX(CScriptThread* thread)
 	RwMatrix* matrix = nullptr;
 	RpHAnimHierarchy* hierarchy = GetAnimHierarchyFromSkinClump((RpClump*)ped->m_pRwObject);
 	if (!hierarchy)
-		matrix = (RwMatrix*)ped->GetMatrix();
+		matrix = reinterpret_cast<RwMatrix*>(&ped->GetMatrix());
 	else
 		matrix = &RpHAnimHierarchyGetMatrixArray(hierarchy)[RpHAnimIDGetIndex(hierarchy, bone)];
 
