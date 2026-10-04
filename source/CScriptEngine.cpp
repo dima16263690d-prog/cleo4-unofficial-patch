@@ -1485,7 +1485,7 @@ namespace CLEO
                 delete cs;
 
             if (fromThread)
-                SkipUnusedParameters(fromThread);
+                SkipUnusedScriptParameters(fromThread);
 
             TRACE("[ENGINE] CreateCustomScript failed: %s", scriptName);
             _chdir(cwd);
