@@ -141,10 +141,12 @@ DebugUtils::DebugUtils()
 
     WriteCore(
         "[DEBUGUTILS] initialized version=0x%08X game=%d callbacks=active script_log=%d "
-        "command_limit=%u time_limit=%u legacy_debug=%d",
+        "opcode_trace=%d deduplicate=%d command_limit=%u time_limit=%u legacy_debug=%d",
         CLEO_GetVersion(),
         CLEO_GetGameVersion(),
         m_scriptLogEnabled ? 1 : 0,
+        m_scriptOpcodeTrace ? 1 : 0,
+        m_scriptDeduplicate ? 1 : 0,
         static_cast<unsigned>(m_commandLimit),
         static_cast<unsigned>(m_timeLimitSeconds),
         m_legacyDebugOpcodes ? 1 : 0
@@ -205,7 +207,21 @@ void DebugUtils::LoadConfig()
     m_scriptLogEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.ScriptLog", "Enabled",
+            1,
+            path.c_str()
+        ) != 0;
+
+    m_scriptOpcodeTrace =
+        GetPrivateProfileIntA(
+            "DebugUtils.ScriptLog", "OpcodeTrace",
             0,
+            path.c_str()
+        ) != 0;
+
+    m_scriptDeduplicate =
+        GetPrivateProfileIntA(
+            "DebugUtils.ScriptLog", "Deduplicate",
+            1,
             path.c_str()
         ) != 0;
 
