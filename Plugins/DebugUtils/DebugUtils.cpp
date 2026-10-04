@@ -327,13 +327,13 @@ void DebugUtils::OpenLogs()
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
 
     if (!m_coreLog.is_open())
-        OutputDebugStringA("[DebugUtils] Failed to open cleo_core.log\n");
+        OutputDebugStringA("[debugutils] failed to open cleo_core.log\n");
     if (!m_scriptLog.is_open())
-        OutputDebugStringA("[DebugUtils] Failed to open cleo_script.log\n");
+        OutputDebugStringA("[debugutils] failed to open cleo_script.log\n");
     if (m_memoryLogEnabled && !m_memoryLog.is_open())
-        OutputDebugStringA("[DebugUtils] Failed to open cleo_memory.log\n");
+        OutputDebugStringA("[debugutils] failed to open cleo_memory.log\n");
     if (m_diagnosticLogEnabled && !m_diagnosticLog.is_open())
-        OutputDebugStringA("[DebugUtils] Failed to open cleo_diagnostic.log\n");
+        OutputDebugStringA("[debugutils] failed to open cleo_diagnostic.log\n");
 }
 
 void DebugUtils::FlushCoreRepeatLocked()
@@ -358,7 +358,7 @@ void DebugUtils::FlushCoreRepeatLocked()
         << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
         << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
         << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
-        << ms << " [REPEAT] count=" << m_lastCoreRepeatCount
+        << ms << " [repeat] count=" << m_lastCoreRepeatCount
         << " message=" << m_lastCoreMessage << '\n';
 
     m_lastCoreMessage.clear();
@@ -471,7 +471,7 @@ void DebugUtils::RotateScriptLogIfNeeded(size_t incomingBytes)
 
     if (m_scriptLog.is_open())
     {
-        const char* marker = "[DebugUtils] script log rotated at 128 MiB\n";
+        const char* marker = "[debugutils] script log rotated at 128 MiB\n";
         m_scriptLog.write(marker, static_cast<std::streamsize>(strlen(marker)));
         m_scriptBytes += strlen(marker);
     }
@@ -646,7 +646,7 @@ void DebugUtils::FlushDiagnosticRepeatLocked()
         << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
         << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
         << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
-        << ms << " [REPEAT] count=" << m_lastDiagnosticRepeatCount
+        << ms << " [repeat] count=" << m_lastDiagnosticRepeatCount
         << " message=" << m_lastDiagnosticMessage << '\n';
 
     m_lastDiagnosticMessage.clear();
@@ -716,7 +716,7 @@ void DebugUtils::FlushMemoryRepeatLocked()
         << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
         << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
         << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
-        << ms << " [REPEAT] count=" << m_lastMemoryRepeatCount
+        << ms << " [repeat] count=" << m_lastMemoryRepeatCount
         << " message=" << m_lastMemoryMessage << '\n';
 
     m_lastMemoryMessage.clear();
