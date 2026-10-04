@@ -5,6 +5,11 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CLEO 4.4.4 Unofficial Patch", "CLEO4.vcxproj", "{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CLEOPlus", "third-party\\CLEOPlus\\CLEOPlus.vcxproj", "{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}"
+	ProjectSection(ProjectDependencies) = postProject
+		{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1} = {B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}
+	EndProjectSection
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FileSystemOperations", "demo_plugins\\FileSystemOperations\\FileSystemOperations\\FileSystemOperations.vcxproj", "{7A3D3C8A-8E6A-4E4E-9E3E-1C6A5E4D1001}"
 	ProjectSection(ProjectDependencies) = postProject
 		{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1} = {B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}
@@ -26,6 +31,10 @@ Global
 		Release|GTASA = Release|GTASA
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}.Debug|GTASA.ActiveCfg = Debug GTASA|Win32
+		{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}.Debug|GTASA.Build.0 = Debug GTASA|Win32
+		{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}.Release|GTASA.ActiveCfg = Release GTASA|Win32
+		{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}.Release|GTASA.Build.0 = Release GTASA|Win32
 		{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}.Debug|GTASA.ActiveCfg = Debug GTASA|Win32
 		{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}.Debug|GTASA.Build.0 = Debug GTASA|Win32
 		{B212DDA4-2A8E-45B2-914D-7BEEB31D06B1}.Release|GTASA.ActiveCfg = Release GTASA|Win32

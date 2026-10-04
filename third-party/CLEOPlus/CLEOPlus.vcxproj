@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release GTASA|Win32"><Configuration>Release GTASA</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug GTASA|Win32"><Configuration>Debug GTASA</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C4E0C4A4-5E62-4B2E-9F5E-6B9B7C7D4201}</ProjectGuid>
+    <IgnoreWarnCompileDuplicatedFilename>true</IgnoreWarnCompileDuplicatedFilename>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>CLEOPlus</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release GTASA|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><CharacterSet>MultiByte</CharacterSet><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug GTASA|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><CharacterSet>MultiByte</CharacterSet><PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="UserMacros"><PLUGIN_SDK_DIR>D:\plugin-sdk-master</PLUGIN_SDK_DIR><CLEO_SDK_SA_DIR>$(SolutionDir)cleo_sdk</CLEO_SDK_SA_DIR></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release GTASA|Win32'">
+    <OutDir>$(SolutionDir)output\CLEOPlus\Release\</OutDir><IntDir>$(SolutionDir)output\.obj\CLEOPlus\Release\</IntDir><TargetName>CLEO+</TargetName><TargetExt>.cleo</TargetExt>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug GTASA|Win32'">
+    <OutDir>$(SolutionDir)output\CLEOPlus\Debug\</OutDir><IntDir>$(SolutionDir)output\.obj\CLEOPlus\Debug\</IntDir><TargetName>CLEO+</TargetName><TargetExt>.cleo</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release GTASA|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(PLUGIN_SDK_DIR)\;$(PLUGIN_SDK_DIR)\plugin_sa\;$(PLUGIN_SDK_DIR)\plugin_sa\game_sa\;$(PLUGIN_SDK_DIR)\shared\;$(PLUGIN_SDK_DIR)\shared\game\;$(CLEO_SDK_SA_DIR)\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;GTASA;GTAGAME_NAME="San Andreas";GTAGAME_ABBR="SA";GTAGAME_ABBRLOW="sa";GTAGAME_PROTAGONISTNAME="CJ";GTAGAME_CITYNAME="San Andreas";_LA_SUPPORT;PLUGIN_SGV_10US;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpp23</LanguageStandard><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>No</GenerateDebugInformation><AdditionalLibraryDirectories>$(PLUGIN_SDK_DIR)\output\lib\;$(CLEO_SDK_SA_DIR)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>plugin.lib;CLEO.lib;%(AdditionalDependencies)</AdditionalDependencies><SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug GTASA|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><Optimization>Disabled</Optimization><SDLCheck>false</SDLCheck><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(PLUGIN_SDK_DIR)\;$(PLUGIN_SDK_DIR)\plugin_sa\;$(PLUGIN_SDK_DIR)\plugin_sa\game_sa\;$(PLUGIN_SDK_DIR)\shared\;$(PLUGIN_SDK_DIR)\shared\game\;$(CLEO_SDK_SA_DIR)\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;GTASA;GTAGAME_NAME="San Andreas";GTAGAME_ABBR="SA";GTAGAME_ABBRLOW="sa";GTAGAME_PROTAGONISTNAME="CJ";GTAGAME_CITYNAME="San Andreas";_LA_SUPPORT;PLUGIN_SGV_10US;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpp23</LanguageStandard><PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>Debug</GenerateDebugInformation><AdditionalLibraryDirectories>$(PLUGIN_SDK_DIR)\output\lib\;$(CLEO_SDK_SA_DIR)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>plugin_d.lib;CLEO.lib;%(AdditionalDependencies)</AdditionalDependencies><SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Audio.cpp" />
+    <ClCompile Include="Bones.cpp" />
+    <ClCompile Include="CLEOPlus.cpp" />
+    <ClCompile Include="Colpoint.cpp" />
+    <ClCompile Include="Coop.cpp" />
+    <ClCompile Include="Drawing.cpp" />
+    <ClCompile Include="Environment.cpp" />
+    <ClCompile Include="Events.cpp" />
+    <ClCompile Include="ExtendedEntityVars.cpp" />
+    <ClCompile Include="Input.cpp" />
+    <ClCompile Include="Intelligence.cpp" />
+    <ClCompile Include="List.cpp" />
+    <ClCompile Include="MathRelated.cpp" />
+    <ClCompile Include="Memory.cpp" />
+    <ClCompile Include="Misc.cpp" />
+    <ClCompile Include="NoSave.cpp" />
+    <ClCompile Include="ObjExtendedData.cpp" />
+    <ClCompile Include="Patches.cpp" />
+    <ClCompile Include="PedExtendedData.cpp" />
+    <ClCompile Include="PerlinNoise\\SimplexNoise.cpp" />
+    <ClCompile Include="Pickup.cpp" />
+    <ClCompile Include="RadarBlip.cpp" />
+    <ClCompile Include="RenderObject.cpp" />
+    <ClCompile Include="RenderObjectOnEntity.cpp" />
+    <ClCompile Include="Screen.cpp" />
+    <ClCompile Include="ScriptEntities.cpp" />
+    <ClCompile Include="SpecialModels.cpp" />
+    <ClCompile Include="TextDrawer\\TextDrawer.cpp" />
+    <ClCompile Include="Timer.cpp" />
+    <ClCompile Include="Types.cpp" />
+    <ClCompile Include="VehExtendedData.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CPedDamageResponseCalculator.h" />
+    <ClInclude Include="Drawing.h" />
+    <ClInclude Include="Events.h" />
+    <ClInclude Include="game_sa\\CarGeneratorsEx.h" />
+    <ClInclude Include="ObjExtendedData.h" />
+    <ClInclude Include="OpcodesCommon.h" />
+    <ClInclude Include="Patches.h" />
+    <ClInclude Include="PedExtendedData.h" />
+    <ClInclude Include="PerlinNoise\\SimplexNoise.h" />
+    <ClInclude Include="RadarBlip.h" />
+    <ClInclude Include="RenderObject.h" />
+    <ClInclude Include="RenderObjectOnChar.h" />
+    <ClInclude Include="RenderObjectOnEntity.h" />
+    <ClInclude Include="Screen.h" />
+    <ClInclude Include="SpecialModels.h" />
+    <ClInclude Include="TextDrawer\\TextDrawer.h" />
+    <ClInclude Include="VehExtendedData.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
