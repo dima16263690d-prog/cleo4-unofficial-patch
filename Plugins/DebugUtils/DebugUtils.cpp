@@ -9,6 +9,7 @@
 #include <chrono>
 #include <sstream>
 #include <CTimer.h>
+#include "../../source/CCustomScript.h"
 
 // plugin-sdk declares this GTA SA 1.0 US static reference but does not
 // provide a definition in the CLEO/DebugUtils link. Resolve it directly to
@@ -20,6 +21,37 @@ DebugUtils* DebugUtils::s_instance = nullptr;
 namespace
 {
     constexpr DWORD kGtaSa10ActiveScripts = 0x00A8B42C;
+
+    static const char* ExceptionName(DWORD code)
+    {
+        switch (code)
+        {
+        case EXCEPTION_ACCESS_VIOLATION: return "ACCESS_VIOLATION";
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "ARRAY_BOUNDS_EXCEEDED";
+        case EXCEPTION_DATATYPE_MISALIGNMENT: return "DATATYPE_MISALIGNMENT";
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO: return "FLT_DIVIDE_BY_ZERO";
+        case EXCEPTION_ILLEGAL_INSTRUCTION: return "ILLEGAL_INSTRUCTION";
+        case EXCEPTION_IN_PAGE_ERROR: return "IN_PAGE_ERROR";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO: return "INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_INT_OVERFLOW: return "INT_OVERFLOW";
+        case EXCEPTION_PRIV_INSTRUCTION: return "PRIV_INSTRUCTION";
+        case EXCEPTION_STACK_OVERFLOW: return "STACK_OVERFLOW";
+        default: return "UNKNOWN";
+        }
+    }
+
+    static size_t GetModuleImageSize(HMODULE module)
+    {
+        if (module == nullptr)
+            return 0;
+
+        MODULEINFO info{};
+        if (!GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)))
+            return 0;
+
+        return static_cast<size_t>(info.SizeOfImage);
+    }
+
     constexpr size_t kScriptLogMaxBytes = 128u * 1024u * 1024u;
 
     bool IsFatalException(DWORD code)
@@ -351,6 +383,8 @@ void DebugUtils::OpenLogs()
     CreateDirectoryA(crashInfoDir.c_str(), nullptr);
 
     m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
+    m_coreBytes = 0;
+    m_coreLimitNoticeWritten = false;
     m_scriptLog.open(ScriptLogPath(), std::ios::out | std::ios::trunc);
     if (m_memoryLogEnabled)
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
@@ -382,20 +416,27 @@ void DebugUtils::FlushCoreRepeatLocked()
     char ms[4];
     sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
 
-    m_coreLog
-        << t.wYear << '-'
-        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
-        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
-        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
-        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
-        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
-        << ms << " [repeat] count=" << m_lastCoreRepeatCount
-        << " message=" << m_lastCoreMessage << '\n';
+    char line[4096];
+    sprintf_s(
+        line, sizeof(line),
+        "%04u-%02u-%02u %02u:%02u:%02u.%s [repeat] count=%u message=%s\n",
+        t.wYear, t.wMonth, t.wDay,
+        t.wHour, t.wMinute, t.wSecond,
+        ms,
+        static_cast<unsigned>(m_lastCoreRepeatCount),
+        m_lastCoreMessage.c_str()
+    );
+
+    const size_t bytes = strlen(line);
+    if (m_coreBytes + bytes <= kCoreLogMaxBytes)
+    {
+        m_coreLog.write(line, static_cast<std::streamsize>(bytes));
+        m_coreBytes += bytes;
+    }
 
     m_lastCoreMessage.clear();
     m_lastCoreRepeatCount = 0;
 }
-
 void DebugUtils::CloseLogs()
 {
     {
@@ -460,28 +501,38 @@ void DebugUtils::WriteCore(const char* format, ...)
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
-    m_coreLog
-        << t.wYear << '-'
-        << (t.wMonth < 10 ? "0" : "") << t.wMonth << '-'
-        << (t.wDay < 10 ? "0" : "") << t.wDay << ' '
-        << (t.wHour < 10 ? "0" : "") << t.wHour << ':'
-        << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
-        << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.';
+    char line[4096];
+    sprintf_s(
+        line, sizeof(line),
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u %s\n",
+        t.wYear, t.wMonth, t.wDay,
+        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        message
+    );
 
-    char ms[4];
-    sprintf_s(ms, sizeof(ms), "%03u", t.wMilliseconds);
-    m_coreLog << ms << " " << message << '\n';
+    const size_t bytes = strlen(line);
 
-    m_lastCoreMessage = message;
-    m_lastCoreRepeatCount = 1;
-
-    if (++m_corePendingWrites >= 32)
+    if (m_coreBytes + bytes <= kCoreLogMaxBytes)
     {
-        m_coreLog.flush();
-        m_corePendingWrites = 0;
-    }
-}
+        m_coreLog.write(line, static_cast<std::streamsize>(bytes));
+        m_coreBytes += bytes;
+        m_lastCoreMessage = message;
+        m_lastCoreRepeatCount = 1;
 
+        if (++m_corePendingWrites >= 32)
+        {
+            m_coreLog.flush();
+            m_corePendingWrites = 0;
+        }
+        return;
+    }
+
+    // Hard stop: core log can never grow past 8 KiB.
+    // Do not append a marker here because even the marker could exceed the cap.
+    m_coreLimitNoticeWritten = true;
+    m_lastCoreMessage.clear();
+    m_lastCoreRepeatCount = 0;
+}
 void DebugUtils::RotateScriptLogIfNeeded(size_t incomingBytes)
 {
     if (m_scriptBytes + incomingBytes <= kScriptLogMaxBytes)
@@ -850,6 +901,32 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
         return;
     }
 
+    // Script lifecycle belongs to the script log, not the 8 KiB core log.
+    if (strstr(message, "Loading custom script ") != nullptr ||
+        strstr(message, "Registering custom script") != nullptr ||
+        strstr(message, "Unregistering custom script") != nullptr ||
+        strstr(message, "Deleting inactive script") != nullptr ||
+        strstr(message, "Starting new custom script") != nullptr ||
+        strstr(message, "[0A92] ") != nullptr)
+    {
+        s_instance->WriteScript("[lifecycle] %s", message);
+        return;
+    }
+
+    // High-volume initialization details are not core diagnostics.
+    if (strncmp(message, "[PluginSystem] ", 15) == 0 ||
+        strncmp(message, "[HookSystem] ", 13) == 0 ||
+        strncmp(message, "Injecting ", 10) == 0 ||
+        strncmp(message, "Replacing call: ", 16) == 0 ||
+        strncmp(message, "Found sound device ", 19) == 0 ||
+        strncmp(message, "On system found ", 16) == 0 ||
+        strncmp(message, "Creating main window", 20) == 0 ||
+        strncmp(message, "Floating-point audio supported!", 32) == 0 ||
+        strncmp(message, "Audio hardware acceleration", 27) == 0)
+    {
+        return;
+    }
+
     const char* levelName = "info";
     switch (level)
     {
@@ -964,35 +1041,37 @@ void DebugUtils::WriteCoreQueueSnapshot(const char* reason)
 
 void DebugUtils::WriteCoreMemorySummary()
 {
-    if (!m_memoryLogEnabled)
-        return;
-
-    if (CLEO_GetGameVersion() != GV_US10)
+    if (!m_memoryLogEnabled || CLEO_GetGameVersion() != GV_US10)
         return;
 
     auto head = *reinterpret_cast<CScriptThread**>(kGtaSa10ActiveScripts);
     size_t queueCount = 0;
     size_t nativeCount = 0;
     size_t customCount = 0;
+    size_t customObjectBytes = 0;
+    size_t customCodeBytes = 0;
+    std::set<BYTE*> countedCodeBases;
 
     for (auto thread = head; thread != nullptr && queueCount < 4096; thread = thread->next)
     {
         ++queueCount;
 
-        // On the verified GTA SA 1.0 US layout, CLEO custom scripts have a
-        // private code base while native SCM threads use baseIp == nullptr.
         if (thread->baseIp != nullptr)
+        {
             ++customCount;
-        else
-            ++nativeCount;
-    }
+            customObjectBytes += sizeof(CCustomScript);
 
-    const long long queueDelta = m_memoryBaselineReady
-        ? static_cast<long long>(queueCount) - static_cast<long long>(m_lastMemoryQueueCount)
-        : 0;
-    const long long customDelta = m_memoryBaselineReady
-        ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
-        : 0;
+            if (!thread->missionFlag && countedCodeBases.insert(thread->baseIp).second)
+            {
+                CCustomScript* custom = reinterpret_cast<CCustomScript*>(thread);
+                customCodeBytes += custom->GetCodeSize();
+            }
+        }
+        else
+        {
+            ++nativeCount;
+        }
+    }
 
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
@@ -1006,18 +1085,32 @@ void DebugUtils::WriteCoreMemorySummary()
             ? static_cast<long long>(pmc.PrivateUsage) - static_cast<long long>(m_lastPrivateUsage)
             : 0;
 
+        const size_t cleoKnownBytes =
+            GetModuleImageSize(GetModuleHandleA("CLEO.asi")) +
+            customObjectBytes +
+            customCodeBytes;
+
+        size_t debugUtilsImage = 0;
+        debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.cleo"));
+        if (debugUtilsImage == 0)
+            debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.dll"));
+
         WriteMemory(
-            "[memory] queue=%u queue_delta=%I64d native=%u custom=%u custom_delta=%I64d working_set=%I64u peak_working_set=%I64u private_usage=%I64u private_delta=%I64d pagefile_usage=%I64u",
-            static_cast<unsigned>(queueCount),
-            queueDelta,
-            static_cast<unsigned>(nativeCount),
-            static_cast<unsigned>(customCount),
-            customDelta,
-            static_cast<unsigned __int64>(pmc.WorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+            "[memory] process_private=%I64u delta=%I64d working_set=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
             static_cast<unsigned __int64>(pmc.PrivateUsage),
             privateDelta,
-            static_cast<unsigned __int64>(pmc.PagefileUsage)
+            static_cast<unsigned __int64>(pmc.WorkingSetSize),
+            static_cast<unsigned>(queueCount),
+            static_cast<unsigned>(nativeCount),
+            static_cast<unsigned>(customCount),
+            m_memoryBaselineReady
+                ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
+                : 0,
+            static_cast<unsigned>(GetModuleImageSize(GetModuleHandleA("CLEO.asi"))),
+            static_cast<unsigned>(debugUtilsImage),
+            static_cast<unsigned>(customObjectBytes),
+            static_cast<unsigned>(customCodeBytes),
+            static_cast<unsigned>(cleoKnownBytes)
         );
 
         m_lastPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
@@ -1041,6 +1134,7 @@ void DebugUtils::WriteCoreMemorySummary()
     m_lastMemoryCustomCount = customCount;
     m_memoryBaselineReady = true;
 }
+
 void DebugUtils::LoadCrashInfoList()
 {
     m_crashInfo.clear();
