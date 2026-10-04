@@ -9,7 +9,6 @@
 #include <chrono>
 #include <sstream>
 #include <CTimer.h>
-#include "../../source/CCustomScript.h"
 
 // plugin-sdk declares this GTA SA 1.0 US static reference but does not
 // provide a definition in the CLEO/DebugUtils link. Resolve it directly to
@@ -20,6 +19,45 @@ DebugUtils* DebugUtils::s_instance = nullptr;
 
 namespace
 {
+    // DebugUtils uses the public SDK CScriptThread definition. Do not include
+    // source/CCustomScript.h here because it declares a second incompatible
+    // SCRIPT_VAR type. This local mirror is read-only and exists only so the
+    // diagnostics can measure CCustomScript storage without changing the class.
+    struct DebugCustomScriptLayout
+    {
+        CScriptThread base;
+        DWORD dwChecksum;
+        BYTE* ownedBuffer;
+        bool bSaveEnabled;
+        bool bOK;
+        DWORD LastSearchPed;
+        DWORD LastSearchCar;
+        DWORD LastSearchObj;
+        uint32_t CompatVer;
+        size_t CodeSize;
+        std::string ScriptFileDir;
+        std::string ScriptFileName;
+        DebugCustomScriptLayout* parentThread;
+        int childLabel;
+        DWORD savedNodeId;
+        BYTE UseTextCommands;
+        int NumDraws;
+        int NumTexts;
+        std::list<DebugCustomScriptLayout*> childThreads;
+        std::list<void*> script_textures;
+        std::vector<BYTE> script_draws;
+        std::vector<BYTE> script_texts;
+    };
+
+    static_assert(sizeof(size_t) == 4, "CLEO4 DebugUtils is Win32; size_t must be 32-bit");
+    static_assert(sizeof(CScriptThread) == 0xE0, "Unexpected CScriptThread layout");
+    static_assert(offsetof(DebugCustomScriptLayout, CodeSize) == 0xFC, "Unexpected CCustomScript CodeSize offset");
+
+    static const DebugCustomScriptLayout* GetDebugCustomScript(const CScriptThread* thread)
+    {
+        return reinterpret_cast<const DebugCustomScriptLayout*>(thread);
+    }
+
     constexpr DWORD kGtaSa10ActiveScripts = 0x00A8B42C;
 
     static const char* ExceptionName(DWORD code)
@@ -1095,13 +1133,11 @@ void DebugUtils::WriteCoreMemorySummary()
         if (thread->baseIp != nullptr)
         {
             ++customCount;
-            customObjectBytes += sizeof(CCustomScript);
+            const auto* custom = GetDebugCustomScript(thread);
+            customObjectBytes += sizeof(DebugCustomScriptLayout);
 
             if (!thread->missionFlag && countedCodeBases.insert(thread->baseIp).second)
-            {
-                CCustomScript* custom = reinterpret_cast<CCustomScript*>(thread);
-                customCodeBytes += custom->GetCodeSize();
-            }
+                customCodeBytes += custom->CodeSize;
         }
         else
         {
