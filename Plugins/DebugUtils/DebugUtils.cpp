@@ -153,7 +153,7 @@ DebugUtils::DebugUtils()
     WriteCore(
         "[DEBUGUTILS] initialized version=0x%08X game=%d callbacks=active script_log=%d "
         "opcode_trace=%d function_trace=%d deduplicate=%d command_limit=%u time_limit=%u "
-        "memory_log=%d diagnostic_log=%d legacy_debug=%d",
+        "memory_log=%d memory_trace=%d diagnostic_log=%d legacy_debug=%d",
         CLEO_GetVersion(),
         CLEO_GetGameVersion(),
         m_scriptLogEnabled ? 1 : 0,
@@ -163,6 +163,7 @@ DebugUtils::DebugUtils()
         static_cast<unsigned>(m_commandLimit),
         static_cast<unsigned>(m_timeLimitSeconds),
         m_memoryLogEnabled ? 1 : 0,
+        m_memoryTrace ? 1 : 0,
         m_diagnosticLogEnabled ? 1 : 0,
         m_legacyDebugOpcodes ? 1 : 0
     );
@@ -251,6 +252,13 @@ void DebugUtils::LoadConfig()
         GetPrivateProfileIntA(
             "DebugUtils.Logs", "Memory",
             1,
+            path.c_str()
+        ) != 0;
+
+    m_memoryTrace =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "MemoryTrace",
+            0,
             path.c_str()
         ) != 0;
 
@@ -817,7 +825,7 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
 
     if (strncmp(message, "[MEMORY] ", 9) == 0)
     {
-        if (!s_instance->m_memoryLogEnabled)
+        if (!s_instance->m_memoryLogEnabled || !s_instance->m_memoryTrace)
             return;
 
         s_instance->WriteMemory("%s", message + 9);
