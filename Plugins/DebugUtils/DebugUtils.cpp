@@ -3879,9 +3879,6 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         kDebugUtilsBuildId,
         t.wYear, t.wMonth, t.wDay,
         t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-        fingerprint.c_str());
-        t.wYear, t.wMonth, t.wDay,
-        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         fingerprint.c_str()
     );
 
