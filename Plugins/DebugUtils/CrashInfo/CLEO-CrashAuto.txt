@@ -1,0 +1,4 @@
+# CLEO DebugUtils Auto Crash Database
+# Status: UNVERIFIED observations only.
+# DebugUtils appends new fingerprints here automatically after unhandled crashes.
+# These entries are never treated as verified CrashInfo matches.
