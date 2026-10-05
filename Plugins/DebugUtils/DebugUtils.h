@@ -147,7 +147,6 @@ private:
     std::string MemoryLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
-    std::string UpstreamCrashInfoPath() const;
     std::string ConfigPath() const;
 
     void LoadConfig();
@@ -168,6 +167,16 @@ private:
     void WriteCoreLimitNoticeLocked();
 
     void EnsureCrashInfoDatabase();
+    void AppendAutomaticCrashInfo(
+        DWORD faultAddress,
+        DWORD exceptionCode,
+        const char* exceptionType,
+        const std::string& faultModule,
+        DWORD faultRva,
+        const std::string& lastScript,
+        DWORD lastOpcode,
+        const std::vector<DWORD>& backtrace
+    );
     void LoadCrashInfoList();
     const CrashInfoEntry* FindCrashInfo(
         DWORD address,
