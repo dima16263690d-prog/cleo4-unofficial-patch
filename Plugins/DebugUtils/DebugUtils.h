@@ -132,6 +132,7 @@ private:
     bool m_memoryTrace = false;
     bool m_diagnosticLogEnabled = false;
     bool m_legacyDebugOpcodes = false;
+    bool m_languageRussian = false;
 
     std::set<uintptr_t> m_debugScripts;
 
@@ -154,6 +155,7 @@ private:
     std::string MemoryLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
+    std::string CrashInfoRuPath() const;
     std::string CrashInfoAutoPath() const;
     std::string ConfigPath() const;
 
@@ -190,6 +192,7 @@ private:
         const std::vector<DWORD>& backtrace
     );
     void LoadCrashInfoList();
+    void LoadCrashInfoLocalization();
     const CrashInfoEntry* FindCrashInfo(
         DWORD address,
         const std::string& faultModule,
