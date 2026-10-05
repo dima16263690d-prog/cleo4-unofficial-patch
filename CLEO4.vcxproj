@@ -27,6 +27,7 @@
     <ClCompile Include="source\crc32.cpp" />
     <ClCompile Include="source\CScriptEngine.cpp" />
     <ClCompile Include="source\CSoundSystem.cpp" />
+    <ClCompile Include="source\CAudioPluginAPI.cpp" />
     <ClCompile Include="source\CTextManager.cpp" />
     <ClCompile Include="source\dllmain.cpp" />
     <ClCompile Include="source\PluginSdkExternals.cpp" />
