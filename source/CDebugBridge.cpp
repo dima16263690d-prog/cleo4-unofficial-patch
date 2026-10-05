@@ -8,8 +8,19 @@ namespace
 {
     volatile PVOID g_debugLogCallback = nullptr;
 
-    volatile LONG g_crashSnapshotSequence = 0;
-    CLEO_CrashSnapshot g_crashSnapshot = {};
+    // Crash context is thread-local because the unhandled exception filter
+    // runs on the thread that actually faulted. This avoids the old global
+    // sequence lock and two interlocked increments on every opcode.
+    thread_local CLEO_CrashSnapshot g_threadCrashSnapshot =
+    {
+        0,
+        0xFFFFFFFFu,
+        0,
+        -1,
+        0,
+        "none"
+    };
+
 }
 
 namespace CLEO
@@ -77,48 +88,44 @@ extern "C" void WINAPI CLEO_DebugRecordCrashOpcode(
     if (CLEO::g_crashSnapshotEnabled == 0)
         return;
 
-    InterlockedIncrement(&g_crashSnapshotSequence);
-
-    g_crashSnapshot.scriptPtr = scriptPtr;
-    g_crashSnapshot.opcode = opcode & 0x7FFF;
-    g_crashSnapshot.opcodeOffset = opcodeOffset;
-    g_crashSnapshot.opcodeResult = result;
-    g_crashSnapshot.gameTick = GetTickCount();
+    g_threadCrashSnapshot.scriptPtr = scriptPtr;
+    g_threadCrashSnapshot.opcode = opcode & 0x7FFF;
+    g_threadCrashSnapshot.opcodeOffset = opcodeOffset;
+    g_threadCrashSnapshot.opcodeResult = result;
+    g_threadCrashSnapshot.gameTick = GetTickCount();
 
     if (scriptName != nullptr)
     {
-        memcpy(g_crashSnapshot.scriptName, scriptName, 8);
-        g_crashSnapshot.scriptName[8] = '\0';
+        memcpy(
+            g_threadCrashSnapshot.scriptName,
+            scriptName,
+            8
+        );
+        g_threadCrashSnapshot.scriptName[8] = '\0';
     }
     else
     {
-        memcpy(g_crashSnapshot.scriptName, "none", 5);
-        g_crashSnapshot.scriptName[5] = '\0';
+        memcpy(
+            g_threadCrashSnapshot.scriptName,
+            "none",
+            5
+        );
+        g_threadCrashSnapshot.scriptName[5] = '\0';
     }
-
-    InterlockedIncrement(&g_crashSnapshotSequence);
 }
-
-extern "C" BOOL WINAPI CLEO_DebugGetCrashSnapshot(CLEO_CrashSnapshot* snapshot)
+extern "C" BOOL WINAPI CLEO_DebugGetCrashSnapshot(
+    CLEO_CrashSnapshot* snapshot
+)
 {
-    if (snapshot == nullptr)
+    if (snapshot == nullptr || CLEO::g_crashSnapshotEnabled == 0)
         return FALSE;
 
-    for (unsigned attempt = 0; attempt < 4; ++attempt)
-    {
-        const LONG begin = g_crashSnapshotSequence;
+    memcpy(
+        snapshot,
+        &g_threadCrashSnapshot,
+        sizeof(CLEO_CrashSnapshot)
+    );
 
-        if (begin & 1)
-            continue;
-
-        memcpy(snapshot, &g_crashSnapshot, sizeof(CLEO_CrashSnapshot));
-        MemoryBarrier();
-
-        const LONG end = g_crashSnapshotSequence;
-
-        if (begin == end && !(end & 1))
-            return TRUE;
-    }
-
-    return FALSE;
+    return g_threadCrashSnapshot.scriptPtr != 0 ||
+           g_threadCrashSnapshot.opcode != 0xFFFFFFFFu;
 }
