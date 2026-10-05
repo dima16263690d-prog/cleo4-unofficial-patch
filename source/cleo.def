@@ -31,3 +31,20 @@ EXPORTS
 	_CLEO_UnregisterCallback@8			@28
 	_CLEO_FormatOpcodeString@12		@30
 	_CLEO_DebugSetLogCallback@4		@29
+	_CLEO_Audio_IsValidStream@4				@31
+	_CLEO_Audio_GetState@4					@32
+	_CLEO_Audio_SetState@8					@33
+	_CLEO_Audio_GetLength@4					@34
+	_CLEO_Audio_GetDuration@4					@35
+	_CLEO_Audio_GetVolume@4					@36
+	_CLEO_Audio_SetVolume@8					@37
+	_CLEO_Audio_SetVolumeTransition@12			@38
+	_CLEO_Audio_GetSpeed@4					@39
+	_CLEO_Audio_SetSpeed@12					@40
+	_CLEO_Audio_GetProgress@4				@41
+	_CLEO_Audio_SetProgress@8				@42
+	_CLEO_Audio_GetLooping@4				@43
+	_CLEO_Audio_SetLooping@8				@44
+	_CLEO_Audio_GetType@4					@45
+	_CLEO_Audio_SetType@8					@46
+	_CLEO_Audio_Set3dSourceSize@8				@47
