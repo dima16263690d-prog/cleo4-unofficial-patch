@@ -2589,6 +2589,7 @@ namespace
 
 namespace
 {
+    using StackWalkProc = decltype(&StackWalk);
     using StackWalk64Proc = decltype(&StackWalk64);
     using SymInitializeProc = decltype(&SymInitialize);
     using SymCleanupProc = decltype(&SymCleanup);
@@ -2616,6 +2617,110 @@ namespace
         case STACKWALK_DUPLICATE_PC: return "DUPLICATE_PC";
         case STACKWALK_EXCEPTION: return "EXCEPTION";
         default: return "UNKNOWN";
+        }
+    }
+
+    static BOOL SafeStackWalkLegacyI386(
+        StackWalkProc pStackWalk,
+        SymFunctionTableAccess64Proc pSymFunctionTableAccess64,
+        SymGetModuleBase64Proc pSymGetModuleBase64,
+        HANDLE process,
+        HANDLE thread,
+        const CONTEXT* sourceContext,
+        DWORD* frameAddresses,
+        DWORD capacity,
+        DWORD* frameCount,
+        DWORD* stepsAttempted,
+        int* stopReason
+    )
+    {
+        if (stepsAttempted != nullptr)
+            *stepsAttempted = 0;
+        if (stopReason != nullptr)
+            *stopReason = STACKWALK_INVALID_INPUT;
+
+        if (pStackWalk == nullptr ||
+            pSymFunctionTableAccess64 == nullptr ||
+            pSymGetModuleBase64 == nullptr ||
+            sourceContext == nullptr ||
+            frameAddresses == nullptr ||
+            frameCount == nullptr ||
+            capacity == 0)
+        {
+            return FALSE;
+        }
+
+        __try
+        {
+            STACKFRAME frame = {};
+            frame.AddrPC.Offset = sourceContext->Eip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = sourceContext->Ebp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = sourceContext->Esp;
+            frame.AddrStack.Mode = AddrModeFlat;
+
+            DWORD count = 0;
+            frameAddresses[count++] = sourceContext->Eip;
+
+            while (count < capacity)
+            {
+                if (stepsAttempted != nullptr)
+                    ++(*stepsAttempted);
+
+                const BOOL ok = pStackWalk(
+                    IMAGE_FILE_MACHINE_I386,
+                    process,
+                    thread,
+                    &frame,
+                    const_cast<PCONTEXT>(sourceContext),
+                    nullptr,
+                    reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE>(
+                        pSymFunctionTableAccess64),
+                    reinterpret_cast<PGET_MODULE_BASE_ROUTINE>(
+                        pSymGetModuleBase64),
+                    nullptr
+                );
+
+                if (!ok)
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_STEP_FAILED;
+                    break;
+                }
+
+                const DWORD address =
+                    static_cast<DWORD>(frame.AddrPC.Offset);
+
+                if (address == 0)
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_ZERO_PC;
+                    break;
+                }
+
+                if (address == frameAddresses[count - 1])
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_DUPLICATE_PC;
+                    break;
+                }
+
+                frameAddresses[count++] = address;
+            }
+
+            if (count >= capacity && stopReason != nullptr)
+                *stopReason = STACKWALK_OK;
+
+            *frameCount = count;
+            return count != 0 ? TRUE : FALSE;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *frameCount = 0;
+            if (stopReason != nullptr)
+                *stopReason = STACKWALK_EXCEPTION;
+            return FALSE;
         }
     }
 
@@ -2772,6 +2877,10 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         return frames;
     }
 
+    const auto pStackWalk =
+        reinterpret_cast<StackWalkProc>(
+            GetProcAddress(dbgHelp, "StackWalk"));
+
     const auto pStackWalk64 =
         reinterpret_cast<StackWalk64Proc>(
             GetProcAddress(dbgHelp, "StackWalk64"));
@@ -2823,36 +2932,100 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     DWORD stepsAttempted = 0;
     int stopReason = STACKWALK_INVALID_INPUT;
 
-    const BOOL ok = SafeStackWalkI386(
-        pStackWalk64,
-        pSymFunctionTableAccess64,
-        pSymGetModuleBase64,
-        process,
-        thread,
-        info->ContextRecord,
-        frames.data(),
-        capacity,
-        &frameCount,
-        &stepsAttempted,
-        &stopReason
-    );
+    DWORD frameCount64 = 0;
+    DWORD stepsAttempted64 = 0;
+    int stopReason64 = STACKWALK_INVALID_INPUT;
 
-    if (!ok || frameCount == 0)
-        frames.clear();
+    const BOOL ok64 =
+        pStackWalk64 != nullptr
+            ? SafeStackWalkI386(
+                pStackWalk64,
+                pSymFunctionTableAccess64,
+                pSymGetModuleBase64,
+                process,
+                thread,
+                info->ContextRecord,
+                frames.data(),
+                capacity,
+                &frameCount64,
+                &stepsAttempted64,
+                &stopReason64)
+            : FALSE;
+
+    if (ok64 && frameCount64 > 1)
+    {
+        frames.resize(frameCount64);
+    }
     else
-        frames.resize(frameCount);
+    {
+        frames.clear();
+
+        DWORD frameCountLegacy = 0;
+        DWORD stepsAttemptedLegacy = 0;
+        int stopReasonLegacy = STACKWALK_INVALID_INPUT;
+
+        const BOOL okLegacy =
+            pStackWalk != nullptr
+                ? SafeStackWalkLegacyI386(
+                    pStackWalk,
+                    pSymFunctionTableAccess64,
+                    pSymGetModuleBase64,
+                    process,
+                    thread,
+                    info->ContextRecord,
+                    frames.data(),
+                    capacity,
+                    &frameCountLegacy,
+                    &stepsAttemptedLegacy,
+                    &stopReasonLegacy)
+                : FALSE;
+
+        if (okLegacy && frameCountLegacy > 0)
+            frames.resize(frameCountLegacy);
+        else
+            frames.clear();
+
+        if (diagnostics != nullptr)
+        {
+            char text[384] = {};
+            sprintf_s(
+                text,
+                sizeof(text),
+                "status=PRIMARY_%s legacy=%s symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u eip=0x%08X ebp=0x%08X esp=0x%08X",
+                StackWalkStopReasonName(stopReason64),
+                pStackWalk == nullptr
+                    ? "UNAVAILABLE"
+                    : StackWalkStopReasonName(stopReasonLegacy),
+                symbolsInitialized ? 1 : 0,
+                stepsAttempted64,
+                static_cast<unsigned>(frameCount64),
+                stepsAttemptedLegacy,
+                static_cast<unsigned>(frameCountLegacy),
+                info->ContextRecord->Eip,
+                info->ContextRecord->Ebp,
+                info->ContextRecord->Esp
+            );
+        }
+
+        if (symbolsInitialized && pSymCleanup != nullptr)
+            pSymCleanup(process);
+
+        FreeLibrary(dbgHelp);
+        InterlockedExchange(&g_dbgHelpActive, 0);
+        return frames;
+    }
 
     if (diagnostics != nullptr)
     {
-        char text[256] = {};
+        char text[384] = {};
         sprintf_s(
             text,
             sizeof(text),
-            "status=%s dbghelp=1 symbols_initialized=%d steps=%u frames=%u eip=0x%08X ebp=0x%08X esp=0x%08X",
-            StackWalkStopReasonName(stopReason),
+            "status=PRIMARY_%s legacy=NOT_NEEDED symbols_initialized=%d primary_steps=%u primary_frames=%u eip=0x%08X ebp=0x%08X esp=0x%08X",
+            StackWalkStopReasonName(stopReason64),
             symbolsInitialized ? 1 : 0,
-            stepsAttempted,
-            static_cast<unsigned>(frames.size()),
+            stepsAttempted64,
+            static_cast<unsigned>(frameCount64),
             info->ContextRecord->Eip,
             info->ContextRecord->Ebp,
             info->ContextRecord->Esp
