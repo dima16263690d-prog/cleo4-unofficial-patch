@@ -31,6 +31,7 @@ private:
         std::vector<std::string> backtraceModules;
         std::vector<DWORD> lastCommands;
         std::string scriptName;
+        DWORD lastOpcode = 0xFFFFFFFFu;
         DWORD exceptionCode = 0;
         int accessType = -1;
         bool wildcardError = false;
