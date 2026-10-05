@@ -1,10 +1,11 @@
 # CLEO DebugUtils Crash Database
-# Database: CLEO-CrashList
+# Database: CLEO-CrashList (LOCAL OVERLAY)
 # Target: GTA San Andreas 1.0.0.0 US
-# Format: one Error record followed by diagnostic text.
-# This is an original project database. Entries are added from our own
-# verified/reproduced crash observations and are not synchronized from
-# external crash databases.
+# Base database: JuniorDjjr/CrashInfo (GTA-SA-10US EN-CrashList)
+# Base URL: https://github.com/JuniorDjjr/CrashInfo
+# This file contains project-specific verified additions only.
+# Upstream signatures are loaded separately from
+# GTA-SA-10US-EN-CrashList.txt and are never overwritten by this file.
 
 # --- Project-observed signature ---
 Error: 0x005D95CE
