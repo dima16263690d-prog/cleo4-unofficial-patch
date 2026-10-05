@@ -13,6 +13,8 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 #include <CTimer.h>
 
 // plugin-sdk declares this GTA SA 1.0 US static reference but does not
@@ -79,6 +81,7 @@ namespace
         case EXCEPTION_INT_OVERFLOW: return "INT_OVERFLOW";
         case EXCEPTION_PRIV_INSTRUCTION: return "PRIV_INSTRUCTION";
         case EXCEPTION_STACK_OVERFLOW: return "STACK_OVERFLOW";
+        case 0xE06D7363: return "CXX_EXCEPTION";
         default: return "UNKNOWN";
         }
     }
@@ -111,6 +114,7 @@ namespace
         case EXCEPTION_INT_OVERFLOW:
         case EXCEPTION_PRIV_INSTRUCTION:
         case EXCEPTION_STACK_OVERFLOW:
+        case 0xE06D7363: // MSVC C++ exception
             return true;
         default:
             return false;
@@ -253,6 +257,7 @@ DebugUtils::DebugUtils()
     LoadConfig();
     OpenLogs();
     EnsureCrashInfoDatabase();
+    UpdateCrashInfoDatabaseIfNeeded();
     LoadCrashInfoList();
     WriteCoreHeader();
     WriteCoreThreadLayout();
@@ -373,7 +378,13 @@ void DebugUtils::LoadConfig()
             config << "[DebugUtils.Logs]\r\n";
             config << "Memory=1\r\n";
             config << "MemoryTrace=0\r\n";
-            config << "Diagnostic=0\r\n";
+            config << "Diagnostic=0\r\n\r\n";
+
+            config << "[DebugUtils.CrashInfo]\r\n";
+            config << "Update=1\r\n";
+            config << "LastUpdate=1970-01-01\r\n";
+            config << "ConnectionTimeout=3\r\n";
+            config << "DownloadTimeout=4\r\n";
         }
     }
 
@@ -448,6 +459,50 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    m_crashInfoAutoUpdate =
+        GetPrivateProfileIntA(
+            "DebugUtils.CrashInfo", "Update",
+            1,
+            path.c_str()
+        ) != 0;
+
+    m_crashInfoConnectionTimeoutMs =
+        static_cast<DWORD>(GetPrivateProfileIntA(
+            "DebugUtils.CrashInfo", "ConnectionTimeout",
+            3,
+            path.c_str()
+        )) * 1000u;
+
+    m_crashInfoDownloadTimeoutMs =
+        static_cast<DWORD>(GetPrivateProfileIntA(
+            "DebugUtils.CrashInfo", "DownloadTimeout",
+            4,
+            path.c_str()
+        )) * 1000u;
+}
+
+static std::string DebugUtilsCurrentDate()
+{
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    char buffer[16]{};
+    sprintf_s(
+        buffer, sizeof(buffer),
+        "%04u-%02u-%02u",
+        t.wYear, t.wMonth, t.wDay
+    );
+    return buffer;
+}
+
+static int DebugUtilsDateKey(const std::string& date)
+{
+    unsigned year = 0, month = 0, day = 0;
+    if (sscanf_s(date.c_str(), "%4u-%2u-%2u", &year, &month, &day) != 3)
+        return 0;
+
+    return static_cast<int>(year * 10000u + month * 100u + day);
 }
 
 std::string DebugUtils::DebugDir() const
@@ -485,6 +540,225 @@ std::string DebugUtils::CrashLogPath() const
 std::string DebugUtils::CrashInfoPath() const
 {
     return "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
+}
+
+bool DebugUtils::DownloadCrashInfoDatabase(const std::string& targetPath)
+{
+    const wchar_t* userAgent = L"CLEO DebugUtils/4.4.4";
+    const wchar_t* hostName = L"raw.githubusercontent.com";
+    const wchar_t* resourcePath =
+        L"/JuniorDjjr/CrashInfo/main/Lists/GTA-SA-10US/EN-CrashList.txt";
+
+    HINTERNET session = WinHttpOpen(
+        userAgent,
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0
+    );
+    if (!session)
+        return false;
+
+    WinHttpSetTimeouts(
+        session,
+        static_cast<int>(m_crashInfoConnectionTimeoutMs),
+        static_cast<int>(m_crashInfoConnectionTimeoutMs),
+        static_cast<int>(m_crashInfoDownloadTimeoutMs),
+        static_cast<int>(m_crashInfoDownloadTimeoutMs)
+    );
+
+    HINTERNET connect = WinHttpConnect(
+        session,
+        hostName,
+        INTERNET_DEFAULT_HTTPS_PORT,
+        0
+    );
+    if (!connect)
+    {
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(
+        connect,
+        L"GET",
+        resourcePath,
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE
+    );
+    if (!request)
+    {
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    const BOOL sent = WinHttpSendRequest(
+        request,
+        WINHTTP_NO_ADDITIONAL_HEADERS,
+        0,
+        WINHTTP_NO_REQUEST_DATA,
+        0,
+        0,
+        0
+    );
+    const BOOL received = sent && WinHttpReceiveResponse(request, nullptr);
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    const BOOL statusOk =
+        received &&
+        WinHttpQueryHeaders(
+            request,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &statusCode,
+            &statusSize,
+            WINHTTP_NO_HEADER_INDEX
+        ) &&
+        statusCode == 200;
+
+    if (!statusOk)
+    {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    const std::string tempPath = targetPath + ".download";
+    HANDLE file = CreateFileA(
+        tempPath.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    bool ok = true;
+    DWORD totalBytes = 0;
+
+    for (;;)
+    {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available))
+        {
+            ok = false;
+            break;
+        }
+
+        if (available == 0)
+            break;
+
+        std::vector<BYTE> buffer(available);
+        DWORD read = 0;
+
+        if (!WinHttpReadData(request, buffer.data(), available, &read) || read == 0)
+        {
+            ok = false;
+            break;
+        }
+
+        DWORD written = 0;
+        if (!WriteFile(file, buffer.data(), read, &written) || written != read)
+        {
+            ok = false;
+            break;
+        }
+
+        totalBytes += written;
+    }
+
+    CloseHandle(file);
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+
+    if (!ok || totalBytes == 0)
+    {
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    if (!MoveFileExA(
+            tempPath.c_str(),
+            targetPath.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    return true;
+}
+
+void DebugUtils::UpdateCrashInfoDatabaseIfNeeded()
+{
+    if (!m_crashInfoAutoUpdate)
+        return;
+
+    const std::string configPath = ConfigPath();
+    char lastUpdate[32]{};
+    GetPrivateProfileStringA(
+        "DebugUtils.CrashInfo",
+        "LastUpdate",
+        "",
+        lastUpdate,
+        sizeof(lastUpdate),
+        configPath.c_str()
+    );
+
+    const std::string today = DebugUtilsCurrentDate();
+    if (DebugUtilsDateKey(lastUpdate) == DebugUtilsDateKey(today))
+    {
+        WriteCore(
+            "[crashinfo] update skipped date=%s",
+            today.c_str()
+        );
+        return;
+    }
+
+    const std::string target = "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
+
+    if (DownloadCrashInfoDatabase(target))
+    {
+        WritePrivateProfileStringA(
+            "DebugUtils.CrashInfo",
+            "LastUpdate",
+            today.c_str(),
+            configPath.c_str()
+        );
+
+        WriteCore(
+            "[crashinfo] update success path=%s date=%s",
+            target.c_str(),
+            today.c_str()
+        );
+
+        // Keep the documented debug copy in sync when it already exists.
+        const std::string debugCopy = DebugDir() + "CrashInfo\\EN-CrashList.txt";
+        if (GetFileAttributesA(debugCopy.c_str()) != INVALID_FILE_ATTRIBUTES)
+            CopyFileA(target.c_str(), debugCopy.c_str(), TRUE);
+    }
+    else
+    {
+        WriteCore(
+            "[crashinfo] update failed; keeping local database path=%s",
+            target.c_str()
+        );
+    }
 }
 
 void DebugUtils::EnsureCrashInfoDatabase()
