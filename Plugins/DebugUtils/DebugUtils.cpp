@@ -237,7 +237,7 @@ namespace
             SetWindowTextW(
                 hwnd,
                 (s_instance != nullptr && s_instance->m_languageRussian)
-                    ? L"CLEO DebugUtils - Краш GTA SA"
+                    ? L"CLEO DebugUtils - \u041a\u0440\u0430\u0448 GTA SA"
                     : L"CLEO DebugUtils - GTA SA crash"
             );
             SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
@@ -249,17 +249,17 @@ namespace
             SetDlgItemTextW(
                 hwnd,
                 IDC_CRASH_COPY,
-                russian ? L"Копировать" : L"Copy"
+                russian ? L"\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c" : L"Copy"
             );
             SetDlgItemTextW(
                 hwnd,
                 IDC_CRASH_OPEN_LOG,
-                russian ? L"Открыть лог" : L"Open log"
+                russian ? L"\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043b\u043e\u0433" : L"Open log"
             );
             SetDlgItemTextW(
                 hwnd,
                 IDC_CRASH_EXIT,
-                russian ? L"Завершить игру" : L"Exit game"
+                russian ? L"\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0438\u0433\u0440\u0443" : L"Exit game"
             );
             return TRUE;
 
@@ -278,7 +278,7 @@ namespace
                             hwnd,
                             IDC_CRASH_COPY,
                             (s_instance != nullptr && s_instance->m_languageRussian)
-                                ? L"Скопировано"
+                                ? L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e"
                                 : L"Copied"
                         );
                     }
@@ -3481,17 +3481,17 @@ void DebugUtils::ShowCrashDialog(
 
     const char* intro =
         russian
-            ? "Обнаружен критический краш GTA SA от DebugUtils."
+            ? "\xD0\x9E\xD0\xB1\xD0\xBD\xD0\xB0\xD1\x80\xD1\x83\xD0\xB6\xD0\xB5\xD0\xBD\x20\xD0\xBA\xD1\x80\xD0\xB8\xD1\x82\xD0\xB8\xD1\x87\xD0\xB5\xD1\x81\xD0\xBA\xD0\xB8\xD0\xB9\x20\xD0\xBA\xD1\x80\xD0\xB0\xD1\x88\x20\x47\x54\x41\x20\x53\x41\x20\xD0\xBE\xD1\x82\x20\x44\x65\x62\x75\x67\x55\x74\x69\x6C\x73\x2E"
             : "Critical GTA SA crash detected by DebugUtils.";
 
-    const char* labelCrash = russian ? "Краш" : "Crash";
-    const char* labelException = russian ? "Исключение" : "Exception";
-    const char* labelAddress = russian ? "Адрес" : "Address";
-    const char* labelModule = russian ? "Модуль" : "Module";
+    const char* labelCrash = russian ? "\xD0\x9A\xD1\x80\xD0\xB0\xD1\x88" : "Crash";
+    const char* labelException = russian ? "\xD0\x98\xD1\x81\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5" : "Exception";
+    const char* labelAddress = russian ? "\xD0\x90\xD0\xB4\xD1\x80\xD0\xB5\xD1\x81" : "Address";
+    const char* labelModule = russian ? "\xD0\x9C\xD0\xBE\xD0\xB4\xD1\x83\xD0\xBB\xD1\x8C" : "Module";
     const char* labelRva = "RVA";
     const char* labelCrashInfo = "CrashInfo";
-    const char* labelLastScript = russian ? "Последний скрипт" : "Last script";
-    const char* labelLastOpcode = russian ? "Последний opcode" : "Last opcode";
+    const char* labelLastScript = russian ? "\xD0\x9F\xD0\xBE\xD1\x81\xD0\xBB\xD0\xB5\xD0\xB4\xD0\xBD\xD0\xB8\xD0\xB9\x20\xD1\x81\xD0\xBA\xD1\x80\xD0\xB8\xD0\xBF\xD1\x82" : "Last script";
+    const char* labelLastOpcode = russian ? "\xD0\x9F\xD0\xBE\xD1\x81\xD0\xBB\xD0\xB5\xD0\xB4\xD0\xBD\xD0\xB8\xD0\xB9\x20\x6F\x70\x63\x6F\x64\x65" : "Last opcode";
 
     char text[8192] = {};
     sprintf_s(
@@ -3507,7 +3507,7 @@ void DebugUtils::ShowCrashDialog(
         "%s: 0x%04X\r\n",
         intro,
         labelCrash,
-        crashName ? crashName : (russian ? "Неизвестный" : "Unknown"),
+        crashName ? crashName : (russian ? "\xD0\x9D\xD0\xB5\xD0\xB8\xD0\xB7\xD0\xB2\xD0\xB5\xD1\x81\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9" : "Unknown"),
         labelException,
         exceptionCode,
         exceptionType ? exceptionType : "UNKNOWN",
@@ -3528,16 +3528,16 @@ void DebugUtils::ShowCrashDialog(
     std::string details(text);
     if (!issue.empty())
         details += std::string("\r\n") +
-            (russian ? "Проблема: " : "Issue: ") + issue;
+            (russian ? "\xD0\x9F\xD1\x80\xD0\xBE\xD0\xB1\xD0\xBB\xD0\xB5\xD0\xBC\xD0\xB0\x3A\x20" : "Issue: ") + issue;
     if (!about.empty())
         details += std::string("\r\n") +
-            (russian ? "Описание: " : "About: ") + about;
+            (russian ? "\xD0\x9E\xD0\xBF\xD0\xB8\xD1\x81\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "About: ") + about;
     if (!solution.empty())
         details += std::string("\r\n") +
-            (russian ? "Решение: " : "Solution: ") + solution;
+            (russian ? "\xD0\xA0\xD0\xB5\xD1\x88\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "Solution: ") + solution;
 
     details += std::string("\r\n\r\n") +
-        (russian ? "Стек вызовов:" : "Backtrace:");
+        (russian ? "\xD0\xA1\xD1\x82\xD0\xB5\xD0\xBA\x20\xD0\xB2\xD1\x8B\xD0\xB7\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB2\x3A" : "Backtrace:");
     if (backtrace.empty())
     {
         details += "\r\n  <not available>";
