@@ -3453,7 +3453,8 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         }
         else
         {
-            frames.clear();
+            // Keep writable storage for the EBP fallback as well.
+            frames.resize(capacity);
 
             ebpOk =
                 SafeEbpChainI386(
