@@ -30,7 +30,7 @@ namespace
     // Visible in both the startup log and crash report so the installed
     // DebugUtils.cleo can be distinguished from stale copies.
     static constexpr char kDebugUtilsBuildId[] =
-        "test-xx02-stackwalk-2026-10-06";
+        "test-xx02-stackwalk-fix-2026-10-06";
 }
 
 namespace
@@ -3181,8 +3181,14 @@ namespace
             const DWORD stackBegin =
                 static_cast<DWORD>(
                     reinterpret_cast<uintptr_t>(stackRegion.BaseAddress));
-            const DWORD stackEnd =
-                stackBegin + static_cast<DWORD>(stackRegion.RegionSize);
+            const DWORD regionSize =
+                static_cast<DWORD>(stackRegion.RegionSize);
+            if (regionSize < 2u * sizeof(DWORD))
+                return FALSE;
+
+            const DWORD stackEnd = stackBegin + regionSize;
+            if (stackEnd < stackBegin)
+                return FALSE;
 
             const DWORD currentEbp = sourceContext->Ebp;
             if ((currentEbp & 3u) != 0 ||
@@ -3204,17 +3210,23 @@ namespace
                 DWORD nextEbp = 0;
                 DWORD returnAddress = 0;
 
-                if (!SafeReadDword(
-                        reinterpret_cast<const DWORD*>(
-                            static_cast<uintptr_t>(ebp)),
-                        nextEbp) ||
-                    !SafeReadDword(
-                        reinterpret_cast<const DWORD*>(
-                            static_cast<uintptr_t>(ebp) + sizeof(DWORD)),
-                        returnAddress))
+                bool readsValid = true;
+                __try
                 {
-                    break;
+                    nextEbp =
+                        *reinterpret_cast<const DWORD*>(
+                            static_cast<uintptr_t>(ebp));
+                    returnAddress =
+                        *reinterpret_cast<const DWORD*>(
+                            static_cast<uintptr_t>(ebp) + sizeof(DWORD));
                 }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    readsValid = false;
+                }
+
+                if (!readsValid)
+                    break;
 
                 if (returnAddress == 0)
                     break;
