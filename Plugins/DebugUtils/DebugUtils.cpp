@@ -1930,230 +1930,441 @@ void DebugUtils::LoadCrashInfoList()
 {
     m_crashInfo.clear();
 
-    auto loadFile = [this](const std::string& loadedPath, const char* sourceName)
+    const std::string path = CrashInfoPath();
+    std::ifstream file(path);
+    if (!file.is_open())
     {
-        std::ifstream file(loadedPath);
-        if (!file.is_open())
-        {
-            WriteCore(
-                "[crashinfo] database not found source=%s path=%s",
-                sourceName ? sourceName : "unknown",
-                loadedPath.c_str()
-            );
-            return size_t(0);
-        }
+        WriteCore("[crashinfo] verified database unavailable path=%s", path.c_str());
+        return;
+    }
 
-        size_t loadedEntries = 0;
-        std::string line;
-        CrashInfoEntry* current = nullptr;
+    size_t loadedEntries = 0;
+    bool scriptSection = false;
+    CrashInfoEntry* current = nullptr;
 
-        while (std::getline(file, line))
-        {
-            if (line.rfind("Error: ", 0) == 0)
-            {
-                if (m_crashInfo.size() >= 4096)
-                    break;
+    auto beginEntry = [this, &current, &loadedEntries]()
+    {
+        if (m_crashInfo.size() >= 8192)
+            return false;
 
-                m_crashInfo.push_back({});
-                current = &m_crashInfo.back();
-                ++loadedEntries;
-
-                const size_t matcherStart = 7;
-                const size_t backtracePos = line.find("Backtrace", matcherStart);
-                const size_t matcherEnd = backtracePos == std::string::npos
-                    ? line.size()
-                    : backtracePos;
-
-                const std::string matcherText =
-                    line.substr(matcherStart, matcherEnd - matcherStart);
-
-                ExtractHexAddresses(matcherText, 0, current->errorAddresses);
-                ExtractModuleNames(matcherText, current->errorModules);
-
-                if (matcherText.find("0x*") != std::string::npos)
-                    current->wildcardError = true;
-
-                if (backtracePos != std::string::npos)
-                {
-                    ExtractHexAddresses(line, backtracePos, current->backtraceAddresses);
-                    ExtractModuleNames(
-                        line.substr(backtracePos),
-                        current->backtraceModules
-                    );
-                }
-
-                current->hasMatcher =
-                    !current->errorAddresses.empty() ||
-                    !current->errorModules.empty() ||
-                    current->wildcardError ||
-                    !current->backtraceAddresses.empty() ||
-                    !current->backtraceModules.empty();
-
-                continue;
-            }
-
-            if (current == nullptr)
-                continue;
-
-            if (line.rfind("Name: ", 0) == 0)
-            {
-                current->name = line.substr(6);
-                continue;
-            }
-
-            // CrashInfo upstream uses "Problem:" while our local database
-            // historically used "Issue:". Treat both as the same field.
-            if (line.rfind("Problem: ", 0) == 0)
-            {
-                current->issue = line.substr(9);
-                continue;
-            }
-
-            if (line.rfind("Issue: ", 0) == 0)
-            {
-                current->issue = line.substr(7);
-                continue;
-            }
-
-            if (line.rfind("About: ", 0) == 0)
-            {
-                current->about = line.substr(7);
-                continue;
-            }
-
-            if (line.rfind("Solution: ", 0) == 0)
-            {
-                current->solution = line.substr(10);
-                continue;
-            }
-
-            if (line.rfind("Backtrace:", 0) == 0)
-            {
-                ExtractHexAddresses(line, 10, current->backtraceAddresses);
-                ExtractModuleNames(line.substr(10), current->backtraceModules);
-                current->hasMatcher =
-                    !current->errorAddresses.empty() ||
-                    !current->errorModules.empty() ||
-                    current->wildcardError ||
-                    !current->backtraceAddresses.empty() ||
-                    !current->backtraceModules.empty();
-                continue;
-            }
-
-            if (!line.empty() && line[0] == '#')
-                continue;
-
-            if (!line.empty())
-            {
-                if (!current->description.empty())
-                    current->description += " | ";
-
-                current->description += line;
-
-                if (current->description.size() > 4000)
-                    current->description.resize(4000);
-            }
-        }
-
-        WriteCore(
-            "[crashinfo] loaded source=%s entries=%u path=%s",
-            sourceName ? sourceName : "unknown",
-            static_cast<unsigned>(loadedEntries),
-            loadedPath.c_str()
-        );
-
-        return loadedEntries;
+        m_crashInfo.push_back({});
+        current = &m_crashInfo.back();
+        ++loadedEntries;
+        return true;
     };
 
-    // Load the local project overlay first. This gives project-verified
-    // signatures priority when the same address exists in both databases.
-    const std::string localPath = CrashInfoPath();
-    loadFile(localPath, "CLEO-local");
-    if (m_crashInfo.empty())
+    std::string line;
+    while (std::getline(file, line))
     {
-        WriteCore("[crashinfo] no database entries loaded");
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+
+        if (line.rfind("By scripts:", 0) == 0)
+        {
+            scriptSection = true;
+            current = nullptr;
+            continue;
+        }
+
+        if (line.rfind("Others:", 0) == 0)
+        {
+            scriptSection = false;
+            current = nullptr;
+            continue;
+        }
+
+        if (line.rfind("Error: ", 0) == 0)
+        {
+            scriptSection = false;
+
+            if (!beginEntry())
+                break;
+
+            const size_t matcherStart = 7;
+            const size_t backtracePos = line.find("Backtrace", matcherStart);
+            const size_t matcherEnd =
+                backtracePos == std::string::npos ? line.size() : backtracePos;
+            const std::string matcherText =
+                line.substr(matcherStart, matcherEnd - matcherStart);
+
+            ExtractHexAddresses(matcherText, 0, current->errorAddresses);
+            ExtractModuleNames(matcherText, current->errorModules);
+
+            if (matcherText.find("0x*") != std::string::npos)
+                current->wildcardError = true;
+
+            if (backtracePos != std::string::npos)
+            {
+                ExtractHexAddresses(line, backtracePos, current->backtraceAddresses);
+                ExtractModuleNames(
+                    line.substr(backtracePos),
+                    current->backtraceModules
+                );
+            }
+
+            current->hasMatcher =
+                !current->errorAddresses.empty() ||
+                !current->errorModules.empty() ||
+                current->wildcardError ||
+                !current->backtraceAddresses.empty() ||
+                !current->backtraceModules.empty();
+
+            continue;
+        }
+
+        if (line.rfind("Last command:", 0) == 0)
+        {
+            scriptSection = false;
+
+            if (!beginEntry())
+                break;
+
+            current->lastCommands.clear();
+            ExtractHexAddresses(line, 0, current->lastCommands);
+            if (!current->lastCommands.empty())
+            {
+                current->lastOpcode = current->lastCommands.front();
+                char name[64] = {};
+                sprintf_s(
+                    name, sizeof(name),
+                    "Last command [0x%04X]",
+                    current->lastOpcode & 0x7FFF
+                );
+                current->name = name;
+                current->hasMatcher = true;
+            }
+            continue;
+        }
+
+        if (scriptSection &&
+            !line.empty() &&
+            line.find(':') == std::string::npos &&
+            line != "Others")
+        {
+            if (!beginEntry())
+                break;
+
+            current->scriptName = line;
+            current->name = "Script: " + line;
+            current->hasMatcher = true;
+            continue;
+        }
+
+        if (current == nullptr)
+            continue;
+
+        if (line.rfind("Status: ", 0) == 0)
+        {
+            current->autoDiscovered =
+                line.substr(8).find("UNVERIFIED") != std::string::npos;
+            continue;
+        }
+
+        if (line.rfind("Fingerprint: ", 0) == 0)
+        {
+            continue;
+        }
+
+        if (line.rfind("Exception: ", 0) == 0)
+        {
+            const size_t p = line.find("0x", 11);
+            if (p != std::string::npos)
+                current->exceptionCode =
+                    static_cast<DWORD>(strtoul(line.c_str() + p + 2, nullptr, 16));
+            continue;
+        }
+
+        if (line.rfind("Access: ", 0) == 0)
+        {
+            const std::string value = line.substr(8);
+            if (_stricmp(value.c_str(), "READ") == 0)
+                current->accessType = 0;
+            else if (_stricmp(value.c_str(), "WRITE") == 0)
+                current->accessType = 1;
+            else if (_stricmp(value.c_str(), "EXECUTE") == 0)
+                current->accessType = 8;
+            continue;
+        }
+
+        if (line.rfind("Last script: ", 0) == 0)
+        {
+            current->scriptName = line.substr(12);
+            current->hasMatcher = true;
+            continue;
+        }
+
+        if (line.rfind("Last opcode: ", 0) == 0)
+        {
+            const size_t p = line.find("0x", 13);
+            if (p != std::string::npos)
+            {
+                current->lastOpcode =
+                    static_cast<DWORD>(strtoul(line.c_str() + p + 2, nullptr, 16));
+                current->hasMatcher = true;
+            }
+            continue;
+        }
+
+        if (line.rfind("Name: ", 0) == 0)
+        {
+            current->name = line.substr(6);
+            continue;
+        }
+
+        if (line.rfind("Problem: ", 0) == 0)
+        {
+            current->issue = line.substr(9);
+            continue;
+        }
+
+        if (line.rfind("Issue: ", 0) == 0)
+        {
+            current->issue = line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("Problem ", 0) == 0)
+        {
+            if (!current->issue.empty())
+                current->issue += " | ";
+            current->issue += line;
+            continue;
+        }
+
+        if (line.rfind("About: ", 0) == 0)
+        {
+            if (!current->about.empty())
+                current->about += " | ";
+            current->about += line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("Solution: ", 0) == 0)
+        {
+            if (!current->solution.empty())
+                current->solution += " | ";
+            current->solution += line.substr(10);
+            continue;
+        }
+
+        if (line.rfind("Backtrace:", 0) == 0)
+        {
+            ExtractHexAddresses(line, 10, current->backtraceAddresses);
+            ExtractModuleNames(line.substr(10), current->backtraceModules);
+            current->hasMatcher =
+                !current->errorAddresses.empty() ||
+                !current->errorModules.empty() ||
+                current->wildcardError ||
+                !current->backtraceAddresses.empty() ||
+                !current->backtraceModules.empty();
+            continue;
+        }
+
+        if (!line.empty() && line[0] == '#')
+            continue;
+
+        if (!line.empty())
+        {
+            if (!current->description.empty())
+                current->description += " | ";
+
+            current->description += line;
+
+            if (current->description.size() > 4000)
+                current->description.resize(4000);
+        }
     }
-    else
-    {
-        WriteCore(
-            "[crashinfo] total entries=%u",
-            static_cast<unsigned>(m_crashInfo.size())
-        );
-    }
+
+    WriteCore(
+        "[crashinfo] loaded verified entries=%u path=%s",
+        static_cast<unsigned>(loadedEntries),
+        path.c_str()
+    );
 }
+
 
 const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
     DWORD address,
     const std::string& faultModule,
-    const std::vector<DWORD>& backtrace
+    const std::vector<DWORD>& backtrace,
+    DWORD exceptionCode,
+    int accessType,
+    const std::string& lastScript,
+    DWORD lastOpcode
 ) const
 {
     const CrashInfoEntry* best = nullptr;
     int bestScore = -1;
 
+    std::vector<std::string> backtraceModules;
+
+    auto sameText = [](const std::string& a, const std::string& b) -> bool
+    {
+        if (a.empty() || b.empty() || a.size() != b.size())
+            return false;
+
+        return _stricmp(a.c_str(), b.c_str()) == 0;
+    };
+
     for (const auto& entry : m_crashInfo)
     {
-        const bool exactError = ContainsAddress(entry.errorAddresses, address);
-        const bool moduleError = ContainsModule(entry.errorModules, faultModule);
-
-        if (entry.wildcardError && entry.backtraceAddresses.empty() && entry.backtraceModules.empty())
-        {
-            // A bare Error: 0x* entry is a true catch-all, just like the
-            // generic wildcard entry in the source database.
-        }
-        else if (!exactError && !moduleError && !entry.wildcardError &&
-                 entry.backtraceAddresses.empty() && entry.backtraceModules.empty())
-        {
+        if (entry.autoDiscovered)
             continue;
-        }
 
-        if (entry.wildcardError == false &&
-            !exactError &&
-            !moduleError &&
-            entry.errorAddresses.size() + entry.errorModules.size() > 0)
+        const bool exactError =
+            ContainsAddress(entry.errorAddresses, address);
+        const bool moduleError =
+            ContainsModule(entry.errorModules, faultModule);
+        const bool wildcard =
+            entry.wildcardError;
+
+        int score = 0;
+
+        if (!entry.errorAddresses.empty() ||
+            !entry.errorModules.empty() ||
+            entry.wildcardError)
         {
-            continue;
+            if (!exactError && !moduleError && !wildcard)
+                continue;
+
+            if (exactError)
+                score += 500;
+            if (moduleError)
+                score += 320;
+            if (wildcard)
+                score += 20;
         }
 
-        bool backtraceOk = true;
         int backtraceMatches = 0;
 
         for (DWORD expected : entry.backtraceAddresses)
         {
             if (!ContainsAddress(backtrace, expected))
-            {
-                backtraceOk = false;
-                break;
-            }
+                continue;
+
             ++backtraceMatches;
         }
 
-        if (!backtraceOk)
-            continue;
-
-        std::vector<std::string> backtraceModules;
-        backtraceModules.reserve(backtrace.size());
-        for (DWORD bt : backtrace)
-            backtraceModules.push_back(ModuleNameForAddress(bt));
-
-        for (const auto& expectedModule : entry.backtraceModules)
+        if (!entry.backtraceAddresses.empty() &&
+            backtraceMatches != static_cast<int>(entry.backtraceAddresses.size()))
         {
-            if (!ContainsModule(backtraceModules, expectedModule))
-            {
-                backtraceOk = false;
-                break;
-            }
-            ++backtraceMatches;
+            continue;
         }
 
-        if (!backtraceOk)
+        score += backtraceMatches * 80;
+
+        if (!entry.backtraceModules.empty())
+        {
+            if (backtraceModules.empty())
+            {
+                backtraceModules.reserve(backtrace.size());
+                for (DWORD bt : backtrace)
+                    backtraceModules.push_back(ModuleNameForAddress(bt));
+            }
+
+            for (const auto& expected : entry.backtraceModules)
+            {
+                if (!ContainsModule(backtraceModules, expected))
+                    continue;
+
+                ++backtraceMatches;
+            }
+
+            const int requiredModules =
+                static_cast<int>(entry.backtraceModules.size());
+
+            if (backtraceMatches < requiredModules)
+                continue;
+
+            score += requiredModules * 60;
+        }
+
+        if (entry.exceptionCode != 0)
+        {
+            if (entry.exceptionCode != exceptionCode)
+                continue;
+            score += 40;
+        }
+
+        if (entry.accessType >= 0)
+        {
+            if (entry.accessType != accessType)
+                continue;
+            score += 30;
+        }
+
+        bool contextMatched = false;
+
+        const DWORD normalizedOpcode =
+            lastOpcode == 0xFFFFFFFF ? 0xFFFFFFFF : lastOpcode & 0x7FFF;
+
+        if (entry.lastOpcode != 0)
+        {
+            if (normalizedOpcode != 0xFFFFFFFF &&
+                entry.lastOpcode == normalizedOpcode)
+            {
+                score += 120;
+                contextMatched = true;
+            }
+            else if (!entry.errorAddresses.empty() ||
+                     !entry.errorModules.empty() ||
+                     entry.wildcardError)
+            {
+                continue;
+            }
+        }
+
+        for (DWORD expectedOpcode : entry.lastCommands)
+        {
+            if (normalizedOpcode != 0xFFFFFFFF &&
+                expectedOpcode == normalizedOpcode)
+            {
+                score += 120;
+                contextMatched = true;
+                break;
+            }
+        }
+
+        if (!entry.scriptName.empty() &&
+            sameText(entry.scriptName, lastScript))
+        {
+            score += 160;
+            contextMatched = true;
+        }
+        else if (!entry.scriptName.empty() &&
+                 entry.errorAddresses.empty() &&
+                 entry.errorModules.empty() &&
+                 !entry.wildcardError &&
+                 entry.backtraceAddresses.empty() &&
+                 entry.backtraceModules.empty())
+        {
+            continue;
+        }
+
+        const bool hasAnyMatcher =
+            !entry.errorAddresses.empty() ||
+            !entry.errorModules.empty() ||
+            entry.wildcardError ||
+            !entry.backtraceAddresses.empty() ||
+            !entry.backtraceModules.empty() ||
+            entry.lastOpcode != 0 ||
+            !entry.lastCommands.empty() ||
+            !entry.scriptName.empty() ||
+            entry.exceptionCode != 0 ||
+            entry.accessType >= 0;
+
+        if (!hasAnyMatcher || score <= 0)
             continue;
 
-        int score = 0;
-        if (exactError) score += 200;
-        if (moduleError) score += 180;
-        if (entry.wildcardError) score += 20;
-        score += backtraceMatches * 50;
+        if (entry.errorAddresses.empty() &&
+            entry.errorModules.empty() &&
+            !entry.wildcardError &&
+            entry.backtraceAddresses.empty() &&
+            entry.backtraceModules.empty() &&
+            !contextMatched)
+        {
+            continue;
+        }
 
         if (score > bestScore)
         {
