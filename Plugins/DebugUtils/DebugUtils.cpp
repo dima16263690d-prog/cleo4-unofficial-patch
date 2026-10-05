@@ -147,23 +147,73 @@ namespace
     {
         HWND gameWindow = FindProcessMainWindow();
 
+        // GTA can keep the mouse captured/clipped even after its window is
+        // minimized (DirectInput / fullscreen input handling). Release all
+        // process-level mouse capture before showing the crash UI.
+        ReleaseCapture();
+        ClipCursor(nullptr);
+
+        // Restore the cursor visibility even if GTA hid it before the crash.
+        CURSORINFO cursorInfo{};
+        cursorInfo.cbSize = sizeof(cursorInfo);
+        if (GetCursorInfo(&cursorInfo))
+        {
+            if ((cursorInfo.flags & CURSOR_SHOWING) == 0)
+            {
+                ShowCursor(TRUE);
+            }
+        }
+        else
+        {
+            ShowCursor(TRUE);
+        }
+
         if (gameWindow != nullptr && gameWindow != dialog)
         {
+            // Disable the crashed game's window so Windows cannot activate it
+            // again while the diagnostic dialog is being used.
+            EnableWindow(gameWindow, FALSE);
             ShowWindow(gameWindow, SW_MINIMIZE);
             UpdateWindow(gameWindow);
         }
 
         if (dialog != nullptr)
         {
+            // Make the diagnostic dialog a real interactive foreground window.
+            // WS_EX_NOACTIVATE must never be set here.
+            SetWindowLongPtrW(
+                dialog,
+                GWL_EXSTYLE,
+                GetWindowLongPtrW(dialog, GWL_EXSTYLE) & ~WS_EX_NOACTIVATE
+            );
+
             SetWindowPos(
                 dialog,
                 HWND_TOPMOST,
                 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
             );
+
             ShowWindow(dialog, SW_SHOWNORMAL);
-            SetForegroundWindow(dialog);
+            BringWindowToTop(dialog);
             SetActiveWindow(dialog);
+            SetForegroundWindow(dialog);
+            SetFocus(dialog);
+
+            // Move the cursor into the client area so the first mouse click
+            // is guaranteed to belong to DebugUtils.
+            POINT pt{};
+            RECT rc{};
+            if (GetClientRect(dialog, &rc) && GetWindowRect(dialog, &rc))
+            {
+                pt.x = (rc.left + rc.right) / 2;
+                pt.y = (rc.top + rc.bottom) / 2;
+                SetCursorPos(pt.x, pt.y);
+            }
+
+            // Explicitly remove any clip region that may have been restored
+            // by the game between Minimize and foreground activation.
+            ClipCursor(nullptr);
         }
     }
 
@@ -220,6 +270,10 @@ namespace
                 return TRUE;
 
             case IDC_CRASH_EXIT:
+                EnableWindow(FindProcessMainWindow(), TRUE);
+                ClipCursor(nullptr);
+                ReleaseCapture();
+                ShowCursor(TRUE);
                 TerminateProcess(
                     GetCurrentProcess(),
                     data != nullptr && data->exitCode != 0 ? data->exitCode : 1
@@ -229,6 +283,10 @@ namespace
             break;
 
         case WM_CLOSE:
+            EnableWindow(FindProcessMainWindow(), TRUE);
+            ClipCursor(nullptr);
+            ReleaseCapture();
+            ShowCursor(TRUE);
             TerminateProcess(
                 GetCurrentProcess(),
                 data != nullptr && data->exitCode != 0 ? data->exitCode : 1
