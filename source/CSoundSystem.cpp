@@ -3,11 +3,17 @@
 #include "bass.h"
 #include "CDebugBridge.h"
 #include "cleo.h"
-#include <game_sa/CTimer.h>
 #include <windows.h>
 
 namespace CLEO
 {
+    // GTA SA 1.0.0.0 US: CTimer::ms_fTimeScale is stored at 0xB7CB64.
+    // Keep audio timing tied to the game without introducing a link-time
+    // dependency on plugin-sdk's CTimer.cpp implementation.
+    static inline float GetGameTimeScale()
+    {
+        return *reinterpret_cast<volatile float*>(0xB7CB64);
+    }
     HWND(__cdecl * CreateMainWindow)(HINSTANCE hinst);
     LRESULT(__stdcall * imp_DefWindowProc)(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
@@ -498,7 +504,7 @@ namespace CLEO
             const float effectiveSpeed = GetType() == StreamTypeNone ||
                                          GetType() == StreamTypeUserInterface
                 ? speed.Get()
-                : speed.Get() * std::max(CTimer::ms_fTimeScale, 0.0f);
+                : speed.Get() * std::max(GetGameTimeScale(), 0.0f);
             const float frequency = std::max(rate * effectiveSpeed, 0.000001f);
             BASS_ChannelSetAttribute(streamInternal, BASS_ATTRIB_FREQ, frequency);
         }
@@ -607,7 +613,7 @@ namespace CLEO
 
         const float masterSpeed =
             (type == StreamTypeSoundEffect || type == StreamTypeMusic)
-                ? std::max(CTimer::ms_fTimeScale, 0.0f)
+                ? std::max(GetGameTimeScale(), 0.0f)
                 : 1.0f;
 
         if (state == playing)
