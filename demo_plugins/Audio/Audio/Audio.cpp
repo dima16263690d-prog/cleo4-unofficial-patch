@@ -45,6 +45,7 @@ namespace
             CLEO_RegisterOpcode(0x250A, opcode_250A);
             CLEO_RegisterOpcode(0x250B, opcode_250B);
             CLEO_RegisterOpcode(0x250C, opcode_250C);
+            CLEO_RegisterOpcode(0x250D, opcode_250D);
         }
 
     private:
@@ -167,6 +168,15 @@ namespace
                 if (length > 0.0f)
                     CLEO_Audio_SetProgress(stream, seconds / length);
             }
+            return OR_CONTINUE;
+        }
+
+        static OpcodeResult WINAPI opcode_250D(CScriptThread* thread)
+        {
+            const DWORD stream = ReadStream(thread);
+            const BOOL enable = CLEO_GetIntOpcodeParam(thread) != 0 ? TRUE : FALSE;
+            if (ValidStream(stream))
+                CLEO_Audio_SetLooping(stream, enable);
             return OR_CONTINUE;
         }
     };
