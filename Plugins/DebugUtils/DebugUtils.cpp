@@ -2973,6 +2973,9 @@ namespace
             DWORD count = 0;
             frameAddresses[count++] = context.Eip;
 
+            DWORD previousStack = frame.AddrStack.Offset;
+            DWORD previousFrame = frame.AddrFrame.Offset;
+
             while (count < capacity)
             {
                 if (stepsAttempted != nullptr)
@@ -3009,14 +3012,36 @@ namespace
                     break;
                 }
 
-                if (address == frameAddresses[count - 1])
+                const DWORD64 currentStack = frame.AddrStack.Offset;
+                const DWORD64 currentFrame = frame.AddrFrame.Offset;
+                const DWORD previousAddress = frameAddresses[count - 1];
+
+                // The same PC can legitimately occur in multiple frames
+                // (recursion or multiple activations of one function). Treat
+                // it as a duplicate only when DbgHelp also failed to advance
+                // the stack/frame state.
+                if (address == previousAddress &&
+                    currentStack <= previousStack &&
+                    currentFrame == previousFrame)
                 {
                     if (stopReason != nullptr)
                         *stopReason = STACKWALK_DUPLICATE_PC;
                     break;
                 }
 
+                // A successful x86 unwind must move upward through the stack.
+                // Reject a result that moves backwards or does not advance
+                // at all, otherwise malformed unwind data could loop forever.
+                if (currentStack <= previousStack)
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_STEP_FAILED;
+                    break;
+                }
+
                 frameAddresses[count++] = address;
+                previousStack = currentStack;
+                previousFrame = currentFrame;
             }
 
             if (count >= capacity && stopReason != nullptr)
@@ -3079,6 +3104,8 @@ namespace
             DWORD count = 0;
             frameAddresses[count++] = context.Eip;
 
+            DWORD64 previousStack = frame.AddrStack.Offset;
+            DWORD64 previousFrame = frame.AddrFrame.Offset;
             while (count < capacity)
             {
                 if (stepsAttempted != nullptr)
@@ -3115,14 +3142,29 @@ namespace
                     break;
                 }
 
-                if (address == frameAddresses[count - 1])
+                const DWORD currentStack = frame.AddrStack.Offset;
+                const DWORD currentFrame = frame.AddrFrame.Offset;
+                const DWORD previousAddress = frameAddresses[count - 1];
+
+                if (address == previousAddress &&
+                    currentStack <= previousStack &&
+                    currentFrame == previousFrame)
                 {
                     if (stopReason != nullptr)
                         *stopReason = STACKWALK_DUPLICATE_PC;
                     break;
                 }
 
+                if (currentStack <= previousStack)
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_STEP_FAILED;
+                    break;
+                }
+
                 frameAddresses[count++] = address;
+                previousStack = currentStack;
+                previousFrame = currentFrame;
             }
 
             if (count >= capacity)
