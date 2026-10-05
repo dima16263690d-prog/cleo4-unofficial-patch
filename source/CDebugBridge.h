@@ -16,3 +16,14 @@
 
 void Warning(const char *message);
 void Error(const char *message);
+
+
+namespace CLEO
+{
+    extern volatile LONG g_crashSnapshotEnabled;
+
+    inline bool IsCrashSnapshotEnabled()
+    {
+        return g_crashSnapshotEnabled != 0;
+    }
+}
