@@ -31,6 +31,7 @@ private:
         std::vector<std::string> backtraceModules;
         bool wildcardError = false;
         bool hasMatcher = false;
+        std::string name;
         std::string description;
     };
 
