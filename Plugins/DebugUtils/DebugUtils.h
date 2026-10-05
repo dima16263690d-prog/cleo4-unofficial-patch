@@ -203,6 +203,21 @@ private:
 
     LONG HandleException(PEXCEPTION_POINTERS info);
     void WriteCrashReport(PEXCEPTION_POINTERS info);
+    void ShowCrashDialog(
+        const char* crashName,
+        DWORD exceptionCode,
+        const char* exceptionType,
+        DWORD faultAddress,
+        const std::string& faultModule,
+        DWORD faultRva,
+        const char* confidence,
+        const std::string& issue,
+        const std::string& about,
+        const std::string& solution,
+        const std::string& lastScript,
+        DWORD lastOpcode,
+        const std::vector<DWORD>& backtrace
+    );
     void RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result);
     void WriteOpcodeHistory(const char* reason);
 
