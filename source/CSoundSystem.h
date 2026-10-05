@@ -163,6 +163,7 @@ namespace CLEO
         DWORD GetState();              // legacy-compatible: -1/1/2
         float GetVolume();
         void SetVolume(float val);
+        void SetVolume(float val, float transitionTime);
         void Loop(bool enable);
         HSTREAM GetInternal();
 
