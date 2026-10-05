@@ -38,6 +38,16 @@ typedef enum CLEO_DebugOpcodeAction
     CLEO_DEBUG_OPCODE_INTERRUPT = 2
 } CLEO_DebugOpcodeAction;
 
+typedef struct CLEO_CrashSnapshot
+{
+    uintptr_t scriptPtr;
+    DWORD opcode;
+    DWORD opcodeOffset;
+    LONG opcodeResult;
+    DWORD gameTick;
+    char scriptName[9];
+} CLEO_CrashSnapshot;
+
 typedef BOOL (__stdcall *CLEO_ScriptProcessBeforeCallback)(void* thread);
 typedef void (__stdcall *CLEO_ScriptProcessAfterCallback)(void* thread);
 typedef int (__stdcall *CLEO_ScriptOpcodeProcessBeforeCallback)(void* thread, DWORD opcode);
@@ -49,6 +59,16 @@ BOOL WINAPI CLEO_RegisterCallback(int callbackId, uintptr_t callback);
 BOOL WINAPI CLEO_UnregisterCallback(int callbackId, uintptr_t callback);
 BOOL WINAPI CLEO_DebugSetLogCallback(CLEO_DebugLogCallback callback);
 void __cdecl CLEO_DebugLog(int level, const char* format, ...);
+
+BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled);
+void WINAPI CLEO_DebugRecordCrashOpcode(
+    uintptr_t scriptPtr,
+    const char* scriptName,
+    DWORD opcode,
+    DWORD opcodeOffset,
+    LONG result
+);
+BOOL WINAPI CLEO_DebugGetCrashSnapshot(CLEO_CrashSnapshot* snapshot);
 
 #ifdef __cplusplus
 }
