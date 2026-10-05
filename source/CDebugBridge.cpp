@@ -7,7 +7,16 @@
 namespace
 {
     volatile PVOID g_debugLogCallback = nullptr;
+
+    volatile LONG g_crashSnapshotSequence = 0;
+    CLEO_CrashSnapshot g_crashSnapshot = {};
 }
+
+namespace CLEO
+{
+    volatile LONG g_crashSnapshotEnabled = 0;
+}
+
 
 extern "C" BOOL WINAPI CLEO_DebugSetLogCallback(CLEO_DebugLogCallback callback)
 {
@@ -45,4 +54,71 @@ void Error(const char *message)
 void Warning(const char *message)
 {
     CLEO_DebugLog(CLEO_DEBUG_WARNING, "%s", message ? message : "");
+}
+
+
+extern "C" BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled)
+{
+    InterlockedExchange(
+        &CLEO::g_crashSnapshotEnabled,
+        enabled ? 1 : 0
+    );
+    return TRUE;
+}
+
+extern "C" void WINAPI CLEO_DebugRecordCrashOpcode(
+    uintptr_t scriptPtr,
+    const char* scriptName,
+    DWORD opcode,
+    DWORD opcodeOffset,
+    LONG result
+)
+{
+    if (CLEO::g_crashSnapshotEnabled == 0)
+        return;
+
+    InterlockedIncrement(&g_crashSnapshotSequence);
+
+    g_crashSnapshot.scriptPtr = scriptPtr;
+    g_crashSnapshot.opcode = opcode & 0x7FFF;
+    g_crashSnapshot.opcodeOffset = opcodeOffset;
+    g_crashSnapshot.opcodeResult = result;
+    g_crashSnapshot.gameTick = GetTickCount();
+
+    if (scriptName != nullptr)
+    {
+        memcpy(g_crashSnapshot.scriptName, scriptName, 8);
+        g_crashSnapshot.scriptName[8] = '\0';
+    }
+    else
+    {
+        memcpy(g_crashSnapshot.scriptName, "none", 5);
+        g_crashSnapshot.scriptName[5] = '\0';
+    }
+
+    InterlockedIncrement(&g_crashSnapshotSequence);
+}
+
+extern "C" BOOL WINAPI CLEO_DebugGetCrashSnapshot(CLEO_CrashSnapshot* snapshot)
+{
+    if (snapshot == nullptr)
+        return FALSE;
+
+    for (unsigned attempt = 0; attempt < 4; ++attempt)
+    {
+        const LONG begin = g_crashSnapshotSequence;
+
+        if (begin & 1)
+            continue;
+
+        memcpy(snapshot, &g_crashSnapshot, sizeof(CLEO_CrashSnapshot));
+        MemoryBarrier();
+
+        const LONG end = g_crashSnapshotSequence;
+
+        if (begin == end && !(end & 1))
+            return TRUE;
+    }
+
+    return FALSE;
 }
