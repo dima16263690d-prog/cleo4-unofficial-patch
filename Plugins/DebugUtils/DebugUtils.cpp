@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <fstream>
 #include <sstream>
+#include <regex>
 #include <CTimer.h>
 
 // plugin-sdk declares this GTA SA 1.0 US static reference but does not
@@ -179,9 +180,45 @@ namespace
         }
     }
 
+    void ExtractModuleNames(const std::string& line, std::vector<std::string>& out)
+    {
+        static const std::regex moduleRegex(
+            R"(([A-Za-z0-9_~+.-]+\.(?:asi|cleo|dll)))",
+            std::regex_constants::icase
+        );
+
+        for (std::sregex_iterator it(line.begin(), line.end(), moduleRegex), end; it != end; ++it)
+            out.push_back((*it)[1].str());
+    }
+
     bool ContainsAddress(const std::vector<DWORD>& values, DWORD address)
     {
         return std::find(values.begin(), values.end(), address) != values.end();
+    }
+
+    bool ContainsModule(const std::vector<std::string>& values, const std::string& module)
+    {
+        for (const auto& value : values)
+        {
+            if (value.size() == module.size())
+            {
+                bool same = true;
+                for (size_t i = 0; i < value.size(); ++i)
+                {
+                    if (tolower(static_cast<unsigned char>(value[i])) !=
+                        tolower(static_cast<unsigned char>(module[i])))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+
+                if (same)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     const char* CallbackName(int id)
@@ -1390,8 +1427,6 @@ void DebugUtils::LoadCrashInfoList()
     std::string loadedPath = CrashInfoPath();
     std::ifstream file(loadedPath);
 
-    // Prefer the runtime plugin path created by DebugUtils, then fall back
-    // to the legacy/debug location for existing installations.
     if (!file.is_open())
     {
         loadedPath = DebugDir() + "CrashInfo\\EN-CrashList.txt";
@@ -1420,9 +1455,32 @@ void DebugUtils::LoadCrashInfoList()
             m_crashInfo.push_back({});
             current = &m_crashInfo.back();
 
-            ExtractHexAddresses(line, 7, current->errorAddresses);
-            if (line.find("0x*", 7) != std::string::npos)
+            const size_t matcherStart = 7;
+            const size_t backtracePos = line.find("Backtrace", matcherStart);
+            const size_t matcherEnd = backtracePos == std::string::npos
+                ? line.size()
+                : backtracePos;
+
+            const std::string matcherText = line.substr(matcherStart, matcherEnd - matcherStart);
+
+            ExtractHexAddresses(matcherText, 0, current->errorAddresses);
+            ExtractModuleNames(matcherText, current->errorModules);
+
+            if (matcherText.find("0x*") != std::string::npos)
                 current->wildcardError = true;
+
+            if (backtracePos != std::string::npos)
+            {
+                ExtractHexAddresses(line, backtracePos, current->backtraceAddresses);
+                ExtractModuleNames(line.substr(backtracePos), current->backtraceModules);
+            }
+
+            current->hasMatcher =
+                !current->errorAddresses.empty() ||
+                !current->errorModules.empty() ||
+                current->wildcardError ||
+                !current->backtraceAddresses.empty() ||
+                !current->backtraceModules.empty();
 
             continue;
         }
@@ -1433,11 +1491,16 @@ void DebugUtils::LoadCrashInfoList()
         if (line.rfind("Backtrace:", 0) == 0)
         {
             ExtractHexAddresses(line, 10, current->backtraceAddresses);
+            ExtractModuleNames(line.substr(10), current->backtraceModules);
+            current->hasMatcher =
+                !current->errorAddresses.empty() ||
+                !current->errorModules.empty() ||
+                current->wildcardError ||
+                !current->backtraceAddresses.empty() ||
+                !current->backtraceModules.empty();
             continue;
         }
 
-        // Preserve the useful human diagnosis text, including "Problem 1:",
-        // "Solution 2:", "About:", and other variants used by CrashInfo.
         if (!line.empty())
         {
             if (!current->description.empty())
@@ -1457,7 +1520,9 @@ void DebugUtils::LoadCrashInfoList()
 
 const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
     DWORD address,
-    const std::vector<DWORD>& backtrace) const
+    const std::string& faultModule,
+    const std::vector<DWORD>& backtrace
+) const
 {
     const CrashInfoEntry* best = nullptr;
     int bestScore = -1;
@@ -1465,27 +1530,66 @@ const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
     for (const auto& entry : m_crashInfo)
     {
         const bool exactError = ContainsAddress(entry.errorAddresses, address);
-        const bool wildcardError = entry.wildcardError;
+        const bool moduleError = ContainsModule(entry.errorModules, faultModule);
 
-        if (!exactError && !wildcardError)
+        if (entry.wildcardError && entry.backtraceAddresses.empty() && entry.backtraceModules.empty())
+        {
+            // A bare Error: 0x* entry is a true catch-all, just like the
+            // generic wildcard entry in the source database.
+        }
+        else if (!exactError && !moduleError && !entry.wildcardError &&
+                 entry.backtraceAddresses.empty() && entry.backtraceModules.empty())
+        {
+            continue;
+        }
+
+        if (entry.wildcardError == false &&
+            !exactError &&
+            !moduleError &&
+            entry.errorAddresses.size() + entry.errorModules.size() > 0)
+        {
+            continue;
+        }
+
+        bool backtraceOk = true;
+        int backtraceMatches = 0;
+
+        for (DWORD expected : entry.backtraceAddresses)
+        {
+            if (!ContainsAddress(backtrace, expected))
+            {
+                backtraceOk = false;
+                break;
+            }
+            ++backtraceMatches;
+        }
+
+        if (!backtraceOk)
             continue;
 
-        int score = exactError ? 100 : 10;
+        std::vector<std::string> backtraceModules;
+        backtraceModules.reserve(backtrace.size());
+        for (DWORD bt : backtrace)
+            backtraceModules.push_back(ModuleNameForAddress(bt));
 
-        if (!entry.backtraceAddresses.empty())
+        for (const auto& expectedModule : entry.backtraceModules)
         {
-            int backtraceMatches = 0;
-            for (DWORD expected : entry.backtraceAddresses)
+            if (!ContainsModule(backtraceModules, expectedModule))
             {
-                if (ContainsAddress(backtrace, expected))
-                    ++backtraceMatches;
+                backtraceOk = false;
+                break;
             }
-
-            if (backtraceMatches == 0)
-                continue;
-
-            score += backtraceMatches * 20;
+            ++backtraceMatches;
         }
+
+        if (!backtraceOk)
+            continue;
+
+        int score = 0;
+        if (exactError) score += 200;
+        if (moduleError) score += 180;
+        if (entry.wildcardError) score += 20;
+        score += backtraceMatches * 50;
 
         if (score > bestScore)
         {
@@ -1714,7 +1818,11 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         frame = next;
     }
 
-    const CrashInfoEntry* match = FindCrashInfo(faultAddress, backtraceAddresses);
+    const CrashInfoEntry* match = FindCrashInfo(
+        faultAddress,
+        faultModule,
+        backtraceAddresses
+    );
     if (match != nullptr)
     {
         const DWORD matchedAddress = match->errorAddresses.empty() ? 0 : match->errorAddresses.front();
@@ -1732,7 +1840,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         WinAppendLine(
             CrashLogPath(),
-            "[crashinfo_match] no matching entry in local CrashInfo database"
+            "[crashinfo_match] no matching entry in local CrashInfo database (entries=%u)",
+            static_cast<unsigned>(m_crashInfo.size())
         );
     }
 
