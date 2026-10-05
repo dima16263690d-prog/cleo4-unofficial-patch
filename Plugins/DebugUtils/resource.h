@@ -1,3 +1,8 @@
 #pragma once
 
 #define IDR_CRASHINFO 101
+#define IDD_CRASH_DIALOG 200
+#define IDC_CRASH_DETAILS 201
+#define IDC_CRASH_COPY 202
+#define IDC_CRASH_OPEN_LOG 203
+#define IDC_CRASH_EXIT 204
