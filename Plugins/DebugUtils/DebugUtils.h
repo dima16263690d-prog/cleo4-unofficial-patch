@@ -256,7 +256,8 @@ private:
     static std::vector<DWORD> BuildStackWalk(
         PEXCEPTION_POINTERS info,
         DWORD maxFrames,
-        std::string* diagnostics
+        std::string* diagnostics,
+        bool* heuristicBacktrace
     );
     static std::vector<DWORD> BuildRawStackCandidates(
         DWORD stackPointer,
