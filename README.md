@@ -152,3 +152,53 @@ CLEO 4.4.4 Legacy
 > **Не заменить CLEO 4 на CLEO 5, а развить CLEO 4.4.4 с учётом результатов исследования CLEO 5.**
 
 Новые подсистемы должны добавляться рядом со старым ядром и не ломать существующие скрипты и opcode.
+
+
+## Audio: legacy + extended API
+
+В ветке `test-xx02` Audio развивается по комбинированной схеме.
+
+### Legacy CLEO 4
+
+Старые аудио opcode остаются в основном ядре и сохраняют свою интерфейсную семантику:
+
+`0AAC`, `0AAD`, `0AAE`, `0AAF`, `0AB9`, `0ABB`, `0ABC`, `0AC0`, `0AC1`, `0AC2`, `0AC3`, `0AC4`, `0AC5`.
+
+Для `0AAD` сохранены отдельные legacy-пути `LegacyPlay()` и `LegacyStop()`, чтобы обновление внутреннего audio runtime не меняло старое поведение скриптов.
+
+### Updated BASS
+
+`third-party/bass/` обновлён комплектом `bass.dll`, `bass.lib` и `bass.h` из актуального исследуемого baseline CLEO 5.
+
+При этом CLEO 4 не запускает второй BASS engine: один существующий `CSoundSystem` остаётся владельцем stream handles.
+
+### Audio.cleo
+
+Добавлен отдельный plugin:
+
+`demo_plugins/Audio/Audio/Audio.vcxproj`
+
+Он регистрирует новые аудио opcode:
+
+`2500`–`250C`.
+
+Новые функции работают с теми же stream handles, которые возвращаются старым `0AAC/0AC1`.
+
+Таким образом:
+
+```text
+Legacy 0AAC/0AC1
+       │
+       ▼
+ CLEO 4 CAudioStream
+       │
+       ├── old 0AAD/0AAE/0AAF...
+       │
+       └── Audio.cleo
+              │
+              └── 2500–250C
+```
+
+Это позволяет постепенно переносить полезные Audio-возможности из исследования CLEO 5 в CLEO 4, не заменяя legacy audio layer.
+
+Интеграционный тест: `tests/AUDIO_25XX_TEST.cs`.
