@@ -13,8 +13,6 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
-#include <winhttp.h>
-#pragma comment(lib, "winhttp.lib")
 #include <CTimer.h>
 
 // plugin-sdk declares this GTA SA 1.0 US static reference but does not
@@ -533,7 +531,7 @@ void DebugUtils::EnsureCrashInfoDatabase()
             if (GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
             {
                 std::string path = modulePath;
-                const size_t slash = path.find_last_of("\\\/");
+                const size_t slash = path.find_last_of("\\/");
                 const std::string moduleDir =
                     slash == std::string::npos ? std::string() : path.substr(0, slash);
                 const std::string bundledPath =
@@ -1842,11 +1840,12 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
     else
     {
-        WinAppendLine(
-            CrashLogPath(),
+        sprintf_s(
+            line, sizeof(line),
             "[crashinfo_match] no matching entry in local CrashInfo database (entries=%u)",
             static_cast<unsigned>(m_crashInfo.size())
         );
+        WinAppendLine(CrashLogPath(), line);
     }
 
     auto head = (CLEO_GetGameVersion() == GV_US10)
