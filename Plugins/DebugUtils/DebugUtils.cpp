@@ -24,6 +24,15 @@
 bool& CTimer::m_CodePause = *(bool*)0xB7CB48;
 
 DebugUtils* DebugUtils::s_instance = nullptr;
+
+namespace
+{
+    // Visible in both the startup log and crash report so the installed
+    // DebugUtils.cleo can be distinguished from stale copies.
+    static constexpr char kDebugUtilsBuildId[] =
+        "test-xx02-stackwalk-2026-10-06";
+}
+
 namespace
 {
     struct CrashDialogData
@@ -625,7 +634,8 @@ DebugUtils::DebugUtils()
     OpenLogs();
     WriteCore("[debugutils] configuration=%s", ConfigPath().c_str());
     WriteCore(
-        "[debugutils] language=%s",
+        "[debugutils] build_id=%s language=%s",
+        kDebugUtilsBuildId,
         m_languageRussian ? "ru" : "en"
     );
     WriteCore("[debugutils] log files initialized");
@@ -3686,7 +3696,11 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     EnsureCrashInfoDatabase();
     LoadCrashInfoList();
 
-    std::string stackWalkDiagnostics;
+    std::string stackWalkDiagnostics =
+        m_crashBacktraceEnabled
+            ? "status=CALLING_BUILD_STACK_WALK"
+            : "status=NOT_REQUESTED";
+
     const std::vector<DWORD> backtraceAddresses =
         m_crashBacktraceEnabled
             ? BuildStackWalk(
@@ -3859,8 +3873,13 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     appendf(
         "[REPORT]\r\n"
+        "debugutils_build=%s\r\n"
         "time=%04u-%02u-%02u %02u:%02u:%02u.%03u\r\n"
         "fingerprint=%s",
+        kDebugUtilsBuildId,
+        t.wYear, t.wMonth, t.wDay,
+        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        fingerprint.c_str());
         t.wYear, t.wMonth, t.wDay,
         t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         fingerprint.c_str()
@@ -4027,7 +4046,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     output += "\r\n[STACK WALK]\r\n";
     appendf("%s", stackWalkDiagnostics.empty()
-        ? "status=NOT_REQUESTED"
+        ? "status=NO_DIAGNOSTIC"
         : stackWalkDiagnostics.c_str());
     if (backtraceAddresses.empty())
     {
