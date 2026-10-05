@@ -74,6 +74,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DebugUtils.cpp" />
+    <ResourceCompile Include="DebugUtils.rc" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DebugUtils.ini" />
@@ -85,6 +86,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h" />
   </ItemGroup>
