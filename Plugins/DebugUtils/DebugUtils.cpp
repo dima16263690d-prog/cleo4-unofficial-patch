@@ -234,12 +234,33 @@ namespace
             data = reinterpret_cast<CrashDialogData*>(lParam);
             SetWindowLongPtrW(hwnd, DWLP_USER, lParam);
 
-            SetWindowTextW(hwnd, data->title.c_str());
+            SetWindowTextW(
+                hwnd,
+                (s_instance != nullptr && s_instance->m_languageRussian)
+                    ? L"CLEO DebugUtils - Краш GTA SA"
+                    : L"CLEO DebugUtils - GTA SA crash"
+            );
             SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
             PrepareCrashWindow(hwnd);
-            SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c");
-            SetDlgItemTextW(hwnd, IDC_CRASH_OPEN_LOG, L"\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043b\u043e\u0433");
-            SetDlgItemTextW(hwnd, IDC_CRASH_EXIT, L"\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0438\u0433\u0440\u0443");
+
+            const bool russian =
+                s_instance != nullptr && s_instance->m_languageRussian;
+
+            SetDlgItemTextW(
+                hwnd,
+                IDC_CRASH_COPY,
+                russian ? L"Копировать" : L"Copy"
+            );
+            SetDlgItemTextW(
+                hwnd,
+                IDC_CRASH_OPEN_LOG,
+                russian ? L"Открыть лог" : L"Open log"
+            );
+            SetDlgItemTextW(
+                hwnd,
+                IDC_CRASH_EXIT,
+                russian ? L"Завершить игру" : L"Exit game"
+            );
             return TRUE;
 
         case WM_COMMAND:
@@ -252,7 +273,15 @@ namespace
                         data->details + L"\r\nLog: " + data->logPath;
 
                     if (CopyCrashTextToClipboard(hwnd, copied))
-                        SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e");
+                    {
+                        SetDlgItemTextW(
+                            hwnd,
+                            IDC_CRASH_COPY,
+                            (s_instance != nullptr && s_instance->m_languageRussian)
+                                ? L"Скопировано"
+                                : L"Copied"
+                        );
+                    }
                 }
                 return TRUE;
 
@@ -736,6 +765,21 @@ void DebugUtils::LoadConfig()
 {
     const std::string path = ConfigPath();
 
+    char language[16] = {};
+    GetPrivateProfileStringA(
+        "DebugUtils.General",
+        "Language",
+        "en",
+        language,
+        sizeof(language),
+        path.c_str()
+    );
+
+    for (char* p = language; *p != '\0'; ++p)
+        *p = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
+
+    m_languageRussian = _stricmp(language, "ru") == 0;
+
     if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
         std::ofstream config(path, std::ios::out | std::ios::trunc);
@@ -747,6 +791,8 @@ void DebugUtils::LoadConfig()
             config << "; 1 = enabled, 0 = disabled.\r\n\r\n";
 
             config << "[DebugUtils.General]\r\n";
+            config << "; UI and CrashInfo language: en or ru.\r\n";
+            config << "Language=en\r\n";
             config << "LegacyDebugOpcodes=0\r\n\r\n";
 
             config << "[DebugUtils.Limits]\r\n";
@@ -905,6 +951,11 @@ std::string DebugUtils::CrashInfoPath() const
     return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt";
 }
 
+std::string DebugUtils::CrashInfoRuPath() const
+{
+    return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList-RU.txt";
+}
+
 std::string DebugUtils::CrashInfoAutoPath() const
 {
     return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashAuto.txt";
@@ -914,6 +965,8 @@ void DebugUtils::EnsureCrashInfoDatabase()
 {
     const std::string pluginCrashInfoDir = "cleo\\cleo_plugins\\CrashInfo\\";
     const std::string pluginCrashInfoPath = pluginCrashInfoDir + "CLEO-CrashList.txt";
+    const std::string pluginCrashInfoRuPath =
+        pluginCrashInfoDir + "CLEO-CrashList-RU.txt";
     const std::string debugCrashInfoDir = DebugDir() + "CrashInfo\\";
     const std::string debugCrashInfoPath = debugCrashInfoDir + "CLEO-CrashList.txt";
 
@@ -1002,6 +1055,64 @@ void DebugUtils::EnsureCrashInfoDatabase()
                         FlushFileBuffers(file);
                         CloseHandle(file);
                         databaseReady = ok && written == resourceSize;
+                    }
+                }
+            }
+        }
+    }
+
+    if (GetFileAttributesA(pluginCrashInfoRuPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+                &module))
+        {
+            HRSRC resource = FindResourceA(
+                module,
+                MAKEINTRESOURCEA(IDR_CRASHINFO_RU),
+                RT_RCDATA
+            );
+
+            if (resource != nullptr)
+            {
+                HGLOBAL loaded = LoadResource(module, resource);
+                const DWORD resourceSize = SizeofResource(module, resource);
+                const void* resourceData =
+                    loaded ? LockResource(loaded) : nullptr;
+
+                if (resourceData != nullptr && resourceSize != 0)
+                {
+                    HANDLE file = CreateFileA(
+                        pluginCrashInfoRuPath.c_str(),
+                        GENERIC_WRITE,
+                        FILE_SHARE_READ,
+                        nullptr,
+                        CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL,
+                        nullptr
+                    );
+
+                    if (file != INVALID_HANDLE_VALUE)
+                    {
+                        DWORD written = 0;
+                        const BOOL ok = WriteFile(
+                            file,
+                            resourceData,
+                            resourceSize,
+                            &written,
+                            nullptr
+                        );
+                        FlushFileBuffers(file);
+                        CloseHandle(file);
+
+                        WriteCore(
+                            "[crashinfo] Russian localization resource %s path=%s",
+                            ok && written == resourceSize ? "installed" : "failed",
+                            pluginCrashInfoRuPath.c_str()
+                        );
                     }
                 }
             }
@@ -2288,10 +2399,144 @@ void DebugUtils::LoadCrashInfoList()
         );
     }
 
+    LoadCrashInfoLocalization();
+
     WriteCore(
         "[crashinfo] loaded verified entries=%u unique=%u path=%s",
         static_cast<unsigned>(loadedEntries),
         static_cast<unsigned>(m_crashInfo.size()),
+        path.c_str()
+    );
+}
+
+
+void DebugUtils::LoadCrashInfoLocalization()
+{
+    if (!m_languageRussian)
+        return;
+
+    const std::string path = CrashInfoRuPath();
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        WriteCore(
+            "[crashinfo] Russian localization unavailable path=%s; English text will be used",
+            path.c_str()
+        );
+        return;
+    }
+
+    CrashInfoEntry localized{};
+    size_t localizedEntries = 0;
+
+    auto applyEntry = [this, &localized, &localizedEntries]()
+    {
+        if (localized.errorAddresses.empty() &&
+            localized.scriptName.empty())
+        {
+            localized = {};
+            return;
+        }
+
+        CrashInfoEntry* target = nullptr;
+
+        for (auto& entry : m_crashInfo)
+        {
+            bool addressMatch = false;
+
+            for (DWORD expected : localized.errorAddresses)
+            {
+                if (ContainsAddress(entry.errorAddresses, expected))
+                {
+                    addressMatch = true;
+                    break;
+                }
+            }
+
+            const bool scriptMatch =
+                !localized.scriptName.empty() &&
+                !_stricmp(
+                    localized.scriptName.c_str(),
+                    entry.scriptName.c_str());
+
+            if (addressMatch || scriptMatch)
+            {
+                target = &entry;
+                break;
+            }
+        }
+
+        if (target != nullptr)
+        {
+            if (!localized.name.empty())
+                target->name = localized.name;
+            if (!localized.issue.empty())
+                target->issue = localized.issue;
+            if (!localized.about.empty())
+                target->about = localized.about;
+            if (!localized.solution.empty())
+                target->solution = localized.solution;
+            ++localizedEntries;
+        }
+
+        localized = {};
+    };
+
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+
+        if (line.rfind("Error: ", 0) == 0)
+        {
+            applyEntry();
+            ExtractHexAddresses(line, 7, localized.errorAddresses);
+            continue;
+        }
+
+        if (line.rfind("Last script: ", 0) == 0)
+        {
+            localized.scriptName = line.substr(13);
+            continue;
+        }
+
+        if (line.rfind("Name: ", 0) == 0)
+        {
+            localized.name = line.substr(6);
+            continue;
+        }
+
+        if (line.rfind("Problem: ", 0) == 0)
+        {
+            localized.issue = line.substr(9);
+            continue;
+        }
+
+        if (line.rfind("Issue: ", 0) == 0)
+        {
+            localized.issue = line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("About: ", 0) == 0)
+        {
+            localized.about = line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("Solution: ", 0) == 0)
+        {
+            localized.solution = line.substr(10);
+            continue;
+        }
+    }
+
+    applyEntry();
+
+    WriteCore(
+        "[crashinfo] Russian localization applied entries=%u path=%s",
+        static_cast<unsigned>(localizedEntries),
         path.c_str()
     );
 }
@@ -3219,38 +3464,67 @@ void DebugUtils::ShowCrashDialog(
 {
     CrashDialogData data{};
 
+    const bool russian = m_languageRussian;
+
+    const char* intro =
+        russian
+            ? "Обнаружен критический краш GTA SA от DebugUtils."
+            : "Critical GTA SA crash detected by DebugUtils.";
+
+    const char* labelCrash = russian ? "Краш" : "Crash";
+    const char* labelException = russian ? "Исключение" : "Exception";
+    const char* labelAddress = russian ? "Адрес" : "Address";
+    const char* labelModule = russian ? "Модуль" : "Module";
+    const char* labelRva = "RVA";
+    const char* labelCrashInfo = "CrashInfo";
+    const char* labelLastScript = russian ? "Последний скрипт" : "Last script";
+    const char* labelLastOpcode = russian ? "Последний opcode" : "Last opcode";
+
     char text[8192] = {};
     sprintf_s(
         text, sizeof(text),
-        "Critical GTA SA crash detected by DebugUtils.\r\n\r\n"
-        "Crash: %s\r\n"
-        "Exception: 0x%08X (%s)\r\n"
-        "Address: 0x%08X\r\n"
-        "Module: %s\r\n"
-        "RVA: 0x%08X\r\n"
-        "CrashInfo: %s\r\n\r\n"
-        "Last script: %s\r\n"
-        "Last opcode: 0x%04X\r\n",
-        crashName ? crashName : "Unknown",
+        "%s\r\n\r\n"
+        "%s: %s\r\n"
+        "%s: 0x%08X (%s)\r\n"
+        "%s: 0x%08X\r\n"
+        "%s: %s\r\n"
+        "%s: 0x%08X\r\n"
+        "%s: %s\r\n\r\n"
+        "%s: %s\r\n"
+        "%s: 0x%04X\r\n",
+        intro,
+        labelCrash,
+        crashName ? crashName : (russian ? "Неизвестный" : "Unknown"),
+        labelException,
         exceptionCode,
         exceptionType ? exceptionType : "UNKNOWN",
+        labelAddress,
         faultAddress,
+        labelModule,
         faultModule.c_str(),
+        labelRva,
         faultRva,
+        labelCrashInfo,
         confidence ? confidence : "none",
+        labelLastScript,
         lastScript.c_str(),
+        labelLastOpcode,
         lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
     );
 
     std::string details(text);
     if (!issue.empty())
-        details += "\r\nIssue: " + issue;
+        details += std::string("\r\n") +
+            (russian ? "Проблема: " : "Issue: ") + issue;
     if (!about.empty())
-        details += "\r\nAbout: " + about;
+        details += std::string("\r\n") +
+            (russian ? "Описание: " : "About: ") + about;
     if (!solution.empty())
-        details += "\r\nSolution: " + solution;
+        details += std::string("\r\n") +
+            (russian ? "Решение: " : "Solution: ") + solution;
 
-    details += "\r\n\r\nBacktrace:";
+    details += std::string("\r\n\r\n") +
+        (russian ? "Стек вызовов:" : "Backtrace:");
     if (backtrace.empty())
     {
         details += "\r\n  <not available>";
