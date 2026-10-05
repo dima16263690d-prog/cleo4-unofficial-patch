@@ -3012,8 +3012,10 @@ namespace
                     break;
                 }
 
-                const DWORD64 currentStack = frame.AddrStack.Offset;
-                const DWORD64 currentFrame = frame.AddrFrame.Offset;
+                const DWORD currentStack =
+                    static_cast<DWORD>(frame.AddrStack.Offset);
+                const DWORD currentFrame =
+                    static_cast<DWORD>(frame.AddrFrame.Offset);
                 const DWORD previousAddress = frameAddresses[count - 1];
 
                 // The same PC can legitimately occur in multiple frames
@@ -3142,8 +3144,8 @@ namespace
                     break;
                 }
 
-                const DWORD currentStack = frame.AddrStack.Offset;
-                const DWORD currentFrame = frame.AddrFrame.Offset;
+                const DWORD64 currentStack = frame.AddrStack.Offset;
+                const DWORD64 currentFrame = frame.AddrFrame.Offset;
                 const DWORD previousAddress = frameAddresses[count - 1];
 
                 if (address == previousAddress &&
