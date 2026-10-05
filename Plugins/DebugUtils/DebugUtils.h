@@ -89,11 +89,12 @@ private:
     bool m_crashHandlerInstalled = false;
     PVOID m_vectoredHandler = nullptr;
     volatile LONG m_crashInProgress = 0;
-    volatile DWORD m_lastOpcode = 0xFFFFFFFF;
-    volatile DWORD m_lastOpcodeOffset = 0;
-    volatile DWORD m_lastOpcodeResult = 0xFFFFFFFF;
-    volatile uintptr_t m_lastScriptPtr = 0;
-    char m_lastScriptName[9] = "none";
+
+    bool m_crashEnabled = true;
+    bool m_crashWindowEnabled = true;
+    bool m_crashBacktraceEnabled = true;
+    bool m_crashOpcodeHistory = false;
+    DWORD m_crashMaxFrames = 32;
 
     struct OpcodeHistoryEntry
     {
