@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "cleo.h"
 #include "CSoundSystem.h"
+#include <cfloat>
 
 namespace CLEO
 {
