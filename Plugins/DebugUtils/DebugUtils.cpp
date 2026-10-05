@@ -2781,70 +2781,58 @@ void DebugUtils::ShowCrashDialog(
 
 void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 {
-    if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr)
+    if (info == nullptr ||
+        info->ExceptionRecord == nullptr ||
+        info->ContextRecord == nullptr)
         return;
 
-    if (m_crashOpcodeHistory)
-        WriteOpcodeHistory("crash");
+    const EXCEPTION_RECORD* record = info->ExceptionRecord;
+    const CONTEXT* context = info->ContextRecord;
 
-    char line[4096];
-    SYSTEMTIME t{};
-    GetLocalTime(&t);
-
+    const DWORD exceptionCode = record->ExceptionCode;
     const DWORD faultAddress =
-        reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
+        static_cast<DWORD>(reinterpret_cast<uintptr_t>(record->ExceptionAddress));
+
     const std::string faultModule = ModuleNameForAddress(faultAddress);
-    CONTEXT* c = info->ContextRecord;
 
     DWORD faultModuleBase = 0;
-    DWORD faultModuleRva = 0;
+    DWORD faultRva = 0;
     HMODULE faultModuleHandle = nullptr;
     MODULEINFO faultModuleInfo{};
 
     if (GetModuleHandleExA(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCSTR>(faultAddress),
-        &faultModuleHandle) &&
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(faultAddress),
+            &faultModuleHandle) &&
         GetModuleInformation(
             GetCurrentProcess(),
             faultModuleHandle,
             &faultModuleInfo,
             sizeof(faultModuleInfo)))
     {
-        faultModuleBase = reinterpret_cast<DWORD>(faultModuleInfo.lpBaseOfDll);
+        faultModuleBase =
+            static_cast<DWORD>(reinterpret_cast<uintptr_t>(faultModuleInfo.lpBaseOfDll));
+
         if (faultAddress >= faultModuleBase)
-            faultModuleRva = faultAddress - faultModuleBase;
+            faultRva = faultAddress - faultModuleBase;
     }
 
-    // Build the call chain before classifying the crash.
-    std::vector<DWORD> backtraceAddresses;
-    if (m_crashBacktraceEnabled)
+    int accessType = -1;
+    uintptr_t targetAddress = 0;
+
+    if (exceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        record->NumberParameters >= 2)
     {
-        DWORD frame = c->Ebp;
-
-        for (unsigned i = 0;
-             i < m_crashMaxFrames && frame != 0;
-             ++i)
-        {
-            DWORD next = 0;
-            DWORD ret = 0;
-
-            if (!SafeReadDword(reinterpret_cast<const DWORD*>(frame), next) ||
-                !SafeReadDword(reinterpret_cast<const DWORD*>(frame + 4), ret))
-                break;
-
-            if (next <= frame || next - frame > 0x10000)
-                break;
-
-            backtraceAddresses.push_back(ret);
-            frame = next;
-        }
+        accessType =
+            static_cast<int>(record->ExceptionInformation[0]);
+        targetAddress =
+            static_cast<uintptr_t>(record->ExceptionInformation[1]);
     }
 
-    const CrashInfoEntry* match =
-        FindCrashInfo(faultAddress, faultModule, backtraceAddresses);
-
+    // The CLEO snapshot is TLS-backed. It therefore identifies the last
+    // opcode on the thread that actually crashed, without a mutex or global
+    // sequence protocol in the normal opcode path.
     CLEO_CrashSnapshot crashSnapshot{};
     const bool crashSnapshotValid =
         CLEO_DebugGetCrashSnapshot(&crashSnapshot) != FALSE;
@@ -2853,156 +2841,212 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         crashSnapshotValid
             ? std::string(
                 crashSnapshot.scriptName,
-                strnlen_s(crashSnapshot.scriptName,
-                          sizeof(crashSnapshot.scriptName)))
+                strnlen_s(
+                    crashSnapshot.scriptName,
+                    sizeof(crashSnapshot.scriptName)))
             : std::string("none");
 
     const DWORD lastOpcode =
-        crashSnapshotValid ? crashSnapshot.opcode : 0xFFFFFFFF;
-
+        crashSnapshotValid ? crashSnapshot.opcode : 0xFFFFFFFFu;
     const DWORD lastOpcodeOffset =
         crashSnapshotValid ? crashSnapshot.opcodeOffset : 0;
-
     const LONG lastOpcodeResult =
         crashSnapshotValid ? crashSnapshot.opcodeResult : -1;
-
     const uintptr_t lastScriptPtr =
         crashSnapshotValid ? crashSnapshot.scriptPtr : 0;
 
-    const char* crashName = "Unknown / Unclassified Crash";
-    const char* confidence = "none";
+    // All heavy work starts here, after the exception has reached the
+    // top-level unhandled filter.
+    EnsureCrashInfoDatabase();
+    LoadCrashInfoList();
+
+    const std::vector<DWORD> backtraceAddresses =
+        m_crashBacktraceEnabled
+            ? BuildStackWalk(info, m_crashMaxFrames)
+            : std::vector<DWORD>();
+
+    const std::string fingerprint =
+        BuildCrashFingerprint(
+            exceptionCode,
+            faultAddress,
+            faultRva,
+            faultModule,
+            accessType,
+            targetAddress,
+            lastScript,
+            lastOpcode,
+            backtraceAddresses
+        );
+
+    const CrashInfoEntry* match =
+        FindCrashInfo(
+            faultAddress,
+            faultModule,
+            backtraceAddresses,
+            exceptionCode,
+            accessType,
+            lastScript,
+            lastOpcode
+        );
+
+    bool exactAddress = false;
+    bool moduleMatch = false;
+    bool wildcardMatch = false;
+    bool contextMatch = false;
 
     if (match != nullptr)
     {
-        crashName = match->name.empty() ? "Unnamed Signature" : match->name.c_str();
+        exactAddress =
+            ContainsAddress(match->errorAddresses, faultAddress);
+        moduleMatch =
+            ContainsModule(match->errorModules, faultModule);
+        wildcardMatch =
+            match->wildcardError;
 
-        if (match->wildcardError)
-            confidence = "fallback";
-        else if (ContainsAddress(match->errorAddresses, faultAddress))
-            confidence = "exact";
-        else if (ContainsModule(match->errorModules, faultModule))
-            confidence = "module";
-        else
-            confidence = "backtrace";
+        if (lastOpcode != 0xFFFFFFFFu)
+        {
+            const DWORD normalized =
+                lastOpcode & 0x7FFFu;
+
+            if (match->lastOpcode == normalized)
+                contextMatch = true;
+
+            for (DWORD expected : match->lastCommands)
+            {
+                if (expected == normalized)
+                {
+                    contextMatch = true;
+                    break;
+                }
+            }
+        }
+
+        if (!match->scriptName.empty() &&
+            !_stricmp(match->scriptName.c_str(), lastScript.c_str()))
+        {
+            contextMatch = true;
+        }
     }
 
-    // The generic 0x* record is only a fallback. When it is the best
-    // available match, persist this never-before-seen address as an AUTO
-    // candidate so the database grows from real crashes without network sync.
-    if (match == nullptr || strcmp(confidence, "fallback") == 0)
+    const char* confidence = "NONE";
+    if (match == nullptr)
+        confidence = "UNKNOWN";
+    else if (exactAddress)
+        confidence = "EXACT-ADDRESS";
+    else if (moduleMatch)
+        confidence = "MODULE";
+    else if (contextMatch)
+        confidence = "SCRIPT/OPCODE";
+    else if (wildcardMatch)
+        confidence = "FALLBACK";
+    else
+        confidence = "BACKTRACE";
+
+    // Unknown locations are added automatically, but never to the verified
+    // database. The generated fingerprint is the stable duplicate key.
+    if (match == nullptr || wildcardMatch)
     {
         AppendAutomaticCrashInfo(
+            fingerprint,
             faultAddress,
-            info->ExceptionRecord->ExceptionCode,
-            ExceptionName(info->ExceptionRecord->ExceptionCode),
+            exceptionCode,
+            ExceptionName(exceptionCode),
             faultModule,
-            faultModuleRva,
+            faultRva,
+            accessType,
+            targetAddress,
             lastScript,
             lastOpcode,
             backtraceAddresses
         );
     }
 
-    WinAppendLine(CrashLogPath(), "============================================================");
+    const std::string accessName =
+        AccessTypeName(accessType);
 
-    sprintf_s(
-        line, sizeof(line),
-        "[CRASH] %04u-%02u-%02u %02u:%02u:%02u.%03u "
-        "name=\"%s\" exception=0x%08X type=%s address=0x%08X "
-        "module=%s rva=0x%08X confidence=%s",
+    char report[8192] = {};
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    std::string output;
+    output.reserve(32768);
+
+    auto appendf = [&output](const char* format, ...)
+    {
+        char line[4096] = {};
+        va_list args;
+        va_start(args, format);
+        SafeFormat(line, sizeof(line), format, args);
+        va_end(args);
+        output += line;
+        output += "\r\n";
+    };
+
+    output += "============================================================\r\n";
+    output += "                 CLEO DEBUGUTILS CRASH REPORT\r\n";
+    output += "============================================================\r\n\r\n";
+
+    appendf(
+        "[REPORT]\r\n"
+        "time=%04u-%02u-%02u %02u:%02u:%02u.%03u\r\n"
+        "fingerprint=%s",
         t.wYear, t.wMonth, t.wDay,
         t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-        crashName,
-        info->ExceptionRecord->ExceptionCode,
-        ExceptionName(info->ExceptionRecord->ExceptionCode),
+        fingerprint.c_str()
+    );
+
+    output += "\r\n[EXCEPTION]\r\n";
+    appendf(
+        "code=0x%08X\r\ntype=%s\r\nflags=0x%08X\r\nparameters=%u",
+        exceptionCode,
+        ExceptionName(exceptionCode),
+        record->ExceptionFlags,
+        record->NumberParameters
+    );
+
+    output += "\r\n[FAULT]\r\n";
+    appendf(
+        "address=0x%08X\r\nmodule=%s\r\nmodule_base=0x%08X\r\nrva=0x%08X",
         faultAddress,
         faultModule.c_str(),
-        faultModuleRva,
-        confidence
+        faultModuleBase,
+        faultRva
     );
-    WinAppendLine(CrashLogPath(), line);
 
-    sprintf_s(
-        line, sizeof(line),
-        "[registers] "
-        "EAX=%08X EBX=%08X ECX=%08X EDX=%08X "
-        "EDI=%08X ESI=%08X EBP=%08X EIP=%08X "
-        "ESP=%08X EFLAGS=%08X",
-        c->Eax, c->Ebx, c->Ecx, c->Edx,
-        c->Edi, c->Esi, c->Ebp, c->Eip,
-        c->Esp, c->EFlags
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    sprintf_s(
-        line, sizeof(line),
-        "[segments] CS=%04X SS=%04X DS=%04X ES=%04X FS=%04X GS=%04X",
-        c->SegCs, c->SegSs, c->SegDs, c->SegEs, c->SegFs, c->SegGs
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    if (info->ExceptionRecord->NumberParameters >= 2)
+    if (record->NumberParameters >= 2)
     {
-        sprintf_s(
-            line, sizeof(line),
-            "[access] type=%llu target=0x%08llX",
-            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[0]),
-            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1])
+        appendf(
+            "access=%s (%d)\r\ntarget=0x%08X",
+            accessName.c_str(),
+            accessType,
+            static_cast<DWORD>(targetAddress)
         );
-        WinAppendLine(CrashLogPath(), line);
+    }
+    else
+    {
+        output += "access=NOT_AVAILABLE\r\ntarget=NOT_AVAILABLE\r\n";
     }
 
-    sprintf_s(
-        line, sizeof(line),
-        "[exception] flags=0x%08X parameters=%u",
-        info->ExceptionRecord->ExceptionFlags,
-        info->ExceptionRecord->NumberParameters
+    output += "\r\n[CPU]\r\n";
+    appendf(
+        "EAX=%08X EBX=%08X ECX=%08X EDX=%08X\r\n"
+        "EDI=%08X ESI=%08X EBP=%08X EIP=%08X\r\n"
+        "ESP=%08X EFLAGS=%08X\r\n"
+        "CS=%04X SS=%04X DS=%04X ES=%04X FS=%04X GS=%04X",
+        context->Eax, context->Ebx, context->Ecx, context->Edx,
+        context->Edi, context->Esi, context->Ebp, context->Eip,
+        context->Esp, context->EFlags,
+        context->SegCs, context->SegSs, context->SegDs,
+        context->SegEs, context->SegFs, context->SegGs
     );
-    WinAppendLine(CrashLogPath(), line);
 
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(
-        reinterpret_cast<LPCVOID>(faultAddress),
-        &mbi, sizeof(mbi)) != 0)
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[memory] fault_base=%p allocation_base=%p size=0x%08X "
-            "state=0x%08X protect=0x%08X type=0x%08X",
-            mbi.BaseAddress,
-            mbi.AllocationBase,
-            static_cast<unsigned>(mbi.RegionSize),
-            mbi.State,
-            mbi.Protect,
-            mbi.Type
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-
-    PROCESS_MEMORY_COUNTERS_EX pmc{};
-    pmc.cb = sizeof(pmc);
-    if (GetProcessMemoryInfo(
-        GetCurrentProcess(),
-        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
-        sizeof(pmc)))
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[process_memory] working_set=%I64u peak=%I64u private=%I64u pagefile=%I64u",
-            static_cast<unsigned __int64>(pmc.WorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PrivateUsage),
-            static_cast<unsigned __int64>(pmc.PagefileUsage)
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-
-    // ExceptionAddress/EIP is the authoritative faulting instruction.
-    // Keep its raw bytes for later disassembly without adding a permanent hook.
+    output += "\r\n[INSTRUCTION]\r\n";
     {
         BYTE bytes[16] = {};
-
-        if (SafeReadBytes(reinterpret_cast<const void*>(faultAddress), bytes, sizeof(bytes)))
+        if (SafeReadBytes(
+                reinterpret_cast<const void*>(faultAddress),
+                bytes,
+                sizeof(bytes)))
         {
             char hex[16 * 3 + 1] = {};
             size_t pos = 0;
@@ -3018,153 +3062,259 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 pos = strlen(hex);
             }
 
-            sprintf_s(
-                line, sizeof(line),
-                "[instruction] address=0x%08X bytes=%s",
+            appendf(
+                "address=0x%08X\r\nbytes=%s",
                 faultAddress,
                 hex
             );
-            WinAppendLine(CrashLogPath(), line);
         }
-    }
-
-    // 40 DWORDs from ESP, in the same compact style as the reference report.
-    for (unsigned row = 0; row < 10; ++row)
-    {
-        const DWORD address = c->Esp + row * 16u;
-        DWORD values[4] = {};
-        bool readable = true;
-
-        for (unsigned col = 0; col < 4; ++col)
+        else
         {
-            if (!SafeReadDword(
-                reinterpret_cast<const DWORD*>(address + col * sizeof(DWORD)),
-                values[col]))
-            {
-                readable = false;
-                break;
-            }
+            output += "bytes=<not readable>\r\n";
         }
-
-        if (!readable)
-            break;
-
-        sprintf_s(
-            line, sizeof(line),
-            "[stack] 0x%08X: %08X %08X %08X %08X",
-            address,
-            values[0], values[1], values[2], values[3]
-        );
-        WinAppendLine(CrashLogPath(), line);
     }
 
-    for (size_t i = 0; i < backtraceAddresses.size(); ++i)
+    output += "\r\n[MEMORY: FAULT ADDRESS]\r\n";
     {
-        const DWORD address = backtraceAddresses[i];
-        const std::string module = ModuleNameForAddress(address);
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(
+                reinterpret_cast<LPCVOID>(
+                    static_cast<uintptr_t>(faultAddress)),
+                &mbi,
+                sizeof(mbi)) != 0)
+        {
+            appendf(
+                "base=%p\r\nallocation_base=%p\r\nregion_size=0x%08X\r\n"
+                "state=%s\r\nprotect=%s\r\ntype=0x%08X",
+                mbi.BaseAddress,
+                mbi.AllocationBase,
+                static_cast<unsigned>(mbi.RegionSize),
+                MemoryStateName(mbi.State).c_str(),
+                MemoryProtectName(mbi.Protect).c_str(),
+                mbi.Type
+            );
+        }
+        else
+        {
+            output += "state=<unavailable>\r\n";
+        }
+    }
 
-        DWORD base = 0;
-        DWORD rva = 0;
-        HMODULE handle = nullptr;
-        MODULEINFO infoModule{};
+    if (targetAddress != 0)
+    {
+        output += "\r\n[MEMORY: ACCESS TARGET]\r\n";
 
-        if (GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCSTR>(address),
-            &handle) &&
-            GetModuleInformation(
+        MEMORY_BASIC_INFORMATION targetMbi{};
+        if (VirtualQuery(
+                reinterpret_cast<LPCVOID>(targetAddress),
+                &targetMbi,
+                sizeof(targetMbi)) != 0)
+        {
+            appendf(
+                "base=%p\r\nallocation_base=%p\r\nregion_size=0x%08X\r\n"
+                "state=%s\r\nprotect=%s\r\ntype=0x%08X",
+                targetMbi.BaseAddress,
+                targetMbi.AllocationBase,
+                static_cast<unsigned>(targetMbi.RegionSize),
+                MemoryStateName(targetMbi.State).c_str(),
+                MemoryProtectName(targetMbi.Protect).c_str(),
+                targetMbi.Type
+            );
+        }
+        else
+        {
+            output += "state=<unavailable>\r\n";
+        }
+    }
+
+    output += "\r\n[PROCESS MEMORY]\r\n";
+    {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+
+        if (GetProcessMemoryInfo(
                 GetCurrentProcess(),
-                handle,
-                &infoModule,
-                sizeof(infoModule)))
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                sizeof(pmc)))
         {
-            base = reinterpret_cast<DWORD>(infoModule.lpBaseOfDll);
-            if (address >= base)
-                rva = address - base;
+            appendf(
+                "working_set=%I64u\r\n"
+                "peak_working_set=%I64u\r\n"
+                "private=%I64u\r\n"
+                "pagefile=%I64u",
+                static_cast<unsigned __int64>(pmc.WorkingSetSize),
+                static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+                static_cast<unsigned __int64>(pmc.PrivateUsage),
+                static_cast<unsigned __int64>(pmc.PagefileUsage)
+            );
         }
-
-        sprintf_s(
-            line, sizeof(line),
-            "[backtrace] #%02u address=0x%08X module=%s rva=0x%08X",
-            static_cast<unsigned>(i),
-            address,
-            module.c_str(),
-            rva
-        );
-        WinAppendLine(CrashLogPath(), line);
+        else
+        {
+            output += "state=<unavailable>\r\n";
+        }
     }
 
-    // Keep only the last executing script/opcode. The full active CLEO queue
-    // is deliberately not copied into the crash report.
-    sprintf_s(
-        line, sizeof(line),
-        "[last_script] source=cleo_bridge name='%.8s' ptr=%p "
-        "opcode=0x%04X offset=0x%08X result=%d tick=%u valid=%d",
+    output += "\r\n[STACK WALK]\r\n";
+    if (backtraceAddresses.empty())
+    {
+        output += "status=UNAVAILABLE\r\n";
+    }
+    else
+    {
+        for (size_t i = 0; i < backtraceAddresses.size(); ++i)
+        {
+            const DWORD address = backtraceAddresses[i];
+            const std::string module = ModuleNameForAddress(address);
+
+            DWORD base = 0;
+            DWORD rva = 0;
+            HMODULE handle = nullptr;
+            MODULEINFO infoModule{};
+
+            if (GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCSTR>(address),
+                    &handle) &&
+                GetModuleInformation(
+                    GetCurrentProcess(),
+                    handle,
+                    &infoModule,
+                    sizeof(infoModule)))
+            {
+                base =
+                    static_cast<DWORD>(
+                        reinterpret_cast<uintptr_t>(infoModule.lpBaseOfDll));
+                if (address >= base)
+                    rva = address - base;
+            }
+
+            appendf(
+                "#%02u address=0x%08X module=%s rva=0x%08X",
+                static_cast<unsigned>(i),
+                address,
+                module.c_str(),
+                rva
+            );
+        }
+    }
+
+    output += "\r\n[CLEO CONTEXT]\r\n";
+    appendf(
+        "snapshot_valid=%d\r\n"
+        "script=%.8s\r\n"
+        "script_ptr=%p\r\n"
+        "last_opcode=0x%04X\r\n"
+        "opcode_offset=0x%08X\r\n"
+        "opcode_result=%d\r\n"
+        "game_tick=%u",
+        crashSnapshotValid ? 1 : 0,
         lastScript.c_str(),
-        reinterpret_cast<void*>(static_cast<uintptr_t>(lastScriptPtr)),
-        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF),
+        reinterpret_cast<void*>(lastScriptPtr),
+        lastOpcode == 0xFFFFFFFFu ? 0xFFFFu : lastOpcode & 0x7FFFu,
         lastOpcodeOffset,
         static_cast<int>(lastOpcodeResult),
-        crashSnapshotValid ? crashSnapshot.gameTick : 0,
-        crashSnapshotValid ? 1 : 0
+        crashSnapshotValid ? crashSnapshot.gameTick : 0
     );
-    WinAppendLine(CrashLogPath(), line);
 
+    output += "\r\n[CRASH MATCHER]\r\n";
     if (match != nullptr)
     {
+        appendf(
+            "database=VERIFIED\r\n"
+            "name=%s\r\n"
+            "confidence=%s\r\n"
+            "exact_address=%d\r\n"
+            "module_match=%d\r\n"
+            "wildcard=%d\r\n"
+            "context_match=%d",
+            match->name.empty() ? "Unnamed signature" : match->name.c_str(),
+            confidence,
+            exactAddress ? 1 : 0,
+            moduleMatch ? 1 : 0,
+            wildcardMatch ? 1 : 0,
+            contextMatch ? 1 : 0
+        );
+
         if (!match->issue.empty())
-        {
-            sprintf_s(line, sizeof(line), "[crash_info] issue=\"%s\"", match->issue.c_str());
-            WinAppendLine(CrashLogPath(), line);
-        }
-
+            appendf("issue=%s", match->issue.c_str());
         if (!match->about.empty())
-        {
-            sprintf_s(line, sizeof(line), "[crash_info] about=\"%s\"", match->about.c_str());
-            WinAppendLine(CrashLogPath(), line);
-        }
-
+            appendf("about=%s", match->about.c_str());
         if (!match->solution.empty())
-        {
-            sprintf_s(line, sizeof(line), "[crash_info] solution=\"%s\"", match->solution.c_str());
-            WinAppendLine(CrashLogPath(), line);
-        }
-
-        if (!match->description.empty())
-        {
-            sprintf_s(line, sizeof(line), "[crash_info] details=\"%s\"", match->description.c_str());
-            WinAppendLine(CrashLogPath(), line);
-        }
+            appendf("solution=%s", match->solution.c_str());
+    }
+    else
+    {
+        output +=
+            "database=NONE\r\n"
+            "name=Unknown / Unclassified Crash\r\n"
+            "confidence=UNKNOWN\r\n";
     }
 
-    sprintf_s(
-        line, sizeof(line),
-        "[end_crash] exception=0x%08X frames=%u",
-        info->ExceptionRecord->ExceptionCode,
-        static_cast<unsigned>(backtraceAddresses.size())
-    );
-    WinAppendLine(CrashLogPath(), line);
+    const bool faultInCleo =
+        _stricmp(faultModule.c_str(), "CLEO.asi") == 0;
+    const bool databaseMentionsCleo =
+        match != nullptr &&
+        (match->issue.find("CLEO") != std::string::npos ||
+         match->about.find("CLEO") != std::string::npos ||
+         match->solution.find("CLEO") != std::string::npos);
+
+    output += "\r\n[DIAGNOSIS]\r\n";
+
+    if (!output.empty())
+    {
+        appendf(
+            "fault_location=%s + 0x%08X",
+            faultModule.empty() ? "<unknown>" : faultModule.c_str(),
+            faultRva
+        );
+    }
+
+    if (faultInCleo)
+        output += "cleo_involvement=NOT_PROVEN (fault address is inside CLEO.asi)\r\n";
+    else if (databaseMentionsCleo)
+        output += "cleo_involvement=NOT_PROVEN (database context mentions CLEO)\r\n";
+    else
+        output += "cleo_involvement=NOT_PROVEN\r\n";
+
+    output +=
+        "last_opcode_is_cause=NOT_PROVEN\r\n"
+        "last_script_is_cause=NOT_PROVEN\r\n";
+
+    if (match == nullptr || wildcardMatch)
+        output +=
+            "auto_database=UNVERIFIED candidate written to CLEO-CrashAuto.txt\r\n";
+
+    output += "\r\n[END]\r\n";
+    output += "============================================================\r\n";
+
+    WinWriteTextFile(CrashLogPath(), output);
 
     if (m_crashWindowEnabled)
-    ShowCrashDialog(
-        crashName,
-        info->ExceptionRecord->ExceptionCode,
-        ExceptionName(info->ExceptionRecord->ExceptionCode),
-        faultAddress,
-        faultModule,
-        faultModuleRva,
-        confidence,
-        match != nullptr ? match->issue : std::string(),
-        match != nullptr ? match->about : std::string(),
-        match != nullptr ? match->solution : std::string(),
-        lastScript,
-        lastOpcode,
-        backtraceAddresses
-    );
+    {
+        ShowCrashDialog(
+            match != nullptr
+                ? (match->name.empty()
+                    ? "Unnamed Signature"
+                    : match->name.c_str())
+                : "Unknown / Unclassified Crash",
+            exceptionCode,
+            ExceptionName(exceptionCode),
+            faultAddress,
+            faultModule,
+            faultRva,
+            confidence,
+            match != nullptr ? match->issue : std::string(),
+            match != nullptr ? match->about : std::string(),
+            match != nullptr ? match->solution : std::string(),
+            lastScript,
+            lastOpcode,
+            backtraceAddresses
+        );
+    }
 }
 
-void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
+void DebugUtils::RecordOpcode(void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
 {
     if (thread == nullptr)
         return;
@@ -3256,22 +3406,37 @@ LONG DebugUtils::HandleException(PEXCEPTION_POINTERS info)
 
 LONG WINAPI DebugUtils::VectoredExceptionHandler(PEXCEPTION_POINTERS info)
 {
-    if (s_instance == nullptr)
+    if (s_instance == nullptr ||
+        info == nullptr ||
+        info->ExceptionRecord == nullptr)
+    {
         return EXCEPTION_CONTINUE_SEARCH;
-
-    if (!info || !info->ExceptionRecord)
-        return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     if (!IsFatalException(info->ExceptionRecord->ExceptionCode))
         return EXCEPTION_CONTINUE_SEARCH;
 
-    // First write a minimal marker using only WinAPI. This must work even if
-    // the C++ runtime/heap is already damaged by the crashing instruction.
-    WriteCrashRawMarker(info);
+    // VEH runs before stack unwinding and is therefore first-chance territory.
+    // It records only a fixed-size exception snapshot. No STL, file I/O,
+    // CrashInfo parsing, DbgHelp or GUI work is allowed here.
+    // The authoritative full report is generated only by the unhandled filter.
+    struct FirstChance
+    {
+        DWORD code;
+        DWORD address;
+        DWORD threadId;
+    };
 
-    // Then generate the detailed report. The handler returns CONTINUE_SEARCH
-    // so GTA's normal exception processing still receives the exception.
-    return s_instance->HandleException(info);
+    static volatile FirstChance snapshot{};
+    snapshot.code = info->ExceptionRecord->ExceptionCode;
+    snapshot.address =
+        static_cast<DWORD>(
+            reinterpret_cast<uintptr_t>(
+                info->ExceptionRecord->ExceptionAddress));
+    snapshot.threadId = GetCurrentThreadId();
+    MemoryBarrier();
+
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 LONG WINAPI DebugUtils::UnhandledExceptionFilter(PEXCEPTION_POINTERS info)
