@@ -3162,6 +3162,43 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     const std::string accessName =
         AccessTypeName(accessType);
 
+    std::string crashDisplayName;
+    if (nullEip)
+    {
+        crashDisplayName = "Null Instruction Execution";
+    }
+    else if (match != nullptr && !match->name.empty())
+    {
+        crashDisplayName = match->name;
+    }
+    else if (faultModule != "<unknown>" && faultRva != 0)
+    {
+        char nameBuffer[128] = {};
+        sprintf_s(
+            nameBuffer,
+            sizeof(nameBuffer),
+            "%s + 0x%08X",
+            faultModule.c_str(),
+            faultRva
+        );
+        crashDisplayName = nameBuffer;
+    }
+    else if (faultAddress != 0)
+    {
+        char nameBuffer[128] = {};
+        sprintf_s(
+            nameBuffer,
+            sizeof(nameBuffer),
+            "Unknown Crash @ 0x%08X",
+            faultAddress
+        );
+        crashDisplayName = nameBuffer;
+    }
+    else
+    {
+        crashDisplayName = "Unknown / Unclassified Crash";
+    }
+
     char report[8192] = {};
     SYSTEMTIME t{};
     GetLocalTime(&t);
@@ -3500,43 +3537,6 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     output += "============================================================\r\n";
 
     WinWriteTextFile(CrashLogPath(), output);
-
-    std::string crashDisplayName;
-    if (nullEip)
-    {
-        crashDisplayName = "Null Instruction Execution";
-    }
-    else if (match != nullptr && !match->name.empty())
-    {
-        crashDisplayName = match->name;
-    }
-    else if (faultModule != "<unknown>" && faultRva != 0)
-    {
-        char nameBuffer[128] = {};
-        sprintf_s(
-            nameBuffer,
-            sizeof(nameBuffer),
-            "%s + 0x%08X",
-            faultModule.c_str(),
-            faultRva
-        );
-        crashDisplayName = nameBuffer;
-    }
-    else if (faultAddress != 0)
-    {
-        char nameBuffer[128] = {};
-        sprintf_s(
-            nameBuffer,
-            sizeof(nameBuffer),
-            "Unknown Crash @ 0x%08X",
-            faultAddress
-        );
-        crashDisplayName = nameBuffer;
-    }
-    else
-    {
-        crashDisplayName = "Unknown / Unclassified Crash";
-    }
 
     if (m_crashWindowEnabled)
     {
