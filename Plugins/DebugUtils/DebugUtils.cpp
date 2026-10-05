@@ -1944,6 +1944,22 @@ std::string DebugUtils::ModuleNameForAddress(DWORD address)
     return Basename(path);
 }
 
+bool DebugUtils::SafeReadBytes(const void* address, void* buffer, size_t size)
+{
+    if (address == nullptr || buffer == nullptr || size == 0)
+        return false;
+
+    __try
+    {
+        memcpy(buffer, address, size);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 bool DebugUtils::SafeReadDword(const DWORD* address, DWORD& value)
 {
     if (address == nullptr)
@@ -2270,18 +2286,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     // Keep its raw bytes for later disassembly without adding a permanent hook.
     {
         BYTE bytes[16] = {};
-        bool readable = true;
 
-        __try
-        {
-            memcpy(bytes, reinterpret_cast<const void*>(faultAddress), sizeof(bytes));
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            readable = false;
-        }
-
-        if (readable)
+        if (SafeReadBytes(reinterpret_cast<const void*>(faultAddress), bytes, sizeof(bytes)))
         {
             char hex[16 * 3 + 1] = {};
             size_t pos = 0;
