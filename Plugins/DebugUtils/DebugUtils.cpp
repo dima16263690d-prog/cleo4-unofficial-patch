@@ -155,7 +155,7 @@ namespace
         CreateDirectoryA("cleo\\debug", nullptr);
 
         HANDLE file = CreateFileA(
-            "cleo\\debug\\gta_crashinfo.log",
+            "cleo\\debug\\gta_crash_hook.log",
             FILE_APPEND_DATA,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr,
@@ -712,6 +712,20 @@ void DebugUtils::OpenLogs()
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
     if (m_diagnosticLogEnabled)
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
+
+    {
+        HANDLE crashFile = CreateFileA(
+            CrashLogPath().c_str(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+        if (crashFile != INVALID_HANDLE_VALUE)
+            CloseHandle(crashFile);
+    }
 
     if (!m_coreLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_core.log\n");
@@ -1572,6 +1586,24 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
+        if (line.rfind("Issue: ", 0) == 0)
+        {
+            current->issue = line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("About: ", 0) == 0)
+        {
+            current->about = line.substr(7);
+            continue;
+        }
+
+        if (line.rfind("Solution: ", 0) == 0)
+        {
+            current->solution = line.substr(10);
+            continue;
+        }
+
         if (line.rfind("Backtrace:", 0) == 0)
         {
             ExtractHexAddresses(line, 10, current->backtraceAddresses);
@@ -1584,6 +1616,9 @@ void DebugUtils::LoadCrashInfoList()
                 !current->backtraceModules.empty();
             continue;
         }
+
+        if (!line.empty() && line[0] == '#')
+            continue;
 
         if (!line.empty())
         {
@@ -1734,98 +1769,18 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     WriteOpcodeHistory("crash");
 
     char line[4096];
-
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
-    sprintf_s(
-        line, sizeof(line),
-        "============================================================"
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    const DWORD faultAddress = reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
+    const DWORD faultAddress =
+        reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
     const std::string faultModule = ModuleNameForAddress(faultAddress);
-
-    // Classify the crash immediately using the address/module signature.
-    // Backtrace-dependent rules are resolved again after the backtrace is built.
-    const CrashInfoEntry* immediateMatch = FindCrashInfo(
-        faultAddress,
-        faultModule,
-        {}
-    );
-
-    if (immediateMatch != nullptr)
-    {
-        const char* crashName =
-            immediateMatch->name.empty()
-                ? "UNNAMED_SIGNATURE"
-                : immediateMatch->name.c_str();
-
-        sprintf_s(
-            line, sizeof(line),
-            "[CRASH_IDENTIFIED] name=\"%s\" address=0x%08X module=%s confidence=%s",
-            crashName,
-            faultAddress,
-            faultModule.c_str(),
-            immediateMatch->wildcardError ? "fallback" : "exact"
-        );
-    }
-    else
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[CRASH_IDENTIFIED] name=\"UNKNOWN\" address=0x%08X module=%s confidence=none",
-            faultAddress,
-            faultModule.c_str()
-        );
-    }
-    WinAppendLine(CrashLogPath(), line);
-
-    sprintf_s(
-        line, sizeof(line),
-        "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X type=%s address=0x%08X module=%s pid=%u tid=%u",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-        info->ExceptionRecord->ExceptionCode,
-        ExceptionName(info->ExceptionRecord->ExceptionCode),
-        faultAddress,
-        faultModule.c_str(),
-        GetCurrentProcessId(),
-        GetCurrentThreadId()
-    );
-    WinAppendLine(CrashLogPath(), line);
-
     CONTEXT* c = info->ContextRecord;
 
-    sprintf_s(
-        line, sizeof(line),
-        "[regs] EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EIP=%08X EFLAGS=%08X",
-        c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Ebp, c->Esp, c->Eip, c->EFlags
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    sprintf_s(
-        line, sizeof(line),
-        "[context] CS=%04X DS=%04X ES=%04X FS=%04X GS=%04X SS=%04X",
-        c->SegCs, c->SegDs, c->SegEs, c->SegFs, c->SegGs, c->SegSs
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    sprintf_s(
-        line, sizeof(line),
-        "[last_script] ptr=%p name='%.8s' opcode=0x%04X offset=0x%08X result=%d",
-        reinterpret_cast<void*>(static_cast<uintptr_t>(m_lastScriptPtr)),
-        m_lastScriptName,
-        m_lastOpcode == 0xFFFFFFFF ? 0xFFFF : (m_lastOpcode & 0x7FFF),
-        m_lastOpcodeOffset,
-        m_lastOpcodeResult == 0xFFFFFFFF ? -1 : static_cast<int>(m_lastOpcodeResult)
-    );
-    WinAppendLine(CrashLogPath(), line);
-
-    HMODULE faultModuleHandle = nullptr;
-    MODULEINFO faultModuleInfo{};
     DWORD faultModuleBase = 0;
     DWORD faultModuleRva = 0;
+    HMODULE faultModuleHandle = nullptr;
+    MODULEINFO faultModuleInfo{};
 
     if (GetModuleHandleExA(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -1841,14 +1796,93 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         faultModuleBase = reinterpret_cast<DWORD>(faultModuleInfo.lpBaseOfDll);
         if (faultAddress >= faultModuleBase)
             faultModuleRva = faultAddress - faultModuleBase;
+    }
 
+    // Build the call chain before classifying the crash.
+    std::vector<DWORD> backtraceAddresses;
+    DWORD frame = c->Ebp;
+
+    for (unsigned i = 0; i < 32 && frame != 0; ++i)
+    {
+        DWORD next = 0;
+        DWORD ret = 0;
+
+        if (!SafeReadDword(reinterpret_cast<const DWORD*>(frame), next) ||
+            !SafeReadDword(reinterpret_cast<const DWORD*>(frame + 4), ret))
+            break;
+
+        if (next <= frame || next - frame > 0x10000)
+            break;
+
+        backtraceAddresses.push_back(ret);
+        frame = next;
+    }
+
+    const CrashInfoEntry* match =
+        FindCrashInfo(faultAddress, faultModule, backtraceAddresses);
+
+    const char* crashName = "Unknown / Unclassified Crash";
+    const char* confidence = "none";
+
+    if (match != nullptr)
+    {
+        crashName = match->name.empty() ? "Unnamed Signature" : match->name.c_str();
+
+        if (match->wildcardError)
+            confidence = "fallback";
+        else if (ContainsAddress(match->errorAddresses, faultAddress))
+            confidence = "exact";
+        else if (ContainsModule(match->errorModules, faultModule))
+            confidence = "module";
+        else
+            confidence = "backtrace";
+    }
+
+    WinAppendLine(CrashLogPath(), "============================================================");
+
+    sprintf_s(
+        line, sizeof(line),
+        "[CRASH] %04u-%02u-%02u %02u:%02u:%02u.%03u "
+        "name=\"%s\" exception=0x%08X type=%s address=0x%08X "
+        "module=%s rva=0x%08X confidence=%s",
+        t.wYear, t.wMonth, t.wDay,
+        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        crashName,
+        info->ExceptionRecord->ExceptionCode,
+        ExceptionName(info->ExceptionRecord->ExceptionCode),
+        faultAddress,
+        faultModule.c_str(),
+        faultModuleRva,
+        confidence
+    );
+    WinAppendLine(CrashLogPath(), line);
+
+    sprintf_s(
+        line, sizeof(line),
+        "[registers] "
+        "EAX=%08X EBX=%08X ECX=%08X EDX=%08X "
+        "EDI=%08X ESI=%08X EBP=%08X EIP=%08X "
+        "ESP=%08X EFLAGS=%08X",
+        c->Eax, c->Ebx, c->Ecx, c->Edx,
+        c->Edi, c->Esi, c->Ebp, c->Eip,
+        c->Esp, c->EFlags
+    );
+    WinAppendLine(CrashLogPath(), line);
+
+    sprintf_s(
+        line, sizeof(line),
+        "[segments] CS=%04X SS=%04X DS=%04X ES=%04X FS=%04X GS=%04X",
+        c->SegCs, c->SegSs, c->SegDs, c->SegEs, c->SegFs, c->SegGs
+    );
+    WinAppendLine(CrashLogPath(), line);
+
+    if (info->ExceptionRecord->NumberParameters >= 2)
+    {
         sprintf_s(
             line, sizeof(line),
-            "[module_at_fault] name=%s base=0x%08X rva=0x%08X image_size=0x%08X",
-            faultModule.c_str(),
-            faultModuleBase,
-            faultModuleRva,
-            static_cast<unsigned>(faultModuleInfo.SizeOfImage)
+            "[access] type=%llu target=0x%08llX",
+            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[0]),
+            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1])
         );
         WinAppendLine(CrashLogPath(), line);
     }
@@ -1861,25 +1895,15 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     );
     WinAppendLine(CrashLogPath(), line);
 
-    if (info->ExceptionRecord->NumberParameters >= 2)
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[exception] access_type=%llu address=0x%08llX",
-            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[0]),
-            static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1])
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(
-        reinterpret_cast<LPCVOID>(info->ExceptionRecord->ExceptionAddress),
+        reinterpret_cast<LPCVOID>(faultAddress),
         &mbi, sizeof(mbi)) != 0)
     {
         sprintf_s(
             line, sizeof(line),
-            "[memory_region] base=%p allocation_base=%p size=0x%08X state=0x%08X protect=0x%08X type=0x%08X",
+            "[memory] fault_base=%p allocation_base=%p size=0x%08X "
+            "state=0x%08X protect=0x%08X type=0x%08X",
             mbi.BaseAddress,
             mbi.AllocationBase,
             static_cast<unsigned>(mbi.RegionSize),
@@ -1908,94 +1932,122 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         WinAppendLine(CrashLogPath(), line);
     }
 
-    std::vector<DWORD> backtraceAddresses;
-    DWORD frame = c->Ebp;
-    for (unsigned i = 0; i < 32 && frame != 0; ++i)
+    // 40 DWORDs from ESP, in the same compact style as the reference report.
+    for (unsigned row = 0; row < 10; ++row)
     {
-        DWORD next = 0;
-        DWORD ret = 0;
+        const DWORD address = c->Esp + row * 16u;
+        DWORD values[4] = {};
+        bool readable = true;
 
-        if (!SafeReadDword(reinterpret_cast<const DWORD*>(frame), next) ||
-            !SafeReadDword(reinterpret_cast<const DWORD*>(frame + 4), ret))
+        for (unsigned col = 0; col < 4; ++col)
+        {
+            if (!SafeReadDword(
+                reinterpret_cast<const DWORD*>(address + col * sizeof(DWORD)),
+                values[col]))
+            {
+                readable = false;
+                break;
+            }
+        }
+
+        if (!readable)
             break;
-
-        if (next <= frame || next - frame > 0x10000)
-            break;
-
-        backtraceAddresses.push_back(ret);
 
         sprintf_s(
             line, sizeof(line),
-            "[backtrace] #%u frame=0x%08X return=0x%08X module=%s",
-            i,
-            frame,
-            ret,
-            ModuleNameForAddress(ret).c_str()
+            "[stack] 0x%08X: %08X %08X %08X %08X",
+            address,
+            values[0], values[1], values[2], values[3]
         );
         WinAppendLine(CrashLogPath(), line);
-
-        frame = next;
     }
 
-    const CrashInfoEntry* match = FindCrashInfo(
-        faultAddress,
-        faultModule,
-        backtraceAddresses
+    for (size_t i = 0; i < backtraceAddresses.size(); ++i)
+    {
+        const DWORD address = backtraceAddresses[i];
+        const std::string module = ModuleNameForAddress(address);
+
+        DWORD base = 0;
+        DWORD rva = 0;
+        HMODULE handle = nullptr;
+        MODULEINFO infoModule{};
+
+        if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(address),
+            &handle) &&
+            GetModuleInformation(
+                GetCurrentProcess(),
+                handle,
+                &infoModule,
+                sizeof(infoModule)))
+        {
+            base = reinterpret_cast<DWORD>(infoModule.lpBaseOfDll);
+            if (address >= base)
+                rva = address - base;
+        }
+
+        sprintf_s(
+            line, sizeof(line),
+            "[backtrace] #%02u address=0x%08X module=%s rva=0x%08X",
+            static_cast<unsigned>(i),
+            address,
+            module.c_str(),
+            rva
+        );
+        WinAppendLine(CrashLogPath(), line);
+    }
+
+    // Keep only the last executing script/opcode. The full active CLEO queue
+    // is deliberately not copied into the crash report.
+    sprintf_s(
+        line, sizeof(line),
+        "[last_script] name='%.8s' ptr=%p opcode=0x%04X "
+        "offset=0x%08X result=%d",
+        m_lastScriptName,
+        reinterpret_cast<void*>(static_cast<uintptr_t>(m_lastScriptPtr)),
+        m_lastOpcode == 0xFFFFFFFF ? 0xFFFF : (m_lastOpcode & 0x7FFF),
+        m_lastOpcodeOffset,
+        m_lastOpcodeResult == 0xFFFFFFFF
+            ? -1
+            : static_cast<int>(m_lastOpcodeResult)
     );
+    WinAppendLine(CrashLogPath(), line);
+
     if (match != nullptr)
     {
-        const DWORD matchedAddress = match->errorAddresses.empty() ? 0 : match->errorAddresses.front();
-        sprintf_s(
-            line, sizeof(line),
-            "[crashinfo_match] mode=%s name=\"%s\" address=0x%08X backtrace_rules=%u %s",
-            match->wildcardError ? "wildcard" : "exact",
-            match->name.empty() ? "UNNAMED_SIGNATURE" : match->name.c_str(),
-            matchedAddress,
-            static_cast<unsigned>(match->backtraceAddresses.size()),
-            match->description.c_str()
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-    else
-    {
-        sprintf_s(
-            line, sizeof(line),
-            "[crashinfo_match] no matching entry in local CrashInfo database (entries=%u)",
-            static_cast<unsigned>(m_crashInfo.size())
-        );
-        WinAppendLine(CrashLogPath(), line);
-    }
-
-    auto head = (CLEO_GetGameVersion() == GV_US10)
-        ? *reinterpret_cast<CScriptThread**>(kGtaSa10ActiveScripts)
-        : nullptr;
-
-    if (head != nullptr)
-    {
-        WinAppendLine(CrashLogPath(), "[queue_at_crash] active script queue:");
-
-        unsigned index = 0;
-        for (auto thread = head; thread != nullptr && index < 256; thread = thread->next)
+        if (!match->issue.empty())
         {
-            sprintf_s(
-                line, sizeof(line),
-                "[queue_script] #%u ptr=%p name='%.8s' ip=%p base=%p off=0x%zX active=%d external=%d",
-                index,
-                thread,
-                thread->threadName,
-                thread->ip,
-                thread->baseIp,
-                ScriptOffset(thread),
-                thread->isActive ? 1 : 0,
-                thread->external ? 1 : 0
-            );
+            sprintf_s(line, sizeof(line), "[crash_info] issue=\"%s\"", match->issue.c_str());
             WinAppendLine(CrashLogPath(), line);
-            ++index;
+        }
+
+        if (!match->about.empty())
+        {
+            sprintf_s(line, sizeof(line), "[crash_info] about=\"%s\"", match->about.c_str());
+            WinAppendLine(CrashLogPath(), line);
+        }
+
+        if (!match->solution.empty())
+        {
+            sprintf_s(line, sizeof(line), "[crash_info] solution=\"%s\"", match->solution.c_str());
+            WinAppendLine(CrashLogPath(), line);
+        }
+
+        if (!match->description.empty())
+        {
+            sprintf_s(line, sizeof(line), "[crash_info] details=\"%s\"", match->description.c_str());
+            WinAppendLine(CrashLogPath(), line);
         }
     }
 
-    sprintf_s(line, sizeof(line), "[end_crash] exception=0x%08X",
-        info->ExceptionRecord->ExceptionCode);
+    sprintf_s(
+        line, sizeof(line),
+        "[end_crash] exception=0x%08X frames=%u",
+        info->ExceptionRecord->ExceptionCode,
+        static_cast<unsigned>(backtraceAddresses.size())
+    );
     WinAppendLine(CrashLogPath(), line);
 }
 
