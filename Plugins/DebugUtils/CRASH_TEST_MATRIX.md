@@ -67,3 +67,22 @@ Required after build:
 - DebugUtils has no WinHTTP dependency.
 - The existing crash window still works.
 - The crash log contains no duplicate raw-hook report.
+
+
+## Null-EIP regression test
+
+Expected:
+- A crash with `EIP=0x00000000` is classified as `NULL-EIP`, not `EXACT-ADDRESS`.
+- A verified database entry keyed only by `0x00000000` is not treated as an ordinary exact-address match.
+- The crash name is `Null Instruction Execution`.
+- Diagnosis reports `execution_control=INVALID` and `probable_fault=NULL-EIP instruction execution`.
+- Last script/opcode remain context only and are not automatically blamed.
+
+## Valid-EIP StackWalk test
+
+Use the supplied Sanny Builder test source `Tests/DebugUtilsStackWalkTest.txt`.
+Expected:
+- The crash address is non-zero.
+- `[STACK WALK]` contains more than frame `#00` when DbgHelp can unwind the current call chain.
+- Frame modules are resolved where possible instead of all frames being `<unknown>`.
+- The report still keeps CLEO script/opcode information separate from crash causality.
