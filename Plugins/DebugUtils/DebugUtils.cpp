@@ -2652,16 +2652,17 @@ namespace
 
         __try
         {
+            CONTEXT context = *sourceContext;
             STACKFRAME frame = {};
-            frame.AddrPC.Offset = sourceContext->Eip;
+            frame.AddrPC.Offset = context.Eip;
             frame.AddrPC.Mode = AddrModeFlat;
-            frame.AddrFrame.Offset = sourceContext->Ebp;
+            frame.AddrFrame.Offset = context.Ebp;
             frame.AddrFrame.Mode = AddrModeFlat;
-            frame.AddrStack.Offset = sourceContext->Esp;
+            frame.AddrStack.Offset = context.Esp;
             frame.AddrStack.Mode = AddrModeFlat;
 
             DWORD count = 0;
-            frameAddresses[count++] = sourceContext->Eip;
+            frameAddresses[count++] = context.Eip;
 
             while (count < capacity)
             {
@@ -2673,7 +2674,7 @@ namespace
                     process,
                     thread,
                     &frame,
-                    const_cast<PCONTEXT>(sourceContext),
+                    &context,
                     nullptr,
                     reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE>(
                         pSymFunctionTableAccess64),
