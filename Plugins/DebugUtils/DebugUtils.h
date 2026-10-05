@@ -147,6 +147,7 @@ private:
     std::string MemoryLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
+    std::string UpstreamCrashInfoPath() const;
     std::string ConfigPath() const;
 
     void LoadConfig();
