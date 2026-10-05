@@ -146,6 +146,62 @@ namespace
         CloseHandle(file);
     }
 
+    void WinAppendCrashRawLine(const char* text)
+    {
+        if (text == nullptr)
+            return;
+
+        CreateDirectoryA("cleo", nullptr);
+        CreateDirectoryA("cleo\\debug", nullptr);
+
+        HANDLE file = CreateFileA(
+            "cleo\\debug\\gta_crashinfo.log",
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+
+        DWORD written = 0;
+        WriteFile(file, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
+        WriteFile(file, "\r\n", 2, &written, nullptr);
+        CloseHandle(file);
+    }
+
+    void WriteCrashRawMarker(PEXCEPTION_POINTERS info)
+    {
+        if (info == nullptr || info->ExceptionRecord == nullptr)
+            return;
+
+        char line[512] = {};
+        const EXCEPTION_RECORD* record = info->ExceptionRecord;
+
+        sprintf_s(
+            line, sizeof(line),
+            "[crash_hook] VEH caught exception code=0x%08X address=0x%08X",
+            record->ExceptionCode,
+            static_cast<DWORD>(reinterpret_cast<uintptr_t>(record->ExceptionAddress))
+        );
+
+        WinAppendCrashRawLine(line);
+
+        if (record->NumberParameters >= 2)
+        {
+            sprintf_s(
+                line, sizeof(line),
+                "[crash_hook] access_type=%u target=0x%08X",
+                static_cast<unsigned>(record->ExceptionInformation[0]),
+                static_cast<DWORD>(record->ExceptionInformation[1])
+            );
+            WinAppendCrashRawLine(line);
+        }
+    }
+
     void SkipUnusedVarArgs(CScriptThread* thread)
     {
         if (!thread)
@@ -252,6 +308,15 @@ DebugUtils::DebugUtils()
 
     s_instance = this;
 
+    // Install the vectored handler before opening logs or registering
+    // callbacks. GTA or another ASI may replace the unhandled-exception
+    // filter later, while VEH remains in the process exception chain.
+    m_vectoredHandler = AddVectoredExceptionHandler(
+        1,
+        &DebugUtils::VectoredExceptionHandler
+    );
+    m_crashHandlerInstalled = m_vectoredHandler != nullptr;
+
     LoadConfig();
     OpenLogs();
     EnsureCrashInfoDatabase();
@@ -262,6 +327,11 @@ DebugUtils::DebugUtils()
     RegisterCallbacks();
 
     SetUnhandledExceptionFilter(&DebugUtils::UnhandledExceptionFilter);
+
+    WriteCore(
+        "[crash_hook] VEH=%d unhandled_filter=installed",
+        m_crashHandlerInstalled ? 1 : 0
+    );
 
     if (m_scriptLogEnabled)
     {
@@ -326,6 +396,12 @@ DebugUtils::~DebugUtils()
     m_scriptWake.notify_one();
     if (m_scriptWriterThread.joinable())
         m_scriptWriterThread.join();
+
+    if (m_vectoredHandler != nullptr)
+    {
+        RemoveVectoredExceptionHandler(m_vectoredHandler);
+        m_vectoredHandler = nullptr;
+    }
 
     WriteCore("[debugutils] shutting down");
     CloseLogs();
@@ -1982,8 +2058,13 @@ LONG WINAPI DebugUtils::VectoredExceptionHandler(PEXCEPTION_POINTERS info)
     if (!IsFatalException(info->ExceptionRecord->ExceptionCode))
         return EXCEPTION_CONTINUE_SEARCH;
 
-    // Do not steal the exception from the game or other handlers.
-    return EXCEPTION_CONTINUE_SEARCH;
+    // First write a minimal marker using only WinAPI. This must work even if
+    // the C++ runtime/heap is already damaged by the crashing instruction.
+    WriteCrashRawMarker(info);
+
+    // Then generate the detailed report. The handler returns CONTINUE_SEARCH
+    // so GTA's normal exception processing still receives the exception.
+    return s_instance->HandleException(info);
 }
 
 LONG WINAPI DebugUtils::UnhandledExceptionFilter(PEXCEPTION_POINTERS info)
