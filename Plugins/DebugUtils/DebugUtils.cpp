@@ -2936,6 +2936,7 @@ std::vector<DWORD> DebugUtils::BuildRawStackCandidates(
     return candidates;
 }
 
+} // anonymous namespace: StackWalk helper declarations/implementations
 
 std::string DebugUtils::AccessTypeName(int accessType)
 {
