@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <dbghelp.h>
 #pragma comment(lib, "Shell32.lib")
 #include <TlHelp32.h>
 #include <algorithm>
@@ -587,8 +588,8 @@ DebugUtils::DebugUtils()
 
     LoadConfig();
 
-    // Crash collection is optional. When disabled, no crash hook is installed
-    // and the CLEO bridge does not maintain the per-opcode crash snapshot.
+    // Crash collection is optional. The database and all heavy forensic
+    // components are lazy-loaded only after a real unhandled exception.
     if (m_crashEnabled)
     {
         m_vectoredHandler = AddVectoredExceptionHandler(
@@ -596,9 +597,6 @@ DebugUtils::DebugUtils()
             &DebugUtils::VectoredExceptionHandler
         );
         m_crashHandlerInstalled = m_vectoredHandler != nullptr;
-
-        EnsureCrashInfoDatabase();
-        LoadCrashInfoList();
     }
 
     CLEO_DebugSetCrashSnapshotEnabled(
@@ -629,7 +627,7 @@ DebugUtils::DebugUtils()
     if (m_scriptLogEnabled)
     {
         m_scriptWriterStop.store(false, std::memory_order_release);
-        m_scriptWriterThread = std::thread(&DebugUtils::ScriptWriterLoop, this);
+        m_scriptWriterStarted.store(false, std::memory_order_release);
         WriteScript("//////////////////////// scripts ////////////////////////");
         if (m_functionTrace)
             WriteScript("//////////////////////// function call check (0AB1 / 0AB2) ////////////////////////");
@@ -734,8 +732,8 @@ void DebugUtils::LoadConfig()
             config << "LegacyDebugOpcodes=0\r\n\r\n";
 
             config << "[DebugUtils.Limits]\r\n";
-            config << "Command=2000000\r\n";
-            config << "Time=5\r\n\r\n";
+            config << "Command=0\r\n";
+            config << "Time=0\r\n\r\n";
 
             config << "[DebugUtils.ScriptLog]\r\n";
             config << "Enabled=1\r\n";
@@ -761,7 +759,7 @@ void DebugUtils::LoadConfig()
     m_commandLimit = static_cast<size_t>(
         GetPrivateProfileIntA(
             "DebugUtils.Limits", "Command",
-            2000000,
+            0,
             path.c_str()
         )
     );
@@ -769,7 +767,7 @@ void DebugUtils::LoadConfig()
     m_timeLimitSeconds = static_cast<DWORD>(
         GetPrivateProfileIntA(
             "DebugUtils.Limits", "Time",
-            5,
+            0,
             path.c_str()
         )
     );
@@ -887,6 +885,11 @@ std::string DebugUtils::CrashLogPath() const
 std::string DebugUtils::CrashInfoPath() const
 {
     return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt";
+}
+
+std::string DebugUtils::CrashInfoAutoPath() const
+{
+    return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashAuto.txt";
 }
 
 void DebugUtils::EnsureCrashInfoDatabase()
@@ -1132,35 +1135,20 @@ void DebugUtils::AppendAutomaticCrashInfo(
 
 void DebugUtils::OpenLogs()
 {
-    const std::string crashInfoDir = DebugDir() + "CrashInfo\\";
-    CreateDirectoryA(crashInfoDir.c_str(), nullptr);
-
     m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
     m_coreBytes = 0;
     m_coreLimitNoticeWritten = false;
-    m_scriptLog.open(ScriptLogPath(), std::ios::out | std::ios::trunc);
+
+    if (m_scriptLogEnabled)
+        m_scriptLog.open(ScriptLogPath(), std::ios::out | std::ios::trunc);
     if (m_memoryLogEnabled)
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
     if (m_diagnosticLogEnabled)
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
 
-    {
-        HANDLE crashFile = CreateFileA(
-            CrashLogPath().c_str(),
-            GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            nullptr
-        );
-        if (crashFile != INVALID_HANDLE_VALUE)
-            CloseHandle(crashFile);
-    }
-
     if (!m_coreLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_core.log\n");
-    if (!m_scriptLog.is_open())
+    if (m_scriptLogEnabled && !m_scriptLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_script.log\n");
     if (m_memoryLogEnabled && !m_memoryLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_memory.log\n");
@@ -1248,9 +1236,37 @@ void DebugUtils::CloseLogs()
     }
 }
 
+void DebugUtils::RotateCoreLogIfNeeded(size_t incomingBytes)
+{
+    if (!m_coreLog.is_open() || incomingBytes == 0)
+        return;
+
+    if (m_coreBytes + incomingBytes <= kCoreLogMaxBytes)
+        return;
+
+    m_coreLog.flush();
+    m_coreLog.close();
+
+    const std::string oldPath = CoreLogPath() + ".1";
+    DeleteFileA(oldPath.c_str());
+    MoveFileA(CoreLogPath().c_str(), oldPath.c_str());
+
+    m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
+    m_coreBytes = 0;
+    m_corePendingWrites = 0;
+    m_coreLimitNoticeWritten = false;
+
+    if (m_coreLog.is_open())
+    {
+        const char* marker = "//////////////////////// rotated core log ////////////////////////\n";
+        m_coreLog.write(marker, static_cast<std::streamsize>(strlen(marker)));
+        m_coreBytes += strlen(marker);
+    }
+}
+
 void DebugUtils::WriteCore(const char* format, ...)
 {
-    char message[4096];
+    char message[4096] = {};
     va_list args;
     va_start(args, format);
     SafeFormat(message, sizeof(message), format, args);
@@ -1272,65 +1288,36 @@ void DebugUtils::WriteCore(const char* format, ...)
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
-    char line[4096];
+    char line[4096] = {};
     sprintf_s(
         line, sizeof(line),
         "%04u-%02u-%02u %02u:%02u:%02u.%03u %s\n",
-        t.wYear, t.wMonth, t.wDay,
-        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-        message
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
+        t.wMilliseconds, message
     );
 
     const size_t bytes = strlen(line);
+    RotateCoreLogIfNeeded(bytes);
 
-    if (m_coreBytes + bytes <= kCoreLogMaxBytes)
-    {
-        m_coreLog.write(line, static_cast<std::streamsize>(bytes));
-        m_coreBytes += bytes;
-        m_lastCoreMessage = message;
-        m_lastCoreRepeatCount = 1;
-
-        if (++m_corePendingWrites >= 32)
-        {
-            m_coreLog.flush();
-            m_corePendingWrites = 0;
-        }
+    if (!m_coreLog.is_open())
         return;
-    }
 
-    WriteCoreLimitNoticeLocked();
-    m_lastCoreMessage.clear();
-    m_lastCoreRepeatCount = 0;
+    m_coreLog.write(line, static_cast<std::streamsize>(bytes));
+    m_coreBytes += bytes;
+    m_lastCoreMessage = message;
+    m_lastCoreRepeatCount = 1;
+
+    if (++m_corePendingWrites >= 32)
+    {
+        m_coreLog.flush();
+        m_corePendingWrites = 0;
+    }
 }
+
 void DebugUtils::WriteCoreLimitNoticeLocked()
 {
-    if (m_coreLimitNoticeWritten || !m_coreLog.is_open() || m_coreBytes >= kCoreLogMaxBytes)
-    {
-        m_coreLimitNoticeWritten = true;
-        return;
-    }
-
-    const char* notice = " [core] log_limit=8192_bytes";
-    SYSTEMTIME t{};
-    GetLocalTime(&t);
-
-    char line[128];
-    sprintf_s(
-        line, sizeof(line),
-        "%04u-%02u-%02u %02u:%02u:%02u.%03u%s\n",
-        t.wYear, t.wMonth, t.wDay,
-        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-        notice
-    );
-
-    const size_t bytes = strlen(line);
-    if (m_coreBytes + bytes <= kCoreLogMaxBytes)
-    {
-        m_coreLog.write(line, static_cast<std::streamsize>(bytes));
-        m_coreBytes += bytes;
-    }
-
-    m_coreLimitNoticeWritten = true;
+    // Retained for source compatibility. Core logging now rotates at 1 MiB
+    // instead of applying the old 8 KiB hard stop.
 }
 
 void DebugUtils::RotateScriptLogIfNeeded(size_t incomingBytes)
@@ -1364,6 +1351,17 @@ void DebugUtils::QueueScriptLine(const char* line)
     if (line == nullptr || line[0] == '\0')
         return;
 
+    if (!m_scriptWriterStarted.load(std::memory_order_acquire))
+    {
+        bool expected = false;
+        if (m_scriptWriterStarted.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            m_scriptWriterStop.store(false, std::memory_order_release);
+            m_scriptWriterThread = std::thread(&DebugUtils::ScriptWriterLoop, this);
+        }
+    }
+
     const uint32_t writeIndex = m_scriptWriteIndex.load(std::memory_order_relaxed);
     const uint32_t readIndex = m_scriptReadIndex.load(std::memory_order_acquire);
 
@@ -1378,8 +1376,6 @@ void DebugUtils::QueueScriptLine(const char* line)
 
     m_scriptWriteIndex.store(writeIndex + 1, std::memory_order_release);
 
-    // Wake the writer periodically instead of taking a kernel transition for
-    // every opcode callback.
     if ((writeIndex & 0xFFu) == 0)
         m_scriptWake.notify_one();
 }
@@ -2861,9 +2857,6 @@ void DebugUtils::RegisterCallbacks()
         { CLEO_CB_GAME_PROCESS_BEFORE, reinterpret_cast<uintptr_t>(&DebugUtils::OnGameProcessBefore) },
         { CLEO_CB_GAME_PROCESS_AFTER, reinterpret_cast<uintptr_t>(&DebugUtils::OnGameProcessAfter) },
         { CLEO_CB_SCRIPT_PROCESS_BEFORE, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptProcessBefore) },
-        { CLEO_CB_SCRIPT_PROCESS_AFTER, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptProcessAfter) },
-        { CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptOpcodeBefore) },
-        { CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptOpcodeAfter) },
         { CLEO_CB_SCRIPT_DELETED, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptDeleted) }
     };
 
@@ -2879,6 +2872,46 @@ void DebugUtils::RegisterCallbacks()
             if (s_instance != nullptr)
                 s_instance->WriteCore("[callback] registered: %s", CallbackName(callback.id));
         }
+    }
+
+    const bool needOpcodeCallbacks =
+        s_instance != nullptr &&
+        (s_instance->m_scriptOpcodeTrace ||
+         s_instance->m_functionTrace ||
+         s_instance->m_crashOpcodeHistory ||
+         s_instance->m_commandLimit > 0 ||
+         s_instance->m_timeLimitSeconds > 0);
+
+    if (needOpcodeCallbacks)
+    {
+        const struct
+        {
+            CLEO_CallbackId id;
+            uintptr_t fn;
+        } opcodeCallbacks[] =
+        {
+            { CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptOpcodeBefore) },
+            { CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER, reinterpret_cast<uintptr_t>(&DebugUtils::OnScriptOpcodeAfter) }
+        };
+
+        for (const auto& callback : opcodeCallbacks)
+        {
+            if (!CLEO_RegisterCallback(callback.id, callback.fn))
+                s_instance->WriteCore("[callback] register failed: %s", CallbackName(callback.id));
+            else
+                s_instance->WriteCore("[callback] registered: %s", CallbackName(callback.id));
+        }
+
+        s_instance->WriteCore(
+            "[callback] opcode observer=enabled trace=%d history=%d guard=%d",
+            (s_instance->m_scriptOpcodeTrace || s_instance->m_functionTrace) ? 1 : 0,
+            s_instance->m_crashOpcodeHistory ? 1 : 0,
+            (s_instance->m_commandLimit > 0 || s_instance->m_timeLimitSeconds > 0) ? 1 : 0
+        );
+    }
+    else if (s_instance != nullptr)
+    {
+        s_instance->WriteCore("[callback] opcode observer=crash-only (DebugUtils callback bypassed)");
     }
 }
 
