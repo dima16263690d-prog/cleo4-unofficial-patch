@@ -114,7 +114,10 @@ The matching engine supports:
 - Backtrace address rules;
 - Backtrace module rules.
 
-New entries are added only from our own reproduced or verified CLEO/GTA SA test results.
+When a crash has no specific match, DebugUtils automatically appends a new
+AUTO DISCOVERED candidate to the same local database. Exact/module/backtrace
+matches are not duplicated. AUTO entries are observations only and must be
+reproduced before being promoted to verified signatures.
 
 
 ## Crash diagnostics bridge
