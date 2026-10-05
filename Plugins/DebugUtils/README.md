@@ -155,3 +155,15 @@ DebugUtils is an observer. In normal gameplay it does not parse the CrashInfo da
 The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
 
 The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.
+
+
+### Language and CrashInfo localization
+
+Configure the crash window language in `DebugUtils.ini`:
+
+```ini
+[DebugUtils.General]
+Language=en
+```
+
+Use `Language=ru` for the Russian interface. The full verified database remains in `CrashInfo/CLEO-CrashList.txt` as the English baseline, while `CrashInfo/CLEO-CrashList-RU.txt` contains Russian text overrides. Untranslated entries automatically fall back to English, so switching to Russian never removes a known crash entry.
