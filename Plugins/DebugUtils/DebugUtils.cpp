@@ -3262,9 +3262,13 @@ namespace
 std::vector<DWORD> DebugUtils::BuildStackWalk(
     PEXCEPTION_POINTERS info,
     DWORD maxFrames,
-    std::string* diagnostics
+    std::string* diagnostics,
+    bool* heuristicBacktrace
 )
 {
+    if (heuristicBacktrace != nullptr)
+        *heuristicBacktrace = false;
+
     std::vector<DWORD> frames;
 
     if (diagnostics != nullptr)
@@ -4179,13 +4183,20 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             ? "status=CALLING_BUILD_STACK_WALK"
             : "status=NOT_REQUESTED";
 
+    bool heuristicBacktrace = false;
     const std::vector<DWORD> backtraceAddresses =
         m_crashBacktraceEnabled
             ? BuildStackWalk(
                 info,
                 m_crashMaxFrames,
-                &stackWalkDiagnostics)
+                &stackWalkDiagnostics,
+                &heuristicBacktrace)
             : std::vector<DWORD>();
+
+    // Heuristic frames are useful for display/forensics, but must never
+    // influence verified CrashInfo matching or the stable crash fingerprint.
+    const std::vector<DWORD> matcherBacktrace =
+        heuristicBacktrace ? std::vector<DWORD>() : backtraceAddresses;
 
     const std::string fingerprint =
         BuildCrashFingerprint(
@@ -4197,7 +4208,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             targetAddress,
             lastScript,
             lastOpcode,
-            backtraceAddresses
+            matcherBacktrace
         );
 
     const bool nullEip = context->Eip == 0;
@@ -4206,7 +4217,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         FindCrashInfo(
             faultAddress,
             faultModule,
-            backtraceAddresses,
+            matcherBacktrace,
             exceptionCode,
             accessType,
             lastScript,
