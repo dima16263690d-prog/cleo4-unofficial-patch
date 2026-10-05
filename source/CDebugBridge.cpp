@@ -4,6 +4,11 @@
 #include <windows.h>
 #include <cstdarg>
 
+namespace CLEO
+{
+    extern DWORD* GameTimer;
+}
+
 namespace
 {
     volatile PVOID g_debugLogCallback = nullptr;
@@ -92,7 +97,8 @@ extern "C" void WINAPI CLEO_DebugRecordCrashOpcode(
     g_threadCrashSnapshot.opcode = opcode & 0x7FFF;
     g_threadCrashSnapshot.opcodeOffset = opcodeOffset;
     g_threadCrashSnapshot.opcodeResult = result;
-    g_threadCrashSnapshot.gameTick = GetTickCount();
+    g_threadCrashSnapshot.gameTick =
+        (CLEO::GameTimer != nullptr) ? *CLEO::GameTimer : 0u;
 
     if (scriptName != nullptr)
     {
