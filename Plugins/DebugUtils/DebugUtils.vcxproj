@@ -82,6 +82,9 @@
     <None Include="CrashInfo\CLEO-CrashList.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="CrashInfo\GTA-SA-10US-EN-CrashList.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h" />
