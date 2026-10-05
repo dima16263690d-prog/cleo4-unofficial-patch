@@ -123,13 +123,7 @@ namespace CLEO
                 offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
             }
 
-            CLEO_DebugRecordCrashOpcode(
-                reinterpret_cast<uintptr_t>(script),
-                script->GetName(),
-                opcode,
-                offset,
-                static_cast<LONG>(result)
-            );
+            CLEO_DebugRecordCrashOpcodeResult(static_cast<LONG>(result));
         }
 
         if (auto callback = GetCallback(CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER))
