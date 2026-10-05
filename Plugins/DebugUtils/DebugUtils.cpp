@@ -32,6 +32,7 @@ namespace
         std::wstring details;
         std::wstring logPath;
         DWORD exitCode = 1;
+        bool languageRussian = false;
     };
 
     static std::wstring CrashToWide(const std::string& value)
@@ -234,17 +235,17 @@ namespace
             data = reinterpret_cast<CrashDialogData*>(lParam);
             SetWindowLongPtrW(hwnd, DWLP_USER, lParam);
 
+            const bool russian =
+                data != nullptr && data->languageRussian;
+
             SetWindowTextW(
                 hwnd,
-                (s_instance != nullptr && s_instance->m_languageRussian)
+                russian
                     ? L"CLEO DebugUtils - \u041a\u0440\u0430\u0448 GTA SA"
                     : L"CLEO DebugUtils - GTA SA crash"
             );
-            SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
+            SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data != nullptr ? data->details.c_str() : L"");
             PrepareCrashWindow(hwnd);
-
-            const bool russian =
-                s_instance != nullptr && s_instance->m_languageRussian;
 
             SetDlgItemTextW(
                 hwnd,
@@ -269,8 +270,7 @@ namespace
             case IDC_CRASH_COPY:
                 if (data != nullptr)
                 {
-                    const bool russian =
-                        s_instance != nullptr && s_instance->m_languageRussian;
+                    const bool russian = data->languageRussian;
 
                     const std::wstring copied =
                         data->details +
@@ -282,7 +282,7 @@ namespace
                         SetDlgItemTextW(
                             hwnd,
                             IDC_CRASH_COPY,
-                            (s_instance != nullptr && s_instance->m_languageRussian)
+                            data->languageRussian
                                 ? L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e"
                                 : L"Copied"
                         );
@@ -3571,6 +3571,7 @@ void DebugUtils::ShowCrashDialog(
     data.details = CrashToWide(details);
     data.logPath = CrashToWide(CrashLogPath());
     data.exitCode = exceptionCode;
+    data.languageRussian = m_languageRussian;
 
     HMODULE dialogModule = nullptr;
     if (!GetModuleHandleExA(
