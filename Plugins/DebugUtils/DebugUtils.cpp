@@ -2595,6 +2595,30 @@ namespace
     using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
     using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
 
+    enum StackWalkStopReason
+    {
+        STACKWALK_OK = 0,
+        STACKWALK_INVALID_INPUT,
+        STACKWALK_STEP_FAILED,
+        STACKWALK_ZERO_PC,
+        STACKWALK_DUPLICATE_PC,
+        STACKWALK_EXCEPTION
+    };
+
+    static const char* StackWalkStopReasonName(int reason)
+    {
+        switch (reason)
+        {
+        case STACKWALK_OK: return "OK";
+        case STACKWALK_INVALID_INPUT: return "INVALID_INPUT";
+        case STACKWALK_STEP_FAILED: return "STEP_FAILED";
+        case STACKWALK_ZERO_PC: return "ZERO_PC";
+        case STACKWALK_DUPLICATE_PC: return "DUPLICATE_PC";
+        case STACKWALK_EXCEPTION: return "EXCEPTION";
+        default: return "UNKNOWN";
+        }
+    }
+
     static BOOL SafeStackWalkI386(
         StackWalk64Proc pStackWalk64,
         SymFunctionTableAccess64Proc pSymFunctionTableAccess64,
@@ -2604,9 +2628,16 @@ namespace
         const CONTEXT* sourceContext,
         DWORD* frameAddresses,
         DWORD capacity,
-        DWORD* frameCount
+        DWORD* frameCount,
+        DWORD* stepsAttempted,
+        int* stopReason
     )
     {
+        if (stepsAttempted != nullptr)
+            *stepsAttempted = 0;
+        if (stopReason != nullptr)
+            *stopReason = STACKWALK_INVALID_INPUT;
+
         if (pStackWalk64 == nullptr ||
             pSymFunctionTableAccess64 == nullptr ||
             pSymGetModuleBase64 == nullptr ||
@@ -2635,9 +2666,9 @@ namespace
 
             while (count < capacity)
             {
-                // hProcess is valid, so let DbgHelp use its standard memory
-                // reader. A custom ReadMemoryRoutine would require additional
-                // symbol callback registration.
+                if (stepsAttempted != nullptr)
+                    ++(*stepsAttempted);
+
                 const BOOL ok = pStackWalk64(
                     IMAGE_FILE_MACHINE_I386,
                     process,
@@ -2653,18 +2684,36 @@ namespace
                 );
 
                 if (!ok)
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_STEP_FAILED;
                     break;
+                }
 
                 const DWORD address =
                     static_cast<DWORD>(frame.AddrPC.Offset);
 
-                if (address == 0 ||
-                    address == frameAddresses[count - 1])
+                if (address == 0)
                 {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_ZERO_PC;
+                    break;
+                }
+
+                if (address == frameAddresses[count - 1])
+                {
+                    if (stopReason != nullptr)
+                        *stopReason = STACKWALK_DUPLICATE_PC;
                     break;
                 }
 
                 frameAddresses[count++] = address;
+            }
+
+            if (count >= capacity)
+            {
+                if (stopReason != nullptr)
+                    *stopReason = STACKWALK_OK;
             }
 
             *frameCount = count;
@@ -2673,31 +2722,52 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             *frameCount = 0;
+            if (stopReason != nullptr)
+                *stopReason = STACKWALK_EXCEPTION;
             return FALSE;
         }
     }
-}
+
 
 std::vector<DWORD> DebugUtils::BuildStackWalk(
     PEXCEPTION_POINTERS info,
-    DWORD maxFrames
+    DWORD maxFrames,
+    std::string* diagnostics
 )
 {
     std::vector<DWORD> frames;
+
+    if (diagnostics != nullptr)
+        *diagnostics = "status=NOT_STARTED";
 
     if (info == nullptr ||
         info->ContextRecord == nullptr ||
         maxFrames == 0)
     {
+        if (diagnostics != nullptr)
+            *diagnostics = "status=INVALID_INPUT";
+        return frames;
+    }
+
+    if (info->ContextRecord->Eip == 0)
+    {
+        if (diagnostics != nullptr)
+            *diagnostics = "status=NULL_EIP";
         return frames;
     }
 
     if (InterlockedCompareExchange(&g_dbgHelpActive, 1, 0) != 0)
+    {
+        if (diagnostics != nullptr)
+            *diagnostics = "status=BUSY";
         return frames;
+    }
 
     HMODULE dbgHelp = GetDebugHelpModule();
     if (dbgHelp == nullptr)
     {
+        if (diagnostics != nullptr)
+            *diagnostics = "status=DBGHELP_LOAD_FAILED";
         InterlockedExchange(&g_dbgHelpActive, 0);
         return frames;
     }
@@ -2726,6 +2796,8 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         pSymFunctionTableAccess64 == nullptr ||
         pSymGetModuleBase64 == nullptr)
     {
+        if (diagnostics != nullptr)
+            *diagnostics = "status=DBGHELP_API_MISSING";
         FreeLibrary(dbgHelp);
         InterlockedExchange(&g_dbgHelpActive, 0);
         return frames;
@@ -2734,8 +2806,6 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     const HANDLE process = GetCurrentProcess();
     const HANDLE thread = GetCurrentThread();
 
-    // SymFunctionTableAccess64/SymGetModuleBase64 operate through the DbgHelp
-    // symbol handler. Initialize it for the crash-only operation.
     bool symbolsInitialized = false;
 
     if (pSymInitialize != nullptr)
@@ -2750,6 +2820,9 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     frames.resize(capacity);
 
     DWORD frameCount = 0;
+    DWORD stepsAttempted = 0;
+    int stopReason = STACKWALK_INVALID_INPUT;
+
     const BOOL ok = SafeStackWalkI386(
         pStackWalk64,
         pSymFunctionTableAccess64,
@@ -2759,13 +2832,33 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         info->ContextRecord,
         frames.data(),
         capacity,
-        &frameCount
+        &frameCount,
+        &stepsAttempted,
+        &stopReason
     );
 
     if (!ok || frameCount == 0)
         frames.clear();
     else
         frames.resize(frameCount);
+
+    if (diagnostics != nullptr)
+    {
+        char text[256] = {};
+        sprintf_s(
+            text,
+            sizeof(text),
+            "status=%s dbghelp=1 symbols_initialized=%d steps=%u frames=%u eip=0x%08X ebp=0x%08X esp=0x%08X",
+            StackWalkStopReasonName(stopReason),
+            symbolsInitialized ? 1 : 0,
+            stepsAttempted,
+            static_cast<unsigned>(frames.size()),
+            info->ContextRecord->Eip,
+            info->ContextRecord->Ebp,
+            info->ContextRecord->Esp
+        );
+        *diagnostics = text;
+    }
 
     if (symbolsInitialized && pSymCleanup != nullptr)
         pSymCleanup(process);
@@ -2774,6 +2867,73 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     InterlockedExchange(&g_dbgHelpActive, 0);
 
     return frames;
+}
+
+std::vector<DWORD> DebugUtils::BuildRawStackCandidates(
+    DWORD stackPointer,
+    size_t scanBytes,
+    size_t maxCandidates
+)
+{
+    std::vector<DWORD> candidates;
+
+    if (stackPointer == 0 || scanBytes < sizeof(DWORD) || maxCandidates == 0)
+        return candidates;
+
+    const size_t words =
+        std::min<size_t>(scanBytes / sizeof(DWORD), 256u);
+
+    for (size_t i = 0; i < words && candidates.size() < maxCandidates; ++i)
+    {
+        DWORD value = 0;
+        if (!SafeReadDword(
+                reinterpret_cast<const DWORD*>(
+                    static_cast<uintptr_t>(stackPointer) +
+                    i * sizeof(DWORD)),
+                value))
+        {
+            break;
+        }
+
+        if (value == 0)
+            continue;
+
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(
+                    static_cast<uintptr_t>(value)),
+                &module))
+        {
+            continue;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(
+                reinterpret_cast<LPCVOID>(
+                    static_cast<uintptr_t>(value)),
+                &mbi,
+                sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT)
+        {
+            continue;
+        }
+
+        const DWORD protection = mbi.Protect & 0xFFu;
+        const bool executable =
+            protection == PAGE_EXECUTE ||
+            protection == PAGE_EXECUTE_READ ||
+            protection == PAGE_EXECUTE_READWRITE ||
+            protection == PAGE_EXECUTE_WRITECOPY;
+
+        if (!executable)
+            continue;
+
+        candidates.push_back(value);
+    }
+
+    return candidates;
 }
 
 
@@ -3054,9 +3214,13 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     EnsureCrashInfoDatabase();
     LoadCrashInfoList();
 
+    std::string stackWalkDiagnostics;
     const std::vector<DWORD> backtraceAddresses =
         m_crashBacktraceEnabled
-            ? BuildStackWalk(info, m_crashMaxFrames)
+            ? BuildStackWalk(
+                info,
+                m_crashMaxFrames,
+                &stackWalkDiagnostics)
             : std::vector<DWORD>();
 
     const std::string fingerprint =
@@ -3390,6 +3554,9 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
 
     output += "\r\n[STACK WALK]\r\n";
+    appendf("%s", stackWalkDiagnostics.empty()
+        ? "status=NOT_REQUESTED"
+        : stackWalkDiagnostics.c_str());
     if (backtraceAddresses.empty())
     {
         output += "status=UNAVAILABLE\r\n";
@@ -3426,6 +3593,54 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
             appendf(
                 "#%02u address=0x%08X module=%s rva=0x%08X",
+                static_cast<unsigned>(i),
+                address,
+                module.c_str(),
+                rva
+            );
+        }
+    }
+
+    const std::vector<DWORD> rawStackCandidates =
+        BuildRawStackCandidates(context->Esp, 0x400u, 16u);
+
+    output += "\r\n[STACK RAW CANDIDATES]\r\n";
+    if (rawStackCandidates.empty())
+    {
+        output += "status=NONE\r\n";
+    }
+    else
+    {
+        for (size_t i = 0; i < rawStackCandidates.size(); ++i)
+        {
+            const DWORD address = rawStackCandidates[i];
+            const std::string module = ModuleNameForAddress(address);
+
+            DWORD base = 0;
+            DWORD rva = 0;
+            HMODULE handle = nullptr;
+            MODULEINFO infoModule{};
+
+            if (GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCSTR>(address),
+                    &handle) &&
+                GetModuleInformation(
+                    GetCurrentProcess(),
+                    handle,
+                    &infoModule,
+                    sizeof(infoModule)))
+            {
+                base =
+                    static_cast<DWORD>(
+                        reinterpret_cast<uintptr_t>(infoModule.lpBaseOfDll));
+                if (address >= base)
+                    rva = address - base;
+            }
+
+            appendf(
+                "candidate=%02u address=0x%08X module=%s rva=0x%08X",
                 static_cast<unsigned>(i),
                 address,
                 module.c_str(),
