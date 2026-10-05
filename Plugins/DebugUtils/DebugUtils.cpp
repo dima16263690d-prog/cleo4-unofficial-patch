@@ -2174,9 +2174,89 @@ void DebugUtils::LoadCrashInfoList()
         }
     }
 
+    // Remove only byte-for-byte equivalent diagnostic records. Different
+    // solutions for the same fault address remain separate entries.
+    {
+        std::set<std::string> seen;
+        m_crashInfo.erase(
+            std::remove_if(
+                m_crashInfo.begin(),
+                m_crashInfo.end(),
+                [&seen](const CrashInfoEntry& entry)
+                {
+                    std::string key;
+                    key.reserve(512);
+
+                    auto appendVector = [&key](const std::vector<DWORD>& values)
+                    {
+                        for (DWORD value : values)
+                        {
+                            char part[16] = {};
+                            sprintf_s(part, sizeof(part), "%08X,", value);
+                            key += part;
+                        }
+                        key += ";";
+                    };
+
+                    auto appendStringVector =
+                        [&key](const std::vector<std::string>& values)
+                    {
+                        for (const auto& value : values)
+                        {
+                            key += value;
+                            key += ",";
+                        }
+                        key += ";";
+                    };
+
+                    appendVector(entry.errorAddresses);
+                    appendStringVector(entry.errorModules);
+                    appendVector(entry.backtraceAddresses);
+                    appendStringVector(entry.backtraceModules);
+                    appendVector(entry.lastCommands);
+
+                    key += entry.scriptName;
+                    key += "|";
+                    key += entry.name;
+                    key += "|";
+                    key += entry.issue;
+                    key += "|";
+                    key += entry.about;
+                    key += "|";
+                    key += entry.solution;
+
+                    if (entry.exceptionCode != 0)
+                    {
+                        char value[16] = {};
+                        sprintf_s(
+                            value,
+                            sizeof(value),
+                            "%08X",
+                            entry.exceptionCode
+                        );
+                        key += "|EX=";
+                        key += value;
+                    }
+
+                    key += "|AT=";
+                    key += std::to_string(entry.accessType);
+                    key += "|OP=";
+                    key += std::to_string(entry.lastOpcode);
+
+                    if (seen.insert(key).second)
+                        return false;
+
+                    return true;
+                }
+            ),
+            m_crashInfo.end()
+        );
+    }
+
     WriteCore(
-        "[crashinfo] loaded verified entries=%u path=%s",
+        "[crashinfo] loaded verified entries=%u unique=%u path=%s",
         static_cast<unsigned>(loadedEntries),
+        static_cast<unsigned>(m_crashInfo.size()),
         path.c_str()
     );
 }
@@ -2297,7 +2377,7 @@ const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
         const DWORD normalizedOpcode =
             lastOpcode == 0xFFFFFFFF ? 0xFFFFFFFF : lastOpcode & 0x7FFF;
 
-        if (entry.lastOpcode != 0)
+        if (entry.lastOpcode != 0xFFFFFFFFu)
         {
             if (normalizedOpcode != 0xFFFFFFFF &&
                 entry.lastOpcode == normalizedOpcode)
@@ -2346,7 +2426,7 @@ const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
             entry.wildcardError ||
             !entry.backtraceAddresses.empty() ||
             !entry.backtraceModules.empty() ||
-            entry.lastOpcode != 0 ||
+            entry.lastOpcode != 0xFFFFFFFFu ||
             !entry.lastCommands.empty() ||
             !entry.scriptName.empty() ||
             entry.exceptionCode != 0 ||
