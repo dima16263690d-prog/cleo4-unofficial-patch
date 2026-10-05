@@ -1,4 +1,5 @@
 # CLEO DebugUtils Crash Database
+# DebugUtils-Database-Version: 2
 # Baseline: GTA San Andreas 1.0 US CrashInfo list (local copy)
 # Source: JuniorDjjr/CrashInfo — EN-CrashList.txt
 # Runtime AUTO-DISCOVERED observations are written by DebugUtils to the installed
