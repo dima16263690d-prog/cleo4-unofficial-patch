@@ -225,6 +225,7 @@ private:
     static std::string Basename(const std::string& path);
     static std::string ModuleNameForAddress(DWORD address);
     static bool SafeReadDword(const DWORD* address, DWORD& value);
+    static bool SafeReadBytes(const void* address, void* buffer, size_t size);
     static size_t ScriptOffset(const CScriptThread* thread);
     static void RegisterCallbacks();
     static void UnregisterCallbacks();
