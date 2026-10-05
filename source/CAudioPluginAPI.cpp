@@ -126,14 +126,14 @@ extern "C"
     DWORD WINAPI CLEO_Audio_GetType(DWORD handle)
     {
         auto stream = CLEO::ResolveAudioStream(handle);
-        return stream ? static_cast<DWORD>(stream->GetType()) : static_cast<DWORD>(StreamTypeNone);
+        return stream ? static_cast<DWORD>(stream->GetType()) : static_cast<DWORD>(CLEO::StreamTypeNone);
     }
 
     void WINAPI CLEO_Audio_SetType(DWORD handle, DWORD type)
     {
         auto stream = CLEO::ResolveAudioStream(handle);
         if (stream)
-            stream->SetType(static_cast<eStreamType>(type));
+            stream->SetType(static_cast<CLEO::eStreamType>(type));
     }
 
     BOOL WINAPI CLEO_Audio_Set3dSourceSize(DWORD handle, float radius)
