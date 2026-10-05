@@ -2,6 +2,8 @@
 #include "resource.h"
 #include <windows.h>
 #include <psapi.h>
+#include <shellapi.h>
+#pragma comment(lib, "Shell32.lib")
 #include <TlHelp32.h>
 #include <algorithm>
 #include <cstdarg>
@@ -21,6 +23,156 @@
 bool& CTimer::m_CodePause = *(bool*)0xB7CB48;
 
 DebugUtils* DebugUtils::s_instance = nullptr;
+namespace
+{
+    struct CrashDialogData
+    {
+        std::wstring title;
+        std::wstring details;
+        std::wstring logPath;
+        DWORD exitCode = 1;
+    };
+
+    static std::wstring CrashToWide(const std::string& value)
+    {
+        if (value.empty())
+            return L"";
+
+        UINT codePage = CP_UTF8;
+        int count = MultiByteToWideChar(codePage, 0, value.c_str(), -1, nullptr, 0);
+        if (count <= 0)
+        {
+            codePage = CP_ACP;
+            count = MultiByteToWideChar(codePage, 0, value.c_str(), -1, nullptr, 0);
+        }
+
+        if (count <= 0)
+            return L"";
+
+        std::wstring result(static_cast<size_t>(count), L'\0');
+        if (MultiByteToWideChar(
+            codePage, 0, value.c_str(), -1, &result[0], count) <= 0)
+            return L"";
+
+        result.resize(static_cast<size_t>(count - 1));
+        return result;
+    }
+
+    static bool CopyCrashTextToClipboard(HWND owner, const std::wstring& text)
+    {
+        if (!OpenClipboard(owner))
+            return false;
+
+        if (!EmptyClipboard())
+        {
+            CloseClipboard();
+            return false;
+        }
+
+        const SIZE_T bytes =
+            static_cast<SIZE_T>((text.size() + 1) * sizeof(wchar_t));
+
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+        if (memory == nullptr)
+        {
+            CloseClipboard();
+            return false;
+        }
+
+        void* target = GlobalLock(memory);
+        if (target == nullptr)
+        {
+            GlobalFree(memory);
+            CloseClipboard();
+            return false;
+        }
+
+        memcpy(target, text.c_str(), bytes);
+        GlobalUnlock(memory);
+
+        if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr)
+        {
+            GlobalFree(memory);
+            CloseClipboard();
+            return false;
+        }
+
+        CloseClipboard();
+        return true;
+    }
+
+    static INT_PTR CALLBACK CrashDialogProc(
+        HWND hwnd,
+        UINT message,
+        WPARAM wParam,
+        LPARAM lParam)
+    {
+        CrashDialogData* data =
+            reinterpret_cast<CrashDialogData*>(
+                GetWindowLongPtrW(hwnd, DWLP_USER));
+
+        switch (message)
+        {
+        case WM_INITDIALOG:
+            data = reinterpret_cast<CrashDialogData*>(lParam);
+            SetWindowLongPtrW(hwnd, DWLP_USER, lParam);
+
+            SetWindowTextW(hwnd, data->title.c_str());
+            SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
+            SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"Скопировать");
+            SetDlgItemTextW(hwnd, IDC_CRASH_OPEN_LOG, L"Открыть лог");
+            SetDlgItemTextW(hwnd, IDC_CRASH_EXIT, L"Завершить игру");
+            return TRUE;
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam))
+            {
+            case IDC_CRASH_COPY:
+                if (data != nullptr)
+                {
+                    const std::wstring copied =
+                        data->details + L"\r\nЛог: " + data->logPath;
+
+                    if (CopyCrashTextToClipboard(hwnd, copied))
+                        SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"Скопировано");
+                }
+                return TRUE;
+
+            case IDC_CRASH_OPEN_LOG:
+                if (data != nullptr)
+                {
+                    ShellExecuteW(
+                        hwnd,
+                        L"open",
+                        data->logPath.c_str(),
+                        nullptr,
+                        nullptr,
+                        SW_SHOWNORMAL
+                    );
+                }
+                return TRUE;
+
+            case IDC_CRASH_EXIT:
+                TerminateProcess(
+                    GetCurrentProcess(),
+                    data != nullptr && data->exitCode != 0 ? data->exitCode : 1
+                );
+                return TRUE;
+            }
+            break;
+
+        case WM_CLOSE:
+            TerminateProcess(
+                GetCurrentProcess(),
+                data != nullptr && data->exitCode != 0 ? data->exitCode : 1
+            );
+            return TRUE;
+        }
+
+        return FALSE;
+    }
+}
+
 
 namespace
 {
@@ -1761,6 +1913,98 @@ bool DebugUtils::SafeReadDword(const DWORD* address, DWORD& value)
     }
 }
 
+void DebugUtils::ShowCrashDialog(
+    const char* crashName,
+    DWORD exceptionCode,
+    const char* exceptionType,
+    DWORD faultAddress,
+    const std::string& faultModule,
+    DWORD faultRva,
+    const char* confidence,
+    const std::string& issue,
+    const std::string& about,
+    const std::string& solution,
+    const std::string& lastScript,
+    DWORD lastOpcode,
+    const std::vector<DWORD>& backtrace
+)
+{
+    CrashDialogData data{};
+
+    char text[8192] = {};
+    sprintf_s(
+        text, sizeof(text),
+        "Критическая ошибка GTA SA обнаружена DebugUtils.\r\n\r\n"
+        "Причина: %s\r\n"
+        "Exception: 0x%08X (%s)\r\n"
+        "Адрес: 0x%08X\r\n"
+        "Модуль: %s\r\n"
+        "RVA: 0x%08X\r\n"
+        "CrashInfo: %s\r\n\r\n"
+        "Последний скрипт: %s\r\n"
+        "Последний opcode: 0x%04X\r\n",
+        crashName ? crashName : "Unknown",
+        exceptionCode,
+        exceptionType ? exceptionType : "UNKNOWN",
+        faultAddress,
+        faultModule.c_str(),
+        faultRva,
+        confidence ? confidence : "none",
+        lastScript.c_str(),
+        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
+    );
+
+    std::string details(text);
+    if (!issue.empty())
+        details += "\r\nIssue: " + issue;
+    if (!about.empty())
+        details += "\r\nAbout: " + about;
+    if (!solution.empty())
+        details += "\r\nSolution: " + solution;
+
+    details += "\r\n\r\nBacktrace:";
+    if (backtrace.empty())
+    {
+        details += "\r\n  <not available>";
+    }
+    else
+    {
+        for (size_t i = 0; i < std::min<size_t>(backtrace.size(), 8); ++i)
+        {
+            char frame[128] = {};
+            sprintf_s(
+                frame, sizeof(frame),
+                "\r\n  #%02u 0x%08X %s",
+                static_cast<unsigned>(i),
+                backtrace[i],
+                ModuleNameForAddress(backtrace[i]).c_str()
+            );
+            details += frame;
+        }
+    }
+
+    data.title = L"CLEO DebugUtils — GTA SA crash";
+    data.details = CrashToWide(details);
+    data.logPath = CrashToWide(CrashLogPath());
+    data.exitCode = exceptionCode;
+
+    const INT_PTR result = DialogBoxParamW(
+        GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(IDD_CRASH_DIALOG),
+        nullptr,
+        &CrashDialogProc,
+        reinterpret_cast<LPARAM>(&data)
+    );
+
+    // The normal result path is process termination from the dialog. If the
+    // dialog cannot be created, never return to corrupted GTA state.
+    if (result == -1)
+        TerminateProcess(
+            GetCurrentProcess(),
+            exceptionCode != 0 ? exceptionCode : 1
+        );
+}
+
 void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 {
     if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr)
@@ -2049,6 +2293,25 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         static_cast<unsigned>(backtraceAddresses.size())
     );
     WinAppendLine(CrashLogPath(), line);
+
+    ShowCrashDialog(
+        crashName,
+        info->ExceptionRecord->ExceptionCode,
+        ExceptionName(info->ExceptionRecord->ExceptionCode),
+        faultAddress,
+        faultModule,
+        faultModuleRva,
+        confidence,
+        match != nullptr ? match->issue : std::string(),
+        match != nullptr ? match->about : std::string(),
+        match != nullptr ? match->solution : std::string(),
+        std::string(
+            m_lastScriptName,
+            strnlen_s(m_lastScriptName, sizeof(m_lastScriptName))
+        ),
+        m_lastOpcode,
+        backtraceAddresses
+    );
 }
 
 void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
