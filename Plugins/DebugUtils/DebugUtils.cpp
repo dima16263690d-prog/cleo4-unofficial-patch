@@ -460,29 +460,45 @@ DebugUtils::DebugUtils()
 
     s_instance = this;
 
-    // Install the vectored handler before opening logs or registering
-    // callbacks. GTA or another ASI may replace the unhandled-exception
-    // filter later, while VEH remains in the process exception chain.
-    m_vectoredHandler = AddVectoredExceptionHandler(
-        1,
-        &DebugUtils::VectoredExceptionHandler
-    );
-    m_crashHandlerInstalled = m_vectoredHandler != nullptr;
-
     LoadConfig();
+
+    // Crash collection is optional. When disabled, no crash hook is installed
+    // and the CLEO bridge does not maintain the per-opcode crash snapshot.
+    if (m_crashEnabled)
+    {
+        m_vectoredHandler = AddVectoredExceptionHandler(
+            1,
+            &DebugUtils::VectoredExceptionHandler
+        );
+        m_crashHandlerInstalled = m_vectoredHandler != nullptr;
+
+        EnsureCrashInfoDatabase();
+        LoadCrashInfoList();
+    }
+
+    CLEO_DebugSetCrashSnapshotEnabled(
+        m_crashEnabled ? TRUE : FALSE
+    );
+
     OpenLogs();
-    EnsureCrashInfoDatabase();
-    LoadCrashInfoList();
     WriteCoreHeader();
     WriteCoreThreadLayout();
 
     RegisterCallbacks();
 
-    SetUnhandledExceptionFilter(&DebugUtils::UnhandledExceptionFilter);
+    if (m_crashEnabled)
+        SetUnhandledExceptionFilter(&DebugUtils::UnhandledExceptionFilter);
 
     WriteCore(
-        "[crash_hook] VEH=%d unhandled_filter=installed",
-        m_crashHandlerInstalled ? 1 : 0
+        "[crash] enabled=%d window=%d backtrace=%d opcode_history=%d max_frames=%u "
+        "VEH=%d bridge_snapshot=%d",
+        m_crashEnabled ? 1 : 0,
+        m_crashWindowEnabled ? 1 : 0,
+        m_crashBacktraceEnabled ? 1 : 0,
+        m_crashOpcodeHistory ? 1 : 0,
+        static_cast<unsigned>(m_crashMaxFrames),
+        m_crashHandlerInstalled ? 1 : 0,
+        m_crashEnabled ? 1 : 0
     );
 
     if (m_scriptLogEnabled)
@@ -540,6 +556,8 @@ DebugUtils::~DebugUtils()
 {
     if (s_instance != this)
         return;
+
+    CLEO_DebugSetCrashSnapshotEnabled(FALSE);
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -603,7 +621,15 @@ void DebugUtils::LoadConfig()
             config << "[DebugUtils.Logs]\r\n";
             config << "Memory=1\r\n";
             config << "MemoryTrace=0\r\n";
-            config << "Diagnostic=0\r\n";
+            config << "Diagnostic=0\r\n\r\n";
+
+            config << "[DebugUtils.Crash]\r\n";
+            config << "; Main crash capture/test switch.\r\n";
+            config << "Enabled=1\r\n";
+            config << "Window=1\r\n";
+            config << "Backtrace=1\r\n";
+            config << "OpcodeHistory=0\r\n";
+            config << "MaxFrames=32\r\n";
         }
     }
 
@@ -678,6 +704,27 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    m_crashEnabled =
+        GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;
+
+    m_crashWindowEnabled =
+        GetPrivateProfileIntA("DebugUtils.Crash", "Window", 1, path.c_str()) != 0;
+
+    m_crashBacktraceEnabled =
+        GetPrivateProfileIntA("DebugUtils.Crash", "Backtrace", 1, path.c_str()) != 0;
+
+    m_crashOpcodeHistory =
+        GetPrivateProfileIntA("DebugUtils.Crash", "OpcodeHistory", 0, path.c_str()) != 0;
+
+    m_crashMaxFrames = static_cast<DWORD>(
+        GetPrivateProfileIntA("DebugUtils.Crash", "MaxFrames", 32, path.c_str())
+    );
+
+    if (m_crashMaxFrames == 0)
+        m_crashMaxFrames = 1;
+    if (m_crashMaxFrames > 32)
+        m_crashMaxFrames = 32;
 }
 
 std::string DebugUtils::DebugDir() const
@@ -1988,8 +2035,21 @@ void DebugUtils::ShowCrashDialog(
     data.logPath = CrashToWide(CrashLogPath());
     data.exitCode = exceptionCode;
 
+    HMODULE dialogModule = nullptr;
+    if (!GetModuleHandleExA(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+        &dialogModule))
+    {
+        TerminateProcess(
+            GetCurrentProcess(),
+            exceptionCode != 0 ? exceptionCode : 1
+        );
+    }
+
     const INT_PTR result = DialogBoxParamW(
-        GetModuleHandleW(nullptr),
+        dialogModule,
         MAKEINTRESOURCEW(IDD_CRASH_DIALOG),
         nullptr,
         &CrashDialogProc,
@@ -2010,7 +2070,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr)
         return;
 
-    WriteOpcodeHistory("crash");
+    if (m_crashOpcodeHistory)
+        WriteOpcodeHistory("crash");
 
     char line[4096];
     SYSTEMTIME t{};
@@ -2044,26 +2105,55 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     // Build the call chain before classifying the crash.
     std::vector<DWORD> backtraceAddresses;
-    DWORD frame = c->Ebp;
-
-    for (unsigned i = 0; i < 32 && frame != 0; ++i)
+    if (m_crashBacktraceEnabled)
     {
-        DWORD next = 0;
-        DWORD ret = 0;
+        DWORD frame = c->Ebp;
 
-        if (!SafeReadDword(reinterpret_cast<const DWORD*>(frame), next) ||
-            !SafeReadDword(reinterpret_cast<const DWORD*>(frame + 4), ret))
-            break;
+        for (unsigned i = 0;
+             i < m_crashMaxFrames && frame != 0;
+             ++i)
+        {
+            DWORD next = 0;
+            DWORD ret = 0;
 
-        if (next <= frame || next - frame > 0x10000)
-            break;
+            if (!SafeReadDword(reinterpret_cast<const DWORD*>(frame), next) ||
+                !SafeReadDword(reinterpret_cast<const DWORD*>(frame + 4), ret))
+                break;
 
-        backtraceAddresses.push_back(ret);
-        frame = next;
+            if (next <= frame || next - frame > 0x10000)
+                break;
+
+            backtraceAddresses.push_back(ret);
+            frame = next;
+        }
     }
 
     const CrashInfoEntry* match =
         FindCrashInfo(faultAddress, faultModule, backtraceAddresses);
+
+    CLEO_CrashSnapshot crashSnapshot{};
+    const bool crashSnapshotValid =
+        CLEO_DebugGetCrashSnapshot(&crashSnapshot) != FALSE;
+
+    const std::string lastScript =
+        crashSnapshotValid
+            ? std::string(
+                crashSnapshot.scriptName,
+                strnlen_s(crashSnapshot.scriptName,
+                          sizeof(crashSnapshot.scriptName)))
+            : std::string("none");
+
+    const DWORD lastOpcode =
+        crashSnapshotValid ? crashSnapshot.opcode : 0xFFFFFFFF;
+
+    const DWORD lastOpcodeOffset =
+        crashSnapshotValid ? crashSnapshot.opcodeOffset : 0;
+
+    const LONG lastOpcodeResult =
+        crashSnapshotValid ? crashSnapshot.opcodeResult : -1;
+
+    const uintptr_t lastScriptPtr =
+        crashSnapshotValid ? crashSnapshot.scriptPtr : 0;
 
     const char* crashName = "Unknown / Unclassified Crash";
     const char* confidence = "none";
@@ -2176,6 +2266,47 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         WinAppendLine(CrashLogPath(), line);
     }
 
+    // ExceptionAddress/EIP is the authoritative faulting instruction.
+    // Keep its raw bytes for later disassembly without adding a permanent hook.
+    {
+        BYTE bytes[16] = {};
+        bool readable = true;
+
+        __try
+        {
+            memcpy(bytes, reinterpret_cast<const void*>(faultAddress), sizeof(bytes));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            readable = false;
+        }
+
+        if (readable)
+        {
+            char hex[16 * 3 + 1] = {};
+            size_t pos = 0;
+
+            for (unsigned i = 0; i < 16; ++i)
+            {
+                sprintf_s(
+                    hex + pos,
+                    sizeof(hex) - pos,
+                    i == 0 ? "%02X" : " %02X",
+                    static_cast<unsigned>(bytes[i])
+                );
+                pos = strlen(hex);
+            }
+
+            sprintf_s(
+                line, sizeof(line),
+                "[instruction] address=0x%08X bytes=%s",
+                faultAddress,
+                hex
+            );
+            WinAppendLine(CrashLogPath(), line);
+        }
+    }
+
     // 40 DWORDs from ESP, in the same compact style as the reference report.
     for (unsigned row = 0; row < 10; ++row)
     {
@@ -2247,15 +2378,15 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     // is deliberately not copied into the crash report.
     sprintf_s(
         line, sizeof(line),
-        "[last_script] name='%.8s' ptr=%p opcode=0x%04X "
-        "offset=0x%08X result=%d",
-        m_lastScriptName,
-        reinterpret_cast<void*>(static_cast<uintptr_t>(m_lastScriptPtr)),
-        m_lastOpcode == 0xFFFFFFFF ? 0xFFFF : (m_lastOpcode & 0x7FFF),
-        m_lastOpcodeOffset,
-        m_lastOpcodeResult == 0xFFFFFFFF
-            ? -1
-            : static_cast<int>(m_lastOpcodeResult)
+        "[last_script] source=cleo_bridge name='%.8s' ptr=%p "
+        "opcode=0x%04X offset=0x%08X result=%d tick=%u valid=%d",
+        lastScript.c_str(),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(lastScriptPtr)),
+        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF),
+        lastOpcodeOffset,
+        static_cast<int>(lastOpcodeResult),
+        crashSnapshotValid ? crashSnapshot.gameTick : 0,
+        crashSnapshotValid ? 1 : 0
     );
     WinAppendLine(CrashLogPath(), line);
 
@@ -2294,6 +2425,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     );
     WinAppendLine(CrashLogPath(), line);
 
+    if (m_crashWindowEnabled)
     ShowCrashDialog(
         crashName,
         info->ExceptionRecord->ExceptionCode,
@@ -2305,11 +2437,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         match != nullptr ? match->issue : std::string(),
         match != nullptr ? match->about : std::string(),
         match != nullptr ? match->solution : std::string(),
-        std::string(
-            m_lastScriptName,
-            strnlen_s(m_lastScriptName, sizeof(m_lastScriptName))
-        ),
-        m_lastOpcode,
+        lastScript,
+        lastOpcode,
         backtraceAddresses
     );
 }
@@ -2665,13 +2794,12 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
         }
     }
 
-    s_instance->m_lastScriptPtr = reinterpret_cast<uintptr_t>(thread);
-    strncpy_s(s_instance->m_lastScriptName, thread->threadName, _TRUNCATE);
-    s_instance->m_lastOpcode = opcode;
-    s_instance->m_lastOpcodeOffset =
-        static_cast<DWORD>(ScriptOffset(thread) >= 2 ? ScriptOffset(thread) - 2 : 0);
-    s_instance->m_lastOpcodeResult = 0xFFFFFFFF;
-    s_instance->RecordOpcode(thread, opcode, 0xFFFFFFFF);
+    if (s_instance->m_scriptOpcodeTrace ||
+        s_instance->m_functionTrace ||
+        s_instance->m_crashOpcodeHistory)
+    {
+        s_instance->RecordOpcode(thread, opcode, 0xFFFFFFFF);
+    }
 
     const bool notFlag = thread->notFlag != 0;
 
@@ -2930,8 +3058,12 @@ int __stdcall DebugUtils::OnScriptOpcodeAfter(CScriptThread* thread, DWORD opcod
     if (!s_instance || !thread)
         return 0;
 
-    s_instance->m_lastOpcodeResult = static_cast<DWORD>(result);
-    s_instance->RecordOpcode(thread, opcode, static_cast<DWORD>(result));
+    if (s_instance->m_scriptOpcodeTrace ||
+        s_instance->m_functionTrace ||
+        s_instance->m_crashOpcodeHistory)
+    {
+        s_instance->RecordOpcode(thread, opcode, static_cast<DWORD>(result));
+    }
 
     if (s_instance->m_scriptOpcodeTrace ||
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
