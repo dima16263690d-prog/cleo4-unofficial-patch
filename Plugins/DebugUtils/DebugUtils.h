@@ -32,6 +32,9 @@ private:
         bool wildcardError = false;
         bool hasMatcher = false;
         std::string name;
+        std::string issue;
+        std::string about;
+        std::string solution;
         std::string description;
     };
 
