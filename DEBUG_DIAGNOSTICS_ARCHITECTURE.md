@@ -59,19 +59,19 @@ Crash diagnostics:
 - last script/opcode/offset/result
 - optional exact-address match in CrashInfo
 
-## CrashInfo
+## CLEO Crash Database
 
-Reference:
+DebugUtils owns a project-local crash database.
 
-https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt
+Path:
 
-Local database path:
+cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt
 
-cleo/debug/CrashInfo/EN-CrashList.txt
+The database is bundled into DebugUtils.cleo and is created locally at startup when missing. It is not downloaded or synchronized automatically.
 
-Download helper:
+The matching layer is our own implementation and supports exact addresses, faulting modules, wildcard signatures, and Backtrace address/module conditions.
 
-powershell -ExecutionPolicy Bypass -File tools\Get-CrashInfo.ps1 -GtaPath "C:\Games\GTA San Andreas"
+Only signatures that we reproduce or verify in our own GTA SA 1.0 US/CLEO testing are added to the database.
 
 ## CLEO 5-style DebugUtils opcodes
 
