@@ -2,7 +2,7 @@
 # Baseline: GTA San Andreas 1.0 US CrashInfo list (local copy)
 # Source: JuniorDjjr/CrashInfo — EN-CrashList.txt
 # Runtime AUTO-DISCOVERED observations are written by DebugUtils to the installed
-# local database; they are not part of this repository source until verified.
+# local database and are not part of this repository source until verified.
 # ============================================================================
 
 02/10/26 (DD/MM/YY)
@@ -1593,30 +1593,15 @@ When trying to start the game: In addition to .asi, it may be ModLoader's cache 
 
 
 # ============================================================================
-# CLEO DebugUtils LOCAL EXTENSIONS
-# These entries belong to this project and are observations unless explicitly
-# verified. They are intentionally kept after the upstream baseline.
+# CLEO DebugUtils LOCAL NOTES
+# The upstream baseline above already contains the standard signatures,
+# including 0x005D95CE, 0x00746929 and CLEO.asi classifications.
+# DebugUtils must not create duplicate Error records for these signatures.
+#
+# Project diagnostic rule:
+# A fault location, last CLEO opcode, or last script does NOT by itself prove
+# causation. The report must distinguish fault location from root cause.
+#
+# Runtime AUTO-DISCOVERED records are written only to the installed local
+# database by DebugUtils and remain observations until reproduced/verified.
 # ============================================================================
-
-# --- Project-observed null access violation ---
-Error: 0x00746929
-Name: GTA Null Pointer Access Violation (CLEO DebugUtils observation)
-Issue: GTA SA access violation at address 0x00000000.
-About: Signature captured during CLEO runtime compatibility tests. This entry identifies the observed fault signature only; it does not prove which script or subsystem caused it.
-Solution: Use the exception record, module/RVA, StackWalk backtrace, last CLEO script/opcode, and access target before assigning a root cause.
-
-# --- Project-specific RenderWare observation ---
-# Upstream already contains a 0x005D95CE entry. This note preserves our
-# project-specific interpretation without replacing the upstream diagnosis.
-Error: 0x005D95CE
-Name: GTA RenderWare Material Destruction (CLEO DebugUtils observation)
-Issue: RenderWare material cleanup/destruction fault observed during project testing.
-About: Observed at gta_sa.exe + 0x1D95CE. The fault location alone does not prove that CLEO or the last script caused the crash.
-Solution: Treat this as a diagnostic signature. Confirm the backtrace and reproduce with CLEO/script isolation before attributing responsibility.
-
-# --- CLEO module observation ---
-Error: CLEO.asi
-Name: CLEO Core Module Crash (DebugUtils classification)
-Issue: The faulting module is CLEO.asi.
-About: A module-only match proves only the module containing the fault address; it does not prove that a particular script or opcode caused the exception.
-Solution: Inspect exception code, module RVA, access target, StackWalk backtrace, and last CLEO execution context.
