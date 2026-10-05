@@ -34,7 +34,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <GenerateDebugInformation>No</GenerateDebugInformation><AdditionalLibraryDirectories>$(PLUGIN_SDK_DIR)\output\lib\;$(CLEO_SDK_SA_DIR)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>plugin.lib;CLEO.lib;%(AdditionalDependencies)</AdditionalDependencies><SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>No</GenerateDebugInformation><AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Release GTASA|Win32'">$(SolutionDir)output\Release\;$(PLUGIN_SDK_DIR)\output\lib\;$(CLEO_SDK_SA_DIR)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Debug GTASA|Win32'">$(SolutionDir)output\Debug\;$(PLUGIN_SDK_DIR)\output\lib\;$(CLEO_SDK_SA_DIR)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>plugin.lib;CLEO.lib;%(AdditionalDependencies)</AdditionalDependencies><SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug GTASA|Win32'">
