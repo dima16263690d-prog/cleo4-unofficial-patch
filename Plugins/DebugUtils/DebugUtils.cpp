@@ -119,9 +119,9 @@ namespace
 
             SetWindowTextW(hwnd, data->title.c_str());
             SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
-            SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"Скопировать");
-            SetDlgItemTextW(hwnd, IDC_CRASH_OPEN_LOG, L"Открыть лог");
-            SetDlgItemTextW(hwnd, IDC_CRASH_EXIT, L"Завершить игру");
+            SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c");
+            SetDlgItemTextW(hwnd, IDC_CRASH_OPEN_LOG, L"\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043b\u043e\u0433");
+            SetDlgItemTextW(hwnd, IDC_CRASH_EXIT, L"\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0438\u0433\u0440\u0443");
             return TRUE;
 
         case WM_COMMAND:
@@ -131,10 +131,10 @@ namespace
                 if (data != nullptr)
                 {
                     const std::wstring copied =
-                        data->details + L"\r\nЛог: " + data->logPath;
+                        data->details + L"\r\nLog: " + data->logPath;
 
                     if (CopyCrashTextToClipboard(hwnd, copied))
-                        SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"Скопировано");
+                        SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e");
                 }
                 return TRUE;
 
@@ -1934,15 +1934,15 @@ void DebugUtils::ShowCrashDialog(
     char text[8192] = {};
     sprintf_s(
         text, sizeof(text),
-        "Критическая ошибка GTA SA обнаружена DebugUtils.\r\n\r\n"
-        "Причина: %s\r\n"
+        "Critical GTA SA crash detected by DebugUtils.\r\n\r\n"
+        "Crash: %s\r\n"
         "Exception: 0x%08X (%s)\r\n"
-        "Адрес: 0x%08X\r\n"
-        "Модуль: %s\r\n"
+        "Address: 0x%08X\r\n"
+        "Module: %s\r\n"
         "RVA: 0x%08X\r\n"
         "CrashInfo: %s\r\n\r\n"
-        "Последний скрипт: %s\r\n"
-        "Последний opcode: 0x%04X\r\n",
+        "Last script: %s\r\n"
+        "Last opcode: 0x%04X\r\n",
         crashName ? crashName : "Unknown",
         exceptionCode,
         exceptionType ? exceptionType : "UNKNOWN",
@@ -1983,7 +1983,7 @@ void DebugUtils::ShowCrashDialog(
         }
     }
 
-    data.title = L"CLEO DebugUtils — GTA SA crash";
+    data.title = L"CLEO DebugUtils - GTA SA crash";
     data.details = CrashToWide(details);
     data.logPath = CrashToWide(CrashLogPath());
     data.exitCode = exceptionCode;
