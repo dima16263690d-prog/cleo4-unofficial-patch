@@ -2325,8 +2325,11 @@ const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
         if (entry.autoDiscovered)
             continue;
 
+        // Address 0 is a special null-instruction state. Do not let an
+        // old/generic "0x00000000" database record masquerade as a normal
+        // exact-address crash match. Context/module matching can still work.
         const bool exactError =
-            ContainsAddress(entry.errorAddresses, address);
+            address != 0 && ContainsAddress(entry.errorAddresses, address);
         const bool moduleError =
             ContainsModule(entry.errorModules, faultModule);
         const bool wildcard =
@@ -3069,6 +3072,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             backtraceAddresses
         );
 
+    const bool nullEip = context->Eip == 0;
+
     const CrashInfoEntry* match =
         FindCrashInfo(
             faultAddress,
@@ -3120,7 +3125,9 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
 
     const char* confidence = "NONE";
-    if (match == nullptr)
+    if (nullEip)
+        confidence = "NULL-EIP";
+    else if (match == nullptr)
         confidence = "UNKNOWN";
     else if (exactAddress)
         confidence = "EXACT-ADDRESS";
@@ -3419,7 +3426,9 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             "module_match=%d\r\n"
             "wildcard=%d\r\n"
             "context_match=%d",
-            match->name.empty() ? "Unnamed signature" : match->name.c_str(),
+            !match->name.empty()
+                ? match->name.c_str()
+                : crashDisplayName.c_str(),
             confidence,
             exactAddress ? 1 : 0,
             moduleMatch ? 1 : 0,
@@ -3452,6 +3461,14 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     output += "\r\n[DIAGNOSIS]\r\n";
 
+    if (nullEip)
+    {
+        output +=
+            "execution_control=INVALID\r\n"
+            "execution_target=0x00000000\r\n"
+            "probable_fault=NULL-EIP instruction execution\r\n";
+    }
+
     if (!output.empty())
     {
         appendf(
@@ -3481,14 +3498,47 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
     WinWriteTextFile(CrashLogPath(), output);
 
+    std::string crashDisplayName;
+    if (nullEip)
+    {
+        crashDisplayName = "Null Instruction Execution";
+    }
+    else if (match != nullptr && !match->name.empty())
+    {
+        crashDisplayName = match->name;
+    }
+    else if (faultModule != "<unknown>" && faultRva != 0)
+    {
+        char nameBuffer[128] = {};
+        sprintf_s(
+            nameBuffer,
+            sizeof(nameBuffer),
+            "%s + 0x%08X",
+            faultModule.c_str(),
+            faultRva
+        );
+        crashDisplayName = nameBuffer;
+    }
+    else if (faultAddress != 0)
+    {
+        char nameBuffer[128] = {};
+        sprintf_s(
+            nameBuffer,
+            sizeof(nameBuffer),
+            "Unknown Crash @ 0x%08X",
+            faultAddress
+        );
+        crashDisplayName = nameBuffer;
+    }
+    else
+    {
+        crashDisplayName = "Unknown / Unclassified Crash";
+    }
+
     if (m_crashWindowEnabled)
     {
         ShowCrashDialog(
-            match != nullptr
-                ? (match->name.empty()
-                    ? "Unnamed Signature"
-                    : match->name.c_str())
-                : "Unknown / Unclassified Crash",
+            crashDisplayName.c_str(),
             exceptionCode,
             ExceptionName(exceptionCode),
             faultAddress,
