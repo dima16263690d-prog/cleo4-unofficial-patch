@@ -26,8 +26,11 @@ private:
     struct CrashInfoEntry
     {
         std::vector<DWORD> errorAddresses;
-        bool wildcardError = false;
+        std::vector<std::string> errorModules;
         std::vector<DWORD> backtraceAddresses;
+        std::vector<std::string> backtraceModules;
+        bool wildcardError = false;
+        bool hasMatcher = false;
         std::string description;
     };
 
@@ -159,7 +162,11 @@ private:
 
     void EnsureCrashInfoDatabase();
     void LoadCrashInfoList();
-    const CrashInfoEntry* FindCrashInfo(DWORD address, const std::vector<DWORD>& backtrace) const;
+    const CrashInfoEntry* FindCrashInfo(
+        DWORD address,
+        const std::string& faultModule,
+        const std::vector<DWORD>& backtrace
+    ) const;
 
     void WriteCoreHeader();
     void WriteCoreThreadLayout();
