@@ -29,3 +29,7 @@ Audio.cleo adds the modern CLEO 5-style 25xx audio controls while the original C
 ## Runtime design
 
 The plugin does not initialize its own BASS device and does not duplicate stream ownership. It calls the CLEO 4 core Audio API, so old and new commands operate on the same stream handles.
+
+## Test
+
+`tests/AUDIO_25XX_TEST.cs` loads a stream with legacy `0AAC`, then exercises the new `2500–250C` plugin commands on the same handle.
