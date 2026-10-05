@@ -1764,7 +1764,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
 
         sprintf_s(
             line, sizeof(line),
-            "[CRASH_IDENTIFIED] name="%s" address=0x%08X module=%s confidence=%s",
+            "[CRASH_IDENTIFIED] name=\"%s\" address=0x%08X module=%s confidence=%s",
             crashName,
             faultAddress,
             faultModule.c_str(),
@@ -1775,7 +1775,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     {
         sprintf_s(
             line, sizeof(line),
-            "[CRASH_IDENTIFIED] name="UNKNOWN" address=0x%08X module=%s confidence=none",
+            "[CRASH_IDENTIFIED] name=\"UNKNOWN\" address=0x%08X module=%s confidence=none",
             faultAddress,
             faultModule.c_str()
         );
@@ -1947,7 +1947,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         const DWORD matchedAddress = match->errorAddresses.empty() ? 0 : match->errorAddresses.front();
         sprintf_s(
             line, sizeof(line),
-            "[crashinfo_match] mode=%s name="%s" address=0x%08X backtrace_rules=%u %s",
+            "[crashinfo_match] mode=%s name=\"%s\" address=0x%08X backtrace_rules=%u %s",
             match->wildcardError ? "wildcard" : "exact",
             match->name.empty() ? "UNNAMED_SIGNATURE" : match->name.c_str(),
             matchedAddress,
