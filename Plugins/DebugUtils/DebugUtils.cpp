@@ -446,7 +446,7 @@ std::string DebugUtils::CrashLogPath() const
 
 std::string DebugUtils::CrashInfoPath() const
 {
-    return DebugDir() + "CrashInfo\\EN-CrashList.txt";
+    return "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
 }
 
 void DebugUtils::EnsureCrashInfoDatabase()
@@ -1390,11 +1390,11 @@ void DebugUtils::LoadCrashInfoList()
     std::string loadedPath = CrashInfoPath();
     std::ifstream file(loadedPath);
 
-    // A build output may place the bundled database beside DebugUtils.cleo.
-    // Prefer the documented debug path, then fall back to the plugin folder.
+    // Prefer the runtime plugin path created by DebugUtils, then fall back
+    // to the legacy/debug location for existing installations.
     if (!file.is_open())
     {
-        loadedPath = "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
+        loadedPath = DebugDir() + "CrashInfo\\EN-CrashList.txt";
         file.open(loadedPath);
     }
     if (!file.is_open())
