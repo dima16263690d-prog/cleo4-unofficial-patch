@@ -1,0 +1,31 @@
+# CLEO DebugUtils Crash Database
+# Database: CLEO-CrashList
+# Target: GTA San Andreas 1.0.0.0 US
+# Format: one Error record followed by diagnostic text.
+# This is an original project database. Entries are added from our own
+# verified/reproduced crash observations and are not synchronized from
+# external crash databases.
+
+# --- Project-observed signature ---
+Error: 0x005D95CE
+Issue: GTA SA RenderWare material destruction crash observed in the StPeds/Busy Pedestrians test.
+About: Fault observed at gta_sa.exe + 0x1D95CE with a call chain through CCustomCarEnvMapPipeline::pluginEnvMatDestructorCB, RpMaterialDestroy, and the RenderWare material list cleanup path.
+Solution: This signature is recorded as an observation only. Do not attribute it to CLEO automatically without reproduction and isolation of the responsible script/mod.
+
+# --- Project-observed null access violation ---
+Error: 0x00746929
+Issue: GTA SA access violation at address 0x00000000.
+About: Signature captured during the CLEO runtime compatibility tests.
+Solution: Use the crash report backtrace, last script, last opcode, and active queue to identify the responsible subsystem. This entry is intentionally non-specific until the cause is reproduced.
+
+# --- CLEO module fault ---
+Error: CLEO.asi
+Issue: The faulting module is our CLEO core.
+About: A module-only match means the exception address belongs to CLEO. It does not by itself identify the source subsystem.
+Solution: Check [last_script], opcode history, exception code, module RVA, backtrace, and active script queue in gta_crashinfo.log.
+
+# --- Catch-all record for unknown signatures ---
+Error: 0x*
+Issue: No exact CLEO CrashList signature matched.
+About: This record is used as the final fallback classification for unknown addresses.
+Solution: Investigate the complete crash report and add a specific signature here only after we reproduce and verify the cause.
