@@ -3,6 +3,7 @@
 #include "bass.h"
 #include "CDebugBridge.h"
 #include "cleo.h"
+#include <game_sa/CTimer.h>
 #include <windows.h>
 
 namespace CLEO
@@ -175,8 +176,6 @@ namespace CLEO
             {
                 if (SoundDevice.flags & DSCAPS_EMULDRIVER)
                     TRACE("Audio drivers not installed - using DirectSound emulation");
-                if (!SoundDevice.eax)
-                    TRACE("Audio hardware acceleration disabled (no EAX)");
             }
 
             initialized = true;
@@ -187,7 +186,9 @@ namespace CLEO
             return true;
         }
 
-        Warning("Could not initialize BASS sound system. Error code: %d", BASS_ErrorGetCode());
+        char warning[128]{};
+        sprintf_s(warning, sizeof(warning), "Could not initialize BASS sound system. Error code: %d", BASS_ErrorGetCode());
+        Warning(warning);
         return false;
     }
 
