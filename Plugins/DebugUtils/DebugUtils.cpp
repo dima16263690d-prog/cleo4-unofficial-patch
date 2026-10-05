@@ -889,6 +889,11 @@ std::string DebugUtils::CrashInfoPath() const
     return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt";
 }
 
+std::string DebugUtils::UpstreamCrashInfoPath() const
+{
+    return "cleo\\cleo_plugins\\CrashInfo\\GTA-SA-10US-EN-CrashList.txt";
+}
+
 void DebugUtils::EnsureCrashInfoDatabase()
 {
     const std::string pluginCrashInfoDir = "cleo\\cleo_plugins\\CrashInfo\\";
@@ -1841,124 +1846,162 @@ void DebugUtils::LoadCrashInfoList()
 {
     m_crashInfo.clear();
 
-    std::string loadedPath = CrashInfoPath();
-    std::ifstream file(loadedPath);
-
-    if (!file.is_open())
+    auto loadFile = [this](const std::string& loadedPath, const char* sourceName)
     {
-        loadedPath = DebugDir() + "CrashInfo\\CLEO-CrashList.txt";
-        file.open(loadedPath);
-    }
-    if (!file.is_open())
-    {
-        WriteCore(
-            "[crashinfo] own database not found at %s",
-            loadedPath.c_str()
-        );
-        return;
-    }
-
-    std::string line;
-    CrashInfoEntry* current = nullptr;
-
-    while (std::getline(file, line))
-    {
-        if (line.rfind("Error: ", 0) == 0)
+        std::ifstream file(loadedPath);
+        if (!file.is_open())
         {
-            if (m_crashInfo.size() >= 4096)
-                break;
+            WriteCore(
+                "[crashinfo] database not found source=%s path=%s",
+                sourceName ? sourceName : "unknown",
+                loadedPath.c_str()
+            );
+            return size_t(0);
+        }
 
-            m_crashInfo.push_back({});
-            current = &m_crashInfo.back();
+        size_t loadedEntries = 0;
+        std::string line;
+        CrashInfoEntry* current = nullptr;
 
-            const size_t matcherStart = 7;
-            const size_t backtracePos = line.find("Backtrace", matcherStart);
-            const size_t matcherEnd = backtracePos == std::string::npos
-                ? line.size()
-                : backtracePos;
-
-            const std::string matcherText = line.substr(matcherStart, matcherEnd - matcherStart);
-
-            ExtractHexAddresses(matcherText, 0, current->errorAddresses);
-            ExtractModuleNames(matcherText, current->errorModules);
-
-            if (matcherText.find("0x*") != std::string::npos)
-                current->wildcardError = true;
-
-            if (backtracePos != std::string::npos)
+        while (std::getline(file, line))
+        {
+            if (line.rfind("Error: ", 0) == 0)
             {
-                ExtractHexAddresses(line, backtracePos, current->backtraceAddresses);
-                ExtractModuleNames(line.substr(backtracePos), current->backtraceModules);
+                if (m_crashInfo.size() >= 4096)
+                    break;
+
+                m_crashInfo.push_back({});
+                current = &m_crashInfo.back();
+                ++loadedEntries;
+
+                const size_t matcherStart = 7;
+                const size_t backtracePos = line.find("Backtrace", matcherStart);
+                const size_t matcherEnd = backtracePos == std::string::npos
+                    ? line.size()
+                    : backtracePos;
+
+                const std::string matcherText =
+                    line.substr(matcherStart, matcherEnd - matcherStart);
+
+                ExtractHexAddresses(matcherText, 0, current->errorAddresses);
+                ExtractModuleNames(matcherText, current->errorModules);
+
+                if (matcherText.find("0x*") != std::string::npos)
+                    current->wildcardError = true;
+
+                if (backtracePos != std::string::npos)
+                {
+                    ExtractHexAddresses(line, backtracePos, current->backtraceAddresses);
+                    ExtractModuleNames(
+                        line.substr(backtracePos),
+                        current->backtraceModules
+                    );
+                }
+
+                current->hasMatcher =
+                    !current->errorAddresses.empty() ||
+                    !current->errorModules.empty() ||
+                    current->wildcardError ||
+                    !current->backtraceAddresses.empty() ||
+                    !current->backtraceModules.empty();
+
+                continue;
             }
 
-            current->hasMatcher =
-                !current->errorAddresses.empty() ||
-                !current->errorModules.empty() ||
-                current->wildcardError ||
-                !current->backtraceAddresses.empty() ||
-                !current->backtraceModules.empty();
+            if (current == nullptr)
+                continue;
 
-            continue;
+            if (line.rfind("Name: ", 0) == 0)
+            {
+                current->name = line.substr(6);
+                continue;
+            }
+
+            // CrashInfo upstream uses "Problem:" while our local database
+            // historically used "Issue:". Treat both as the same field.
+            if (line.rfind("Problem: ", 0) == 0)
+            {
+                current->issue = line.substr(9);
+                continue;
+            }
+
+            if (line.rfind("Issue: ", 0) == 0)
+            {
+                current->issue = line.substr(7);
+                continue;
+            }
+
+            if (line.rfind("About: ", 0) == 0)
+            {
+                current->about = line.substr(7);
+                continue;
+            }
+
+            if (line.rfind("Solution: ", 0) == 0)
+            {
+                current->solution = line.substr(10);
+                continue;
+            }
+
+            if (line.rfind("Backtrace:", 0) == 0)
+            {
+                ExtractHexAddresses(line, 10, current->backtraceAddresses);
+                ExtractModuleNames(line.substr(10), current->backtraceModules);
+                current->hasMatcher =
+                    !current->errorAddresses.empty() ||
+                    !current->errorModules.empty() ||
+                    current->wildcardError ||
+                    !current->backtraceAddresses.empty() ||
+                    !current->backtraceModules.empty();
+                continue;
+            }
+
+            if (!line.empty() && line[0] == '#')
+                continue;
+
+            if (!line.empty())
+            {
+                if (!current->description.empty())
+                    current->description += " | ";
+
+                current->description += line;
+
+                if (current->description.size() > 4000)
+                    current->description.resize(4000);
+            }
         }
 
-        if (current == nullptr)
-            continue;
+        WriteCore(
+            "[crashinfo] loaded source=%s entries=%u path=%s",
+            sourceName ? sourceName : "unknown",
+            static_cast<unsigned>(loadedEntries),
+            loadedPath.c_str()
+        );
 
-        if (line.rfind("Name: ", 0) == 0)
-        {
-            current->name = line.substr(6);
-            continue;
-        }
+        return loadedEntries;
+    };
 
-        if (line.rfind("Issue: ", 0) == 0)
-        {
-            current->issue = line.substr(7);
-            continue;
-        }
+    // Base: established GTA SA 1.0 US signatures from JuniorDjjr/CrashInfo.
+    // This is intentionally a separate file so upstream updates never erase
+    // project-specific signatures.
+    const std::string upstreamPath = UpstreamCrashInfoPath();
+    loadFile(upstreamPath, "CrashInfo-upstream");
 
-        if (line.rfind("About: ", 0) == 0)
-        {
-            current->about = line.substr(7);
-            continue;
-        }
+    // Local overlay: project-verified signatures and future additions.
+    const std::string localPath = CrashInfoPath();
+    loadFile(localPath, "CLEO-local");
 
-        if (line.rfind("Solution: ", 0) == 0)
-        {
-            current->solution = line.substr(10);
-            continue;
-        }
-
-        if (line.rfind("Backtrace:", 0) == 0)
-        {
-            ExtractHexAddresses(line, 10, current->backtraceAddresses);
-            ExtractModuleNames(line.substr(10), current->backtraceModules);
-            current->hasMatcher =
-                !current->errorAddresses.empty() ||
-                !current->errorModules.empty() ||
-                current->wildcardError ||
-                !current->backtraceAddresses.empty() ||
-                !current->backtraceModules.empty();
-            continue;
-        }
-
-        if (!line.empty() && line[0] == '#')
-            continue;
-
-        if (!line.empty())
-        {
-            if (!current->description.empty())
-                current->description += " | ";
-
-            current->description += line;
-
-            if (current->description.size() > 4000)
-                current->description.resize(4000);
-        }
+    if (m_crashInfo.empty())
+    {
+        WriteCore("[crashinfo] no database entries loaded");
     }
-
-    WriteCore("[crashinfo] loaded entries=%u path=%s",
-        static_cast<unsigned>(m_crashInfo.size()),
-        loadedPath.c_str());
+    else
+    {
+        WriteCore(
+            "[crashinfo] total entries=%u",
+            static_cast<unsigned>(m_crashInfo.size())
+        );
+    }
 }
 
 const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
