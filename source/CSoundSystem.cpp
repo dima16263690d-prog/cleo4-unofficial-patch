@@ -371,6 +371,13 @@ namespace CLEO
         state = playing;
     }
 
+    void CAudioStream::LegacyPlay()
+    {
+        // Original CLEO 4 0AAD action=1 semantics: restart from the beginning.
+        BASS_ChannelPlay(streamInternal, TRUE);
+        state = playing;
+    }
+
     void CAudioStream::Pause(bool change_state)
     {
         if (BASS_ChannelIsActive(streamInternal) == BASS_ACTIVE_PLAYING ||
@@ -389,6 +396,14 @@ namespace CLEO
         state = stopped;
         speed.Finish();
         volume.Finish();
+    }
+
+    void CAudioStream::LegacyStop()
+    {
+        // Original CLEO 4 0AAD action=0 semantics: rewind and remain paused.
+        BASS_ChannelPause(streamInternal);
+        BASS_ChannelSetPosition(streamInternal, 0, BASS_POS_BYTE);
+        state = paused;
     }
 
     void CAudioStream::Resume()
