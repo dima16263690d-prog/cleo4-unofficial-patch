@@ -157,6 +157,7 @@ private:
     void RotateScriptLogIfNeeded(size_t incomingBytes);
     void WriteCoreLimitNoticeLocked();
 
+    void EnsureCrashInfoDatabase();
     void LoadCrashInfoList();
     const CrashInfoEntry* FindCrashInfo(DWORD address, const std::vector<DWORD>& backtrace) const;
 
