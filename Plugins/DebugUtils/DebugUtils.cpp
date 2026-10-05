@@ -269,8 +269,13 @@ namespace
             case IDC_CRASH_COPY:
                 if (data != nullptr)
                 {
+                    const bool russian =
+                        s_instance != nullptr && s_instance->m_languageRussian;
+
                     const std::wstring copied =
-                        data->details + L"\r\nLog: " + data->logPath;
+                        data->details +
+                        (russian ? L"\r\n\u041b\u043e\u0433: " : L"\r\nLog: ") +
+                        data->logPath;
 
                     if (CopyCrashTextToClipboard(hwnd, copied))
                     {
