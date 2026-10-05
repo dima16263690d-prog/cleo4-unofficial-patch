@@ -1,4 +1,5 @@
 #include "DebugUtils.h"
+#include "resource.h"
 #include <windows.h>
 #include <psapi.h>
 #include <TlHelp32.h>
@@ -213,6 +214,7 @@ DebugUtils::DebugUtils()
 
     LoadConfig();
     OpenLogs();
+    EnsureCrashInfoDatabase();
     LoadCrashInfoList();
     WriteCoreHeader();
     WriteCoreThreadLayout();
@@ -445,6 +447,140 @@ std::string DebugUtils::CrashLogPath() const
 std::string DebugUtils::CrashInfoPath() const
 {
     return DebugDir() + "CrashInfo\\EN-CrashList.txt";
+}
+
+void DebugUtils::EnsureCrashInfoDatabase()
+{
+    const std::string pluginCrashInfoDir = "cleo\\cleo_plugins\\CrashInfo\\";
+    const std::string pluginCrashInfoPath = pluginCrashInfoDir + "EN-CrashList.txt";
+    const std::string debugCrashInfoDir = DebugDir() + "CrashInfo\\";
+    const std::string debugCrashInfoPath = debugCrashInfoDir + "EN-CrashList.txt";
+
+    CreateDirectoryA("cleo", nullptr);
+    CreateDirectoryA("cleo\\cleo_plugins", nullptr);
+    CreateDirectoryA(pluginCrashInfoDir.c_str(), nullptr);
+    CreateDirectoryA(debugCrashInfoDir.c_str(), nullptr);
+
+    auto getFileSize = [](const std::string& path) -> DWORD
+    {
+        WIN32_FILE_ATTRIBUTE_DATA data{};
+        if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data))
+            return 0;
+
+        if (data.nFileSizeHigh != 0)
+            return MAXDWORD;
+
+        return data.nFileSizeLow;
+    };
+
+    std::string source = "existing";
+    DWORD size = getFileSize(pluginCrashInfoPath);
+
+    // First use the bundled file beside DebugUtils.cleo. This keeps the
+    // development/output layout working without requiring network access.
+    if (size == 0)
+    {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+                &module))
+        {
+            char modulePath[MAX_PATH] = {};
+            if (GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
+            {
+                std::string path = modulePath;
+                const size_t slash = path.find_last_of("\\\/");
+                const std::string moduleDir =
+                    slash == std::string::npos ? std::string() : path.substr(0, slash);
+                const std::string bundledPath =
+                    moduleDir + "\\CrashInfo\\EN-CrashList.txt";
+
+                if (getFileSize(bundledPath) != 0 &&
+                    CopyFileA(bundledPath.c_str(), pluginCrashInfoPath.c_str(), FALSE))
+                {
+                    size = getFileSize(pluginCrashInfoPath);
+                    source = "module_bundle";
+                }
+            }
+        }
+    }
+
+    // The database is embedded into DebugUtils.cleo, so installation of only
+    // the .cleo file is sufficient to recreate the local CrashInfo database.
+    if (size == 0)
+    {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+                &module))
+        {
+            HRSRC resource = FindResourceA(module, MAKEINTRESOURCEA(IDR_CRASHINFO), RT_RCDATA);
+            if (resource != nullptr)
+            {
+                HGLOBAL loaded = LoadResource(module, resource);
+                const DWORD resourceSize = SizeofResource(module, resource);
+                const void* resourceData = loaded ? LockResource(loaded) : nullptr;
+
+                if (resourceData != nullptr && resourceSize != 0)
+                {
+                    HANDLE file = CreateFileA(
+                        pluginCrashInfoPath.c_str(),
+                        GENERIC_WRITE,
+                        FILE_SHARE_READ,
+                        nullptr,
+                        CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL,
+                        nullptr
+                    );
+
+                    if (file != INVALID_HANDLE_VALUE)
+                    {
+                        DWORD written = 0;
+                        const BOOL ok = WriteFile(
+                            file,
+                            resourceData,
+                            resourceSize,
+                            &written,
+                            nullptr
+                        );
+                        CloseHandle(file);
+
+                        if (ok && written == resourceSize)
+                        {
+                            size = getFileSize(pluginCrashInfoPath);
+                            source = "embedded_resource";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Keep the documented debug path populated too, but never overwrite a
+    // user's existing database.
+    if (size != 0 && getFileSize(debugCrashInfoPath) == 0)
+        CopyFileA(pluginCrashInfoPath.c_str(), debugCrashInfoPath.c_str(), FALSE);
+
+    if (size != 0)
+    {
+        WriteCore(
+            "[crashinfo] database ready path=%s size=%u source=%s",
+            pluginCrashInfoPath.c_str(),
+            static_cast<unsigned>(size),
+            source.c_str()
+        );
+    }
+    else
+    {
+        WriteCore(
+            "[crashinfo] database creation failed path=%s source=embedded_resource/module_bundle",
+            pluginCrashInfoPath.c_str()
+        );
+    }
 }
 
 void DebugUtils::OpenLogs()
