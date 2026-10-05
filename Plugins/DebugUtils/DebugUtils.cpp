@@ -587,6 +587,8 @@ DebugUtils::DebugUtils()
     );
 
     OpenLogs();
+    WriteCore("[debugutils] configuration=%s", ConfigPath().c_str());
+    WriteCore("[debugutils] log files initialized");
     WriteCoreHeader();
     WriteCoreThreadLayout();
 
@@ -692,9 +694,42 @@ DebugUtils::~DebugUtils()
 
 std::string DebugUtils::ConfigPath() const
 {
+    const std::string standardPath =
+        "cleo\\cleo_plugins\\DebugUtils.ini";
+
     CreateDirectoryA("cleo", nullptr);
     CreateDirectoryA("cleo\\cleo_plugins", nullptr);
-    return "cleo\\cleo_plugins\\DebugUtils.ini";
+
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+            &module))
+    {
+        char modulePath[MAX_PATH] = {};
+        const DWORD length =
+            GetModuleFileNameA(module, modulePath, sizeof(modulePath));
+
+        if (length != 0 && length < sizeof(modulePath))
+        {
+            std::string pluginPath(modulePath, length);
+            const size_t slash = pluginPath.find_last_of("\\\\/");
+            if (slash != std::string::npos)
+            {
+                const std::string pluginIni =
+                    pluginPath.substr(0, slash + 1) + "DebugUtils.ini";
+
+                if (GetFileAttributesA(pluginIni.c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                {
+                    return pluginIni;
+                }
+            }
+        }
+    }
+
+    return standardPath;
 }
 
 void DebugUtils::LoadConfig()
@@ -1291,11 +1326,8 @@ void DebugUtils::WriteCore(const char* format, ...)
     m_lastCoreMessage = message;
     m_lastCoreRepeatCount = 1;
 
-    if (++m_corePendingWrites >= 32)
-    {
-        m_coreLog.flush();
-        m_corePendingWrites = 0;
-    }
+    m_coreLog.flush();
+    m_corePendingWrites = 0;
 }
 
 void DebugUtils::WriteCoreLimitNoticeLocked()
@@ -1557,6 +1589,7 @@ void DebugUtils::WriteDiagnostic(const char* format, ...)
 
     m_lastDiagnosticMessage = message;
     m_lastDiagnosticRepeatCount = 1;
+    m_diagnosticLog.flush();
 }
 
 void DebugUtils::FlushMemoryRepeatLocked()
@@ -1624,6 +1657,7 @@ void DebugUtils::WriteMemory(const char* format, ...)
         << (t.wMinute < 10 ? "0" : "") << t.wMinute << ':'
         << (t.wSecond < 10 ? "0" : "") << t.wSecond << '.'
         << ms << ' ' << message << '\n';
+    m_memoryLog.flush();
 
     m_lastMemoryMessage = message;
     m_lastMemoryRepeatCount = 1;
