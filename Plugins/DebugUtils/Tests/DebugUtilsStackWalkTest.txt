@@ -1,0 +1,14 @@
+{$CLEO .cs}
+
+thread "DU_STK"
+
+:DU_STK_MAIN
+wait 0
+
+// Intentional diagnostic crash.
+// 0A8C attempts to write to the null address so DebugUtils receives
+// a real access violation from a non-zero instruction pointer.
+// Use only when validating crash capture / StackWalk64.
+0A8C: write_memory 0x00000000 size 4 value 0 virtual_protect 0
+
+jump @DU_STK_MAIN
