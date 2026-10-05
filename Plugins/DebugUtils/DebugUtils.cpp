@@ -2860,6 +2860,34 @@ namespace
         return TRUE;
     }
 
+    static BOOL CALLBACK DebugUtilsReadProcessMemory32(
+        HANDLE process,
+        DWORD baseAddress,
+        PVOID buffer,
+        DWORD size,
+        LPDWORD bytesRead
+    )
+    {
+        SIZE_T read = 0;
+        if (!ReadProcessMemory(
+                process,
+                reinterpret_cast<LPCVOID>(
+                    static_cast<uintptr_t>(baseAddress)),
+                buffer,
+                size,
+                &read))
+        {
+            if (bytesRead != nullptr)
+                *bytesRead = 0;
+            return FALSE;
+        }
+
+        if (bytesRead != nullptr)
+            *bytesRead = static_cast<DWORD>(read);
+
+        return TRUE;
+    }
+
     static HMODULE GetDebugHelpModule()
     {
         return LoadLibraryA("DbgHelp.dll");
@@ -2872,6 +2900,8 @@ namespace
     using StackWalk64Proc = decltype(&StackWalk64);
     using SymInitializeProc = decltype(&SymInitialize);
     using SymCleanupProc = decltype(&SymCleanup);
+    using SymFunctionTableAccessProc = decltype(&SymFunctionTableAccess);
+    using SymGetModuleBaseProc = decltype(&SymGetModuleBase);
     using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
     using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
 
@@ -2901,8 +2931,8 @@ namespace
 
     static BOOL SafeStackWalkLegacyI386(
         StackWalkProc pStackWalk,
-        SymFunctionTableAccess64Proc pSymFunctionTableAccess64,
-        SymGetModuleBase64Proc pSymGetModuleBase64,
+        SymFunctionTableAccessProc pSymFunctionTableAccess,
+        SymGetModuleBaseProc pSymGetModuleBase,
         HANDLE process,
         HANDLE thread,
         const CONTEXT* sourceContext,
@@ -2954,11 +2984,11 @@ namespace
                     thread,
                     &frame,
                     &context,
-                    nullptr,
+                    &DebugUtilsReadProcessMemory32,
                     reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE>(
-                        pSymFunctionTableAccess64),
+                        pSymFunctionTableAccess),
                     reinterpret_cast<PGET_MODULE_BASE_ROUTINE>(
-                        pSymGetModuleBase64),
+                        pSymGetModuleBase),
                     nullptr
                 );
 
@@ -3060,7 +3090,7 @@ namespace
                     thread,
                     &frame,
                     &context,
-                    nullptr,
+                    &DebugUtilsReadProcessMemory,
                     reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE64>(
                         pSymFunctionTableAccess64),
                     reinterpret_cast<PGET_MODULE_BASE_ROUTINE64>(
@@ -3112,6 +3142,119 @@ namespace
             return FALSE;
         }
     }
+    static BOOL SafeEbpChainI386(
+        const CONTEXT* sourceContext,
+        DWORD* frameAddresses,
+        DWORD capacity,
+        DWORD* frameCount,
+        DWORD* stepsAttempted
+    )
+    {
+        if (frameCount != nullptr)
+            *frameCount = 0;
+        if (stepsAttempted != nullptr)
+            *stepsAttempted = 0;
+
+        if (sourceContext == nullptr ||
+            frameAddresses == nullptr ||
+            capacity < 2 ||
+            sourceContext->Eip == 0 ||
+            sourceContext->Esp == 0 ||
+            sourceContext->Ebp == 0)
+        {
+            return FALSE;
+        }
+
+        __try
+        {
+            MEMORY_BASIC_INFORMATION stackRegion{};
+            if (VirtualQuery(
+                    reinterpret_cast<LPCVOID>(
+                        static_cast<uintptr_t>(sourceContext->Esp)),
+                    &stackRegion,
+                    sizeof(stackRegion)) == 0 ||
+                stackRegion.State != MEM_COMMIT)
+            {
+                return FALSE;
+            }
+
+            const DWORD stackBegin =
+                static_cast<DWORD>(
+                    reinterpret_cast<uintptr_t>(stackRegion.BaseAddress));
+            const DWORD stackEnd =
+                stackBegin + static_cast<DWORD>(stackRegion.RegionSize);
+
+            const DWORD currentEbp = sourceContext->Ebp;
+            if ((currentEbp & 3u) != 0 ||
+                currentEbp < stackBegin ||
+                currentEbp > stackEnd - (2u * sizeof(DWORD)))
+            {
+                return FALSE;
+            }
+
+            DWORD count = 0;
+            frameAddresses[count++] = sourceContext->Eip;
+
+            DWORD ebp = currentEbp;
+            while (count < capacity)
+            {
+                if (stepsAttempted != nullptr)
+                    ++(*stepsAttempted);
+
+                DWORD nextEbp = 0;
+                DWORD returnAddress = 0;
+
+                if (!SafeReadDword(
+                        reinterpret_cast<const DWORD*>(
+                            static_cast<uintptr_t>(ebp)),
+                        nextEbp) ||
+                    !SafeReadDword(
+                        reinterpret_cast<const DWORD*>(
+                            static_cast<uintptr_t>(ebp) + sizeof(DWORD)),
+                        returnAddress))
+                {
+                    break;
+                }
+
+                if (returnAddress == 0)
+                    break;
+
+                HMODULE module = nullptr;
+                if (!GetModuleHandleExA(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCSTR>(
+                            static_cast<uintptr_t>(returnAddress)),
+                        &module))
+                {
+                    break;
+                }
+
+                if (nextEbp <= ebp ||
+                    (nextEbp & 3u) != 0 ||
+                    nextEbp < stackBegin ||
+                    nextEbp > stackEnd - (2u * sizeof(DWORD)))
+                {
+                    break;
+                }
+
+                frameAddresses[count++] = returnAddress;
+                ebp = nextEbp;
+            }
+
+            if (frameCount != nullptr)
+                *frameCount = count;
+
+            return count > 1 ? TRUE : FALSE;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (frameCount != nullptr)
+                *frameCount = 0;
+            return FALSE;
+        }
+    }
+
 }
 
 std::vector<DWORD> DebugUtils::BuildStackWalk(
@@ -3173,6 +3316,14 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         reinterpret_cast<SymCleanupProc>(
             GetProcAddress(dbgHelp, "SymCleanup"));
 
+    const auto pSymFunctionTableAccess =
+        reinterpret_cast<SymFunctionTableAccessProc>(
+            GetProcAddress(dbgHelp, "SymFunctionTableAccess"));
+
+    const auto pSymGetModuleBase =
+        reinterpret_cast<SymGetModuleBaseProc>(
+            GetProcAddress(dbgHelp, "SymGetModuleBase"));
+
     const auto pSymFunctionTableAccess64 =
         reinterpret_cast<SymFunctionTableAccess64Proc>(
             GetProcAddress(dbgHelp, "SymFunctionTableAccess64"));
@@ -3208,10 +3359,6 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
 
     frames.resize(capacity);
 
-    DWORD frameCount = 0;
-    DWORD stepsAttempted = 0;
-    int stopReason = STACKWALK_INVALID_INPUT;
-
     DWORD frameCount64 = 0;
     DWORD stepsAttempted64 = 0;
     int stopReason64 = STACKWALK_INVALID_INPUT;
@@ -3235,6 +3382,25 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     if (ok64 && frameCount64 > 1)
     {
         frames.resize(frameCount64);
+
+        if (diagnostics != nullptr)
+        {
+            char text[512] = {};
+            sprintf_s(
+                text,
+                sizeof(text),
+                "status=OK method=PRIMARY primary=%s legacy=NOT_NEEDED ebp=NOT_NEEDED symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=0 legacy_frames=0 ebp_steps=0 ebp_frames=0 frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                StackWalkStopReasonName(stopReason64),
+                symbolsInitialized ? 1 : 0,
+                stepsAttempted64,
+                static_cast<unsigned>(frameCount64),
+                static_cast<unsigned>(frameCount64),
+                info->ContextRecord->Eip,
+                info->ContextRecord->Ebp,
+                info->ContextRecord->Esp
+            );
+            *diagnostics = text;
+        }
     }
     else
     {
@@ -3251,8 +3417,8 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
             pStackWalk != nullptr
                 ? SafeStackWalkLegacyI386(
                     pStackWalk,
-                    pSymFunctionTableAccess64,
-                    pSymGetModuleBase64,
+                    pSymFunctionTableAccess,
+                    pSymGetModuleBase,
                     process,
                     thread,
                     info->ContextRecord,
@@ -3263,31 +3429,103 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                     &stopReasonLegacy)
                 : FALSE;
 
-        if (okLegacy && frameCountLegacy > 0)
+        bool ebpOk = false;
+        DWORD frameCountEbp = 0;
+        DWORD stepsAttemptedEbp = 0;
+
+        // Require a genuine unwind (more than the initial fault PC) before
+        // accepting the DbgHelp result as a backtrace.
+        if (okLegacy && frameCountLegacy > 1)
+        {
             frames.resize(frameCountLegacy);
+        }
         else
+        {
             frames.clear();
+
+            ebpOk =
+                SafeEbpChainI386(
+                    info->ContextRecord,
+                    frames.data(),
+                    capacity,
+                    &frameCountEbp,
+                    &stepsAttemptedEbp) != FALSE;
+
+            if (ebpOk && frameCountEbp > 1)
+                frames.resize(frameCountEbp);
+            else
+                frames.clear();
+        }
 
         if (diagnostics != nullptr)
         {
-            char text[384] = {};
-            sprintf_s(
-                text,
-                sizeof(text),
-                "status=PRIMARY_%s legacy=%s symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u eip=0x%08X ebp=0x%08X esp=0x%08X",
-                StackWalkStopReasonName(stopReason64),
-                pStackWalk == nullptr
-                    ? "UNAVAILABLE"
-                    : StackWalkStopReasonName(stopReasonLegacy),
-                symbolsInitialized ? 1 : 0,
-                stepsAttempted64,
-                static_cast<unsigned>(frameCount64),
-                stepsAttemptedLegacy,
-                static_cast<unsigned>(frameCountLegacy),
-                info->ContextRecord->Eip,
-                info->ContextRecord->Ebp,
-                info->ContextRecord->Esp
-            );
+            char text[512] = {};
+
+            if (okLegacy && frameCountLegacy > 1)
+            {
+                sprintf_s(
+                    text,
+                    sizeof(text),
+                    "status=OK method=LEGACY primary=%s legacy=%s symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp=NOT_NEEDED frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    StackWalkStopReasonName(stopReason64),
+                    StackWalkStopReasonName(stopReasonLegacy),
+                    symbolsInitialized ? 1 : 0,
+                    stepsAttempted64,
+                    static_cast<unsigned>(frameCount64),
+                    stepsAttemptedLegacy,
+                    static_cast<unsigned>(frameCountLegacy),
+                    static_cast<unsigned>(frameCountLegacy),
+                    info->ContextRecord->Eip,
+                    info->ContextRecord->Ebp,
+                    info->ContextRecord->Esp
+                );
+            }
+            else if (ebpOk && frameCountEbp > 1)
+            {
+                sprintf_s(
+                    text,
+                    sizeof(text),
+                    "status=OK method=EBP_CHAIN primary=%s legacy=%s ebp=OK symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    StackWalkStopReasonName(stopReason64),
+                    pStackWalk == nullptr
+                        ? "UNAVAILABLE"
+                        : StackWalkStopReasonName(stopReasonLegacy),
+                    symbolsInitialized ? 1 : 0,
+                    stepsAttempted64,
+                    static_cast<unsigned>(frameCount64),
+                    stepsAttemptedLegacy,
+                    static_cast<unsigned>(frameCountLegacy),
+                    stepsAttemptedEbp,
+                    static_cast<unsigned>(frameCountEbp),
+                    static_cast<unsigned>(frameCountEbp),
+                    info->ContextRecord->Eip,
+                    info->ContextRecord->Ebp,
+                    info->ContextRecord->Esp
+                );
+            }
+            else
+            {
+                sprintf_s(
+                    text,
+                    sizeof(text),
+                    "status=FAILED primary=%s legacy=%s ebp=NO_VALID_CHAIN symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    StackWalkStopReasonName(stopReason64),
+                    pStackWalk == nullptr
+                        ? "UNAVAILABLE"
+                        : StackWalkStopReasonName(stopReasonLegacy),
+                    symbolsInitialized ? 1 : 0,
+                    stepsAttempted64,
+                    static_cast<unsigned>(frameCount64),
+                    stepsAttemptedLegacy,
+                    static_cast<unsigned>(frameCountLegacy),
+                    stepsAttemptedEbp,
+                    static_cast<unsigned>(frameCountEbp),
+                    info->ContextRecord->Eip,
+                    info->ContextRecord->Ebp,
+                    info->ContextRecord->Esp
+                );
+            }
+
             *diagnostics = text;
         }
 
@@ -4049,11 +4287,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     appendf("%s", stackWalkDiagnostics.empty()
         ? "status=NO_DIAGNOSTIC"
         : stackWalkDiagnostics.c_str());
-    if (backtraceAddresses.empty())
-    {
-        output += "status=UNAVAILABLE\r\n";
-    }
-    else
+    if (!backtraceAddresses.empty())
     {
         for (size_t i = 0; i < backtraceAddresses.size(); ++i)
         {
