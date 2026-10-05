@@ -3238,7 +3238,10 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     }
     else
     {
-        frames.clear();
+        // Keep writable storage for the legacy fallback. std::vector::clear()
+        // invalidates the data buffer, so passing frames.data() with the old
+        // capacity would leave the fallback writing through a null/zero buffer.
+        frames.resize(capacity);
 
         DWORD frameCountLegacy = 0;
         DWORD stepsAttemptedLegacy = 0;
@@ -3285,6 +3288,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                 info->ContextRecord->Ebp,
                 info->ContextRecord->Esp
             );
+            *diagnostics = text;
         }
 
         if (symbolsInitialized && pSymCleanup != nullptr)
