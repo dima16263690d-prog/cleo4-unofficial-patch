@@ -889,11 +889,6 @@ std::string DebugUtils::CrashInfoPath() const
     return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt";
 }
 
-std::string DebugUtils::UpstreamCrashInfoPath() const
-{
-    return "cleo\\cleo_plugins\\CrashInfo\\GTA-SA-10US-EN-CrashList.txt";
-}
-
 void DebugUtils::EnsureCrashInfoDatabase()
 {
     const std::string pluginCrashInfoDir = "cleo\\cleo_plugins\\CrashInfo\\";
@@ -947,43 +942,6 @@ void DebugUtils::EnsureCrashInfoDatabase()
                 {
                     size = getFileSize(pluginCrashInfoPath);
                     source = "module_bundle";
-                }
-            }
-        }
-    }
-
-    // The established GTA SA 1.0 US upstream database is distributed as a
-    // separate file. When it is present beside DebugUtils.cleo, copy it into
-    // the writable plugin directory without overwriting an existing copy.
-    if (getFileSize(UpstreamCrashInfoPath()) == 0)
-    {
-        HMODULE module = nullptr;
-        if (GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
-                &module))
-        {
-            char modulePath[MAX_PATH] = {};
-            if (GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
-            {
-                std::string path = modulePath;
-                const size_t slash = path.find_last_of("\\/");
-                const std::string moduleDir =
-                    slash == std::string::npos ? std::string() : path.substr(0, slash);
-                const std::string bundledUpstreamPath =
-                    moduleDir + "\\CrashInfo\\GTA-SA-10US-EN-CrashList.txt";
-
-                if (getFileSize(bundledUpstreamPath) != 0 &&
-                    CopyFileA(
-                        bundledUpstreamPath.c_str(),
-                        UpstreamCrashInfoPath().c_str(),
-                        FALSE))
-                {
-                    WriteCore(
-                        "[crashinfo] upstream database copied from module bundle path=%s",
-                        bundledUpstreamPath.c_str()
-                    );
                 }
             }
         }
@@ -1062,6 +1020,113 @@ void DebugUtils::EnsureCrashInfoDatabase()
             "[crashinfo] database creation failed path=%s source=embedded_resource/module_bundle",
             pluginCrashInfoPath.c_str()
         );
+    }
+}
+
+
+void DebugUtils::AppendAutomaticCrashInfo(
+    DWORD faultAddress,
+    DWORD exceptionCode,
+    const char* exceptionType,
+    const std::string& faultModule,
+    DWORD faultRva,
+    const std::string& lastScript,
+    DWORD lastOpcode,
+    const std::vector<DWORD>& backtrace
+)
+{
+    // A new entry is created only when FindCrashInfo() returned the generic
+    // wildcard fallback. Exact/module/backtrace matches are never duplicated.
+    for (const auto& entry : m_crashInfo)
+    {
+        if (ContainsAddress(entry.errorAddresses, faultAddress))
+            return;
+    }
+
+    const std::string path = CrashInfoPath();
+
+    HANDLE file = CreateFileA(
+        path.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+
+    LARGE_INTEGER fileSize{};
+    if (!GetFileSizeEx(file, &fileSize))
+    {
+        CloseHandle(file);
+        return;
+    }
+
+    std::string record;
+    if (fileSize.QuadPart == 0)
+    {
+        record += "# CLEO DebugUtils Crash Database\r\n";
+        record += "# Automatically discovered signatures are appended below.\r\n";
+        record += "# Entries marked AUTO are observations only until reproduced and verified.\r\n\r\n";
+    }
+
+    char line[1024] = {};
+
+    sprintf_s(
+        line, sizeof(line),
+        "\r\n# --- AUTO DISCOVERED: not verified ---\r\n"
+        "Error: 0x%08X\r\n"
+        "Name: Auto-discovered crash 0x%08X\r\n"
+        "Issue: Automatically detected crash signature with no specific CrashInfo match.\r\n"
+        "About: Exception 0x%08X (%s) at %s + 0x%08X; last script '%.8s'; last opcode 0x%04X.\r\n"
+        "Solution: Pending reproduction and isolation. Do not attribute this signature to CLEO or a script automatically.\r\n",
+        faultAddress,
+        faultAddress,
+        exceptionCode,
+        exceptionType ? exceptionType : "UNKNOWN",
+        faultModule.empty() ? "<unknown>" : faultModule.c_str(),
+        faultRva,
+        lastScript.empty() ? "none" : lastScript.c_str(),
+        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
+    );
+    record += line;
+
+    if (!backtrace.empty())
+    {
+        record += "Backtrace:";
+        const size_t count = std::min<size_t>(backtrace.size(), 12);
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            char address[32] = {};
+            sprintf_s(address, sizeof(address), " 0x%08X", backtrace[i]);
+            record += address;
+        }
+
+        record += "\r\n";
+    }
+
+    record += "\r\n";
+
+    DWORD written = 0;
+    const BOOL ok = WriteFile(
+        file,
+        record.data(),
+        static_cast<DWORD>(record.size()),
+        &written,
+        nullptr
+    );
+
+    CloseHandle(file);
+
+    if (ok && written == record.size())
+    {
+        // The process normally terminates immediately after a crash dialog,
+        // so reloading the vector here is unnecessary. The on-disk entry is
+        // picked up automatically on the next game start.
     }
 }
 
@@ -2022,13 +2087,6 @@ void DebugUtils::LoadCrashInfoList()
     // signatures priority when the same address exists in both databases.
     const std::string localPath = CrashInfoPath();
     loadFile(localPath, "CLEO-local");
-
-    // Base: established GTA SA 1.0 US signatures from JuniorDjjr/CrashInfo.
-    // It is intentionally kept in a separate file so upstream updates never
-    // erase project-specific signatures.
-    const std::string upstreamPath = UpstreamCrashInfoPath();
-    loadFile(upstreamPath, "CrashInfo-upstream");
-
     if (m_crashInfo.empty())
     {
         WriteCore("[crashinfo] no database entries loaded");
@@ -2392,6 +2450,23 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             confidence = "module";
         else
             confidence = "backtrace";
+    }
+
+    // The generic 0x* record is only a fallback. When it is the best
+    // available match, persist this never-before-seen address as an AUTO
+    // candidate so the database grows from real crashes without network sync.
+    if (match == nullptr || strcmp(confidence, "fallback") == 0)
+    {
+        AppendAutomaticCrashInfo(
+            faultAddress,
+            info->ExceptionRecord->ExceptionCode,
+            ExceptionName(info->ExceptionRecord->ExceptionCode),
+            faultModule,
+            faultModuleRva,
+            lastScript,
+            lastOpcode,
+            backtraceAddresses
+        );
     }
 
     WinAppendLine(CrashLogPath(), "============================================================");
