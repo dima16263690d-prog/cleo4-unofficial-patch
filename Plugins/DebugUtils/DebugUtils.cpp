@@ -952,6 +952,43 @@ void DebugUtils::EnsureCrashInfoDatabase()
         }
     }
 
+    // The established GTA SA 1.0 US upstream database is distributed as a
+    // separate file. When it is present beside DebugUtils.cleo, copy it into
+    // the writable plugin directory without overwriting an existing copy.
+    if (getFileSize(UpstreamCrashInfoPath()) == 0)
+    {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
+                &module))
+        {
+            char modulePath[MAX_PATH] = {};
+            if (GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
+            {
+                std::string path = modulePath;
+                const size_t slash = path.find_last_of("\\/");
+                const std::string moduleDir =
+                    slash == std::string::npos ? std::string() : path.substr(0, slash);
+                const std::string bundledUpstreamPath =
+                    moduleDir + "\\CrashInfo\\GTA-SA-10US-EN-CrashList.txt";
+
+                if (getFileSize(bundledUpstreamPath) != 0 &&
+                    CopyFileA(
+                        bundledUpstreamPath.c_str(),
+                        UpstreamCrashInfoPath().c_str(),
+                        FALSE))
+                {
+                    WriteCore(
+                        "[crashinfo] upstream database copied from module bundle path=%s",
+                        bundledUpstreamPath.c_str()
+                    );
+                }
+            }
+        }
+    }
+
     // The database is embedded into DebugUtils.cleo, so installation of only
     // the .cleo file is sufficient to recreate the local CrashInfo database.
     if (size == 0)
