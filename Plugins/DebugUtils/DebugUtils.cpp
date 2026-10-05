@@ -909,51 +909,36 @@ void DebugUtils::EnsureCrashInfoDatabase()
         WIN32_FILE_ATTRIBUTE_DATA data{};
         if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data))
             return 0;
-
         if (data.nFileSizeHigh != 0)
             return MAXDWORD;
-
         return data.nFileSizeLow;
     };
 
-    std::string source = "existing";
+    const char* requiredMarker = "# DebugUtils-Database-Version: 2";
+    bool databaseReady = false;
+
     DWORD size = getFileSize(pluginCrashInfoPath);
-
-    // First use the bundled file beside DebugUtils.cleo. This keeps the
-    // development/output layout working without requiring network access.
-    if (size == 0)
+    if (size != 0)
     {
-        HMODULE module = nullptr;
-        if (GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
-                &module))
-        {
-            char modulePath[MAX_PATH] = {};
-            if (GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
-            {
-                std::string path = modulePath;
-                const size_t slash = path.find_last_of("\\/");
-                const std::string moduleDir =
-                    slash == std::string::npos ? std::string() : path.substr(0, slash);
-                const std::string bundledPath =
-                    moduleDir + "\\CrashInfo\\CLEO-CrashList.txt";
-
-                if (getFileSize(bundledPath) != 0 &&
-                    CopyFileA(bundledPath.c_str(), pluginCrashInfoPath.c_str(), FALSE))
-                {
-                    size = getFileSize(pluginCrashInfoPath);
-                    source = "module_bundle";
-                }
-            }
-        }
+        std::ifstream file(pluginCrashInfoPath);
+        char header[1024] = {};
+        file.read(header, sizeof(header) - 1);
+        header[file.gcount()] = '\0';
+        databaseReady = strstr(header, requiredMarker) != nullptr;
     }
 
-    // The database is embedded into DebugUtils.cleo, so installation of only
-    // the .cleo file is sufficient to recreate the local CrashInfo database.
-    if (size == 0)
+    if (!databaseReady)
     {
+        // Preserve an older installation before replacing it with the bundled
+        // verified baseline. This avoids silently destroying old local data.
+        if (size != 0)
+        {
+            const std::string legacyPath =
+                pluginCrashInfoPath + ".legacy-v1.txt";
+            DeleteFileA(legacyPath.c_str());
+            CopyFileA(pluginCrashInfoPath.c_str(), legacyPath.c_str(), FALSE);
+        }
+
         HMODULE module = nullptr;
         if (GetModuleHandleExA(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -961,12 +946,18 @@ void DebugUtils::EnsureCrashInfoDatabase()
                 reinterpret_cast<LPCSTR>(&DebugUtils::s_instance),
                 &module))
         {
-            HRSRC resource = FindResourceA(module, MAKEINTRESOURCEA(IDR_CRASHINFO), RT_RCDATA);
+            HRSRC resource = FindResourceA(
+                module,
+                MAKEINTRESOURCEA(IDR_CRASHINFO),
+                RT_RCDATA
+            );
+
             if (resource != nullptr)
             {
                 HGLOBAL loaded = LoadResource(module, resource);
                 const DWORD resourceSize = SizeofResource(module, resource);
-                const void* resourceData = loaded ? LockResource(loaded) : nullptr;
+                const void* resourceData =
+                    loaded ? LockResource(loaded) : nullptr;
 
                 if (resourceData != nullptr && resourceSize != 0)
                 {
@@ -990,37 +981,33 @@ void DebugUtils::EnsureCrashInfoDatabase()
                             &written,
                             nullptr
                         );
+                        FlushFileBuffers(file);
                         CloseHandle(file);
-
-                        if (ok && written == resourceSize)
-                        {
-                            size = getFileSize(pluginCrashInfoPath);
-                            source = "embedded_resource";
-                        }
+                        databaseReady = ok && written == resourceSize;
                     }
                 }
             }
         }
     }
 
-    // Keep the documented debug path populated too, but never overwrite a
-    // user's existing database.
+    // Keep the debug copy for human inspection, but never use it as the
+    // runtime source of truth.
+    size = getFileSize(pluginCrashInfoPath);
     if (size != 0 && getFileSize(debugCrashInfoPath) == 0)
         CopyFileA(pluginCrashInfoPath.c_str(), debugCrashInfoPath.c_str(), FALSE);
 
-    if (size != 0)
+    if (databaseReady)
     {
         WriteCore(
-            "[crashinfo] own database ready path=%s size=%u source=%s",
+            "[crashinfo] verified database ready path=%s size=%u version=2",
             pluginCrashInfoPath.c_str(),
-            static_cast<unsigned>(size),
-            source.c_str()
+            static_cast<unsigned>(size)
         );
     }
     else
     {
         WriteCore(
-            "[crashinfo] database creation failed path=%s source=embedded_resource/module_bundle",
+            "[crashinfo] verified database unavailable path=%s",
             pluginCrashInfoPath.c_str()
         );
     }
@@ -1028,25 +1015,41 @@ void DebugUtils::EnsureCrashInfoDatabase()
 
 
 void DebugUtils::AppendAutomaticCrashInfo(
+    const std::string& fingerprint,
     DWORD faultAddress,
     DWORD exceptionCode,
     const char* exceptionType,
     const std::string& faultModule,
     DWORD faultRva,
+    int accessType,
+    uintptr_t targetAddress,
     const std::string& lastScript,
     DWORD lastOpcode,
     const std::vector<DWORD>& backtrace
 )
 {
-    // A new entry is created only when FindCrashInfo() returned the generic
-    // wildcard fallback. Exact/module/backtrace matches are never duplicated.
-    for (const auto& entry : m_crashInfo)
-    {
-        if (ContainsAddress(entry.errorAddresses, faultAddress))
-            return;
-    }
+    if (fingerprint.empty())
+        return;
 
-    const std::string path = CrashInfoPath();
+    const std::string path = CrashInfoAutoPath();
+    const std::string dir = DebugDir() + "CrashInfo\\";
+    CreateDirectoryA(dir.c_str(), nullptr);
+
+    // AUTO entries are deliberately isolated from the verified database.
+    // A crash observed once can never promote itself to VERIFIED.
+    {
+        std::ifstream existing(path);
+        if (existing.is_open())
+        {
+            std::string line;
+            const std::string marker = "Fingerprint: " + fingerprint;
+            while (std::getline(existing, line))
+            {
+                if (line == marker)
+                    return;
+            }
+        }
+    }
 
     HANDLE file = CreateFileA(
         path.c_str(),
@@ -1061,37 +1064,34 @@ void DebugUtils::AppendAutomaticCrashInfo(
     if (file == INVALID_HANDLE_VALUE)
         return;
 
-    LARGE_INTEGER fileSize{};
-    if (!GetFileSizeEx(file, &fileSize))
-    {
-        CloseHandle(file);
-        return;
-    }
-
     std::string record;
-    if (fileSize.QuadPart == 0)
+    LARGE_INTEGER fileSize{};
+    if (GetFileSizeEx(file, &fileSize) && fileSize.QuadPart == 0)
     {
-        record += "# CLEO DebugUtils Crash Database\r\n";
-        record += "# Automatically discovered signatures are appended below.\r\n";
-        record += "# Entries marked AUTO are observations only until reproduced and verified.\r\n\r\n";
+        record += "# CLEO DebugUtils Auto Crash Database\r\n";
+        record += "# Status: UNVERIFIED observations only.\r\n";
+        record += "# These entries are never used as VERIFIED matches.\r\n\r\n";
     }
 
     char line[1024] = {};
-
     sprintf_s(
         line, sizeof(line),
-        "\r\n# --- AUTO DISCOVERED: not verified ---\r\n"
-        "Error: 0x%08X\r\n"
-        "Name: Auto-discovered crash 0x%08X\r\n"
-        "Issue: Automatically detected crash signature with no specific CrashInfo match.\r\n"
-        "About: Exception 0x%08X (%s) at %s + 0x%08X; last script '%.8s'; last opcode 0x%04X.\r\n"
-        "Solution: Pending reproduction and isolation. Do not attribute this signature to CLEO or a script automatically.\r\n",
-        faultAddress,
-        faultAddress,
+        "# --------------------------------------------------------------------\r\n"
+        "Status: UNVERIFIED\r\n"
+        "Fingerprint: %s\r\n"
+        "Exception: 0x%08X (%s)\r\n"
+        "Fault: %s + 0x%08X\r\n"
+        "Access: %s\r\n"
+        "Target: 0x%08X\r\n"
+        "Last script: %.8s\r\n"
+        "Last opcode: 0x%04X\r\n",
+        fingerprint.c_str(),
         exceptionCode,
         exceptionType ? exceptionType : "UNKNOWN",
         faultModule.empty() ? "<unknown>" : faultModule.c_str(),
         faultRva,
+        AccessTypeName(accessType).c_str(),
+        static_cast<DWORD>(targetAddress),
         lastScript.empty() ? "none" : lastScript.c_str(),
         lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
     );
@@ -1101,18 +1101,17 @@ void DebugUtils::AppendAutomaticCrashInfo(
     {
         record += "Backtrace:";
         const size_t count = std::min<size_t>(backtrace.size(), 12);
-
         for (size_t i = 0; i < count; ++i)
         {
-            char address[32] = {};
-            sprintf_s(address, sizeof(address), " 0x%08X", backtrace[i]);
-            record += address;
+            char bt[32] = {};
+            sprintf_s(bt, sizeof(bt), " 0x%08X", backtrace[i]);
+            record += bt;
         }
-
         record += "\r\n";
     }
 
-    record += "\r\n";
+    record += "Cause: NOT PROVEN\r\n";
+    record += "Promotion: Reproduce and verify before adding to CLEO-CrashList.txt\r\n\r\n";
 
     DWORD written = 0;
     const BOOL ok = WriteFile(
@@ -1122,18 +1121,20 @@ void DebugUtils::AppendAutomaticCrashInfo(
         &written,
         nullptr
     );
-
+    FlushFileBuffers(file);
     CloseHandle(file);
 
-    if (ok && written == record.size())
-    {
-        // The process normally terminates immediately after a crash dialog,
-        // so reloading the vector here is unnecessary. The on-disk entry is
-        // picked up automatically on the next game start.
-    }
+    if (!ok || written != record.size())
+        return;
+
+    WriteCore(
+        "[crashinfo] auto candidate added fingerprint=%s path=%s",
+        fingerprint.c_str(),
+        path.c_str()
+    );
 }
 
-void DebugUtils::OpenLogs()
+void DebugUtils::OpenLogs()void DebugUtils::OpenLogs()
 {
     m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
     m_coreBytes = 0;
