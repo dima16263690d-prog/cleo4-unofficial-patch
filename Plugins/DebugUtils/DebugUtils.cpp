@@ -464,7 +464,6 @@ namespace
     }
 
     void SkipUnusedVarArgs(CScriptThread* thread)
-    void SkipUnusedVarArgs(CScriptThread* thread)
     {
         if (!thread)
             return;
@@ -1118,7 +1117,7 @@ void DebugUtils::AppendAutomaticCrashInfo(
     );
 }
 
-void DebugUtils::OpenLogs()void DebugUtils::OpenLogs()
+void DebugUtils::OpenLogs()
 {
     m_coreLog.open(CoreLogPath(), std::ios::out | std::ios::trunc);
     m_coreBytes = 0;
@@ -2549,6 +2548,95 @@ namespace
     }
 }
 
+namespace
+{
+    using StackWalk64Proc = decltype(&StackWalk64);
+    using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
+    using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
+
+    static BOOL SafeStackWalkI386(
+        StackWalk64Proc pStackWalk64,
+        SymFunctionTableAccess64Proc pSymFunctionTableAccess64,
+        SymGetModuleBase64Proc pSymGetModuleBase64,
+        HANDLE process,
+        HANDLE thread,
+        const CONTEXT* sourceContext,
+        DWORD* frameAddresses,
+        DWORD capacity,
+        DWORD* frameCount
+    )
+    {
+        if (pStackWalk64 == nullptr ||
+            pSymFunctionTableAccess64 == nullptr ||
+            pSymGetModuleBase64 == nullptr ||
+            sourceContext == nullptr ||
+            frameAddresses == nullptr ||
+            frameCount == nullptr ||
+            capacity == 0)
+        {
+            return FALSE;
+        }
+
+        // Deliberately keep this function free of STL/RAII objects.
+        // MSVC forbids SEH __try/__except in functions that require
+        // destruction of C++ objects.
+        __try
+        {
+            CONTEXT context = *sourceContext;
+            STACKFRAME64 frame = {};
+
+            frame.AddrPC.Offset = context.Eip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = context.Ebp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = context.Esp;
+            frame.AddrStack.Mode = AddrModeFlat;
+
+            DWORD count = 0;
+            frameAddresses[count++] = context.Eip;
+
+            while (count < capacity)
+            {
+                const BOOL ok = pStackWalk64(
+                    IMAGE_FILE_MACHINE_I386,
+                    process,
+                    thread,
+                    &frame,
+                    &context,
+                    &DebugUtilsReadProcessMemory,
+                    reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE64>(
+                        pSymFunctionTableAccess64),
+                    reinterpret_cast<PGET_MODULE_BASE_ROUTINE64>(
+                        pSymGetModuleBase64),
+                    nullptr
+                );
+
+                if (!ok)
+                    break;
+
+                const DWORD address =
+                    static_cast<DWORD>(frame.AddrPC.Offset);
+
+                if (address == 0 ||
+                    address == frameAddresses[count - 1])
+                {
+                    break;
+                }
+
+                frameAddresses[count++] = address;
+            }
+
+            *frameCount = count;
+            return count != 0 ? TRUE : FALSE;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *frameCount = 0;
+            return FALSE;
+        }
+    }
+}
+
 std::vector<DWORD> DebugUtils::BuildStackWalk(
     PEXCEPTION_POINTERS info,
     DWORD maxFrames
@@ -2556,8 +2644,12 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
 {
     std::vector<DWORD> frames;
 
-    if (info == nullptr || info->ContextRecord == nullptr || maxFrames == 0)
+    if (info == nullptr ||
+        info->ContextRecord == nullptr ||
+        maxFrames == 0)
+    {
         return frames;
+    }
 
     if (InterlockedCompareExchange(&g_dbgHelpActive, 1, 0) != 0)
         return frames;
@@ -2569,21 +2661,14 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         return frames;
     }
 
-    using StackWalk64Proc = decltype(&StackWalk64);
-    using SymInitializeProc = decltype(&SymInitialize);
-    using SymCleanupProc = decltype(&SymCleanup);
-    using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
-    using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
-
     const auto pStackWalk64 =
-        reinterpret_cast<StackWalk64Proc>(GetProcAddress(dbgHelp, "StackWalk64"));
-    const auto pSymInitialize =
-        reinterpret_cast<SymInitializeProc>(GetProcAddress(dbgHelp, "SymInitialize"));
-    const auto pSymCleanup =
-        reinterpret_cast<SymCleanupProc>(GetProcAddress(dbgHelp, "SymCleanup"));
+        reinterpret_cast<StackWalk64Proc>(
+            GetProcAddress(dbgHelp, "StackWalk64"));
+
     const auto pSymFunctionTableAccess64 =
         reinterpret_cast<SymFunctionTableAccess64Proc>(
             GetProcAddress(dbgHelp, "SymFunctionTableAccess64"));
+
     const auto pSymGetModuleBase64 =
         reinterpret_cast<SymGetModuleBase64Proc>(
             GetProcAddress(dbgHelp, "SymGetModuleBase64"));
@@ -2597,70 +2682,35 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         return frames;
     }
 
-    const HANDLE process = GetCurrentProcess();
-    const HANDLE thread = GetCurrentThread();
+    const DWORD capacity =
+        std::min<DWORD>(maxFrames, 64u);
 
-    bool symbolsInitialized = false;
+    frames.resize(capacity);
 
-    __try
-    {
-        if (pSymInitialize != nullptr)
-            symbolsInitialized = pSymInitialize(process, nullptr, TRUE) != FALSE;
+    DWORD frameCount = 0;
+    const BOOL ok = SafeStackWalkI386(
+        pStackWalk64,
+        pSymFunctionTableAccess64,
+        pSymGetModuleBase64,
+        GetCurrentProcess(),
+        GetCurrentThread(),
+        info->ContextRecord,
+        frames.data(),
+        capacity,
+        &frameCount
+    );
 
-        CONTEXT context = *info->ContextRecord;
-        STACKFRAME64 frame{};
-
-        frame.AddrPC.Offset = context.Eip;
-        frame.AddrPC.Mode = AddrModeFlat;
-        frame.AddrFrame.Offset = context.Ebp;
-        frame.AddrFrame.Mode = AddrModeFlat;
-        frame.AddrStack.Offset = context.Esp;
-        frame.AddrStack.Mode = AddrModeFlat;
-
-        frames.push_back(context.Eip);
-
-        while (frames.size() < maxFrames)
-        {
-            const BOOL ok = pStackWalk64(
-                IMAGE_FILE_MACHINE_I386,
-                process,
-                thread,
-                &frame,
-                &context,
-                &DebugUtilsReadProcessMemory,
-                reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE64>(
-                    pSymFunctionTableAccess64),
-                reinterpret_cast<PGET_MODULE_BASE_ROUTINE64>(
-                    pSymGetModuleBase64),
-                nullptr
-            );
-
-            if (!ok)
-                break;
-
-            const DWORD address =
-                static_cast<DWORD>(frame.AddrPC.Offset);
-
-            if (address == 0 ||
-                address == frames.back())
-                break;
-
-            frames.push_back(address);
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        // Never let a broken stack prevent the crash report from being written.
-    }
-
-    if (symbolsInitialized && pSymCleanup != nullptr)
-        pSymCleanup(process);
+    if (!ok || frameCount == 0)
+        frames.clear();
+    else
+        frames.resize(frameCount);
 
     FreeLibrary(dbgHelp);
     InterlockedExchange(&g_dbgHelpActive, 0);
 
     return frames;
 }
+
 
 std::string DebugUtils::AccessTypeName(int accessType)
 {
@@ -3393,7 +3443,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
 }
 
-void DebugUtils::RecordOpcode(void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
+void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
 {
     if (thread == nullptr)
         return;
