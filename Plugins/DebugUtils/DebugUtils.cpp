@@ -799,7 +799,7 @@ void DebugUtils::LoadConfig()
 
     m_diagnosticLogEnabled =
         GetPrivateProfileIntA(
-            "DebugUtils.Logs", "diagnostic",
+            "DebugUtils.Logs", "Diagnostic",
             0,
             path.c_str()
         ) != 0;
@@ -1418,7 +1418,9 @@ void DebugUtils::ScriptWriterLoop()
                     m_scriptLog << prefix << event.line << '\n';
                     m_scriptBytes += incoming;
 
-                    if ((m_scriptBytes & 0xFFFFu) < incoming)
+                    // The writer thread is already off the opcode path.
+                    // Flush when a queue batch is drained rather than for each line.
+                    if (readIndex + 1 == writeIndex)
                         m_scriptLog.flush();
                 }
             }
@@ -3762,7 +3764,8 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     if (!s_instance) return;
 
     const DWORD now = GetTickCount();
-    if (now - s_instance->m_lastMemoryLogTick >= 10000)
+    if (s_instance->m_memoryLogEnabled &&
+        now - s_instance->m_lastMemoryLogTick >= 10000)
     {
         s_instance->m_lastMemoryLogTick = now;
         s_instance->WriteCoreMemorySummary();
