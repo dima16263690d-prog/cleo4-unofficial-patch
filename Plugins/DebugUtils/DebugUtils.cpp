@@ -3556,7 +3556,6 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastMemoryCustomCount = 0;
     s_instance->m_memoryBaselineReady = false;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
-    s_instance->WriteCoreQueueSnapshot("GameBegin");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
     s_instance->m_lastScriptRepeatCount = 0;
@@ -3565,14 +3564,16 @@ void __stdcall DebugUtils::OnGameBegin()
         s_instance->WriteScript("//////////////////////// function call check (0AB1 / 0AB2) ////////////////////////");
     if (s_instance->m_scriptOpcodeTrace)
         s_instance->WriteScript("//////////////////////// opcode check ////////////////////////");
-    s_instance->WriteCoreMemorySummary();
+    if (s_instance->m_memoryLogEnabled)
+        s_instance->WriteCoreMemorySummary();
 }
 
 void __stdcall DebugUtils::OnGameEnd()
 {
     if (!s_instance) return;
     s_instance->WriteCore("//////////////////////// game end ////////////////////////");
-    s_instance->WriteCoreMemorySummary();
+    if (s_instance->m_memoryLogEnabled)
+        s_instance->WriteCoreMemorySummary();
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
@@ -3644,9 +3645,16 @@ BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
     if (!s_instance || !thread)
         return TRUE;
 
-    s_instance->m_currentScriptPtr = reinterpret_cast<uintptr_t>(thread);
-    s_instance->m_currentScriptStartTick = GetTickCount();
-    s_instance->m_currentScriptCommands = 0;
+    const bool timingGuardEnabled =
+        s_instance->m_commandLimit > 0 ||
+        s_instance->m_timeLimitSeconds > 0;
+
+    if (timingGuardEnabled)
+    {
+        s_instance->m_currentScriptPtr = reinterpret_cast<uintptr_t>(thread);
+        s_instance->m_currentScriptStartTick = GetTickCount();
+        s_instance->m_currentScriptCommands = 0;
+    }
 
     for (const auto& breakpoint : s_instance->m_breakpoints)
     {
