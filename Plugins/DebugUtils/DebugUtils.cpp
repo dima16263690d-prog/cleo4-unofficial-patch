@@ -3546,7 +3546,11 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
 
                 heuristicOk = heuristicFrames.size() > 1;
                 if (heuristicOk)
+                {
                     frames = heuristicFrames;
+                    if (heuristicBacktrace != nullptr)
+                        *heuristicBacktrace = true;
+                }
                 else
                     frames.clear();
             }
@@ -3607,7 +3611,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                 sprintf_s(
                     text,
                     sizeof(text),
-                    "status=OK method=STACK_SCAN primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=OK symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=%u frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    "status=OK method=STACK_SCAN heuristic=1 primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=OK symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=%u frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                     StackWalkStopReasonName(stopReason64),
                     pStackWalk == nullptr
                         ? "UNAVAILABLE"
