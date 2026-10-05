@@ -1841,8 +1841,10 @@ namespace CLEO {
 
 		if (!scmFunc)
 		{
-			TRACE("[0AB2] No active 0AB1 function for thread %p", thread);
-			throw "0AB2 without active 0AB1 function";
+			TRACE("[0AB2] No active 0AB1 function for thread %.8s ptr=%p; skipping malformed return",
+				thread->GetName(), thread);
+			SkipUnusedParameters(thread);
+			return OR_CONTINUE;
 		}
 
 		// CLEO 5-style validation: inspect the complete return vararg list first.
@@ -1855,16 +1857,19 @@ namespace CLEO {
 
 			if (returnVarArgCount - 1 < nRetParams)
 			{
-				TRACE("[0AB2] Declared %u return args, but only %u were provided",
-					nRetParams, returnVarArgCount - 1);
-				throw "Not enough return parameters in opcode 0AB2";
+				TRACE("[0AB2] Declared %u return args, but only %u were provided in %.8s; skipping return",
+					nRetParams, returnVarArgCount - 1, thread->GetName());
+				SkipUnusedParameters(thread);
+				return OR_CONTINUE;
 			}
 		}
 
 		if (nRetParams > 32)
 		{
-			TRACE("[0AB2] Return argument count %u exceeds supported limit of 32", nRetParams);
-			throw "Too many parameters in opcode 0AB2";
+			TRACE("[0AB2] Return argument count %u exceeds supported limit of 32 in %.8s; skipping return",
+				nRetParams, thread->GetName());
+			SkipUnusedParameters(thread);
+			return OR_CONTINUE;
 		}
 
 		// Keep return values in a private buffer while function-local scope is active.
