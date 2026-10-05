@@ -250,7 +250,16 @@ private:
 
     static std::string Basename(const std::string& path);
     static std::string ModuleNameForAddress(DWORD address);
-    static std::vector<DWORD> BuildStackWalk(PEXCEPTION_POINTERS info, DWORD maxFrames);
+    static std::vector<DWORD> BuildStackWalk(
+        PEXCEPTION_POINTERS info,
+        DWORD maxFrames,
+        std::string* diagnostics
+    );
+    static std::vector<DWORD> BuildRawStackCandidates(
+        DWORD stackPointer,
+        size_t scanBytes,
+        size_t maxCandidates
+    );
     static std::string AccessTypeName(int accessType);
     static std::string MemoryStateName(DWORD state);
     static std::string MemoryProtectName(DWORD protect);
