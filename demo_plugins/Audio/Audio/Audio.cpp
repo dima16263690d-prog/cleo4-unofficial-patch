@@ -27,19 +27,10 @@ namespace
             if (CLEO_GetVersion() < CLEO_VERSION)
                 return;
 
+            // Keep the audio directory owned by the Audio plugin.
+            // Do not depend on core CLEO TRACE/logging APIs here.
             CreateDirectoryA("cleo", nullptr);
-            if (CreateDirectoryA("cleo\\audio", nullptr))
-            {
-                TRACE("[Audio] Created directory cleo\\audio");
-            }
-            else if (GetLastError() == ERROR_ALREADY_EXISTS)
-            {
-                TRACE("[Audio] Audio directory ready: cleo\\audio");
-            }
-            else
-            {
-                TRACE("[Audio] Failed to create directory cleo\\audio. Win32 error: %lu", GetLastError());
-            }
+            CreateDirectoryA("cleo\\audio", nullptr);
 
             CLEO_RegisterOpcode(0x2500, opcode_2500);
             CLEO_RegisterOpcode(0x2501, opcode_2501);
