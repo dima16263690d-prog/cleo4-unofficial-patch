@@ -104,20 +104,18 @@ DebugUtils uses its own local crash database:
 
 cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt
 
-The database is bundled inside DebugUtils.cleo and is created automatically on first start. There is no network download and no automatic synchronization with another crash database.
+The verified database is bundled inside DebugUtils.cleo and is loaded only when a real unhandled crash is analysed. There is no runtime network download or manual synchronization.
 
 The matching engine supports:
 
-- exact fault addresses;
-- faulting module names;
-- wildcard signatures;
-- Backtrace address rules;
-- Backtrace module rules.
+- exact fault addresses and module/RVA context;
+- wildcard signatures as a final fallback;
+- Backtrace address/module rules;
+- last-command and script-context rules.
 
-When a crash has no specific match, DebugUtils automatically appends a new
-AUTO DISCOVERED candidate to the same local database. Exact/module/backtrace
-matches are not duplicated. AUTO entries are observations only and must be
-reproduced before being promoted to verified signatures.
+When a crash has no specific verified match, DebugUtils automatically appends an
+UNVERIFIED candidate to the separate local auto database. AUTO candidates are
+never loaded as verified matches, so one observed crash cannot promote itself.
 
 
 ## Crash diagnostics bridge
@@ -149,3 +147,12 @@ terminate GTA.
 The fault address comes directly from the Windows exception record. Additional
 GTA hooks are not required to discover the faulting instruction; hooks should
 only be added later for a specifically reproduced function-level investigation.
+
+
+## Diagnostic performance contract
+
+DebugUtils is an observer. In normal gameplay it does not parse the CrashInfo database, load DbgHelp, walk memory, write crash reports, or perform forensic stack analysis. The CLEO crash snapshot is thread-local. DebugUtils opcode callbacks used for tracing or guards are not registered unless those modes are explicitly enabled.
+
+The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
+
+The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.
