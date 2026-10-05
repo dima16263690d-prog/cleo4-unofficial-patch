@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "CDebugCallbackSystem.h"
 #include "CCustomOpcodeSystem.h"
+#include "CDebugBridge.h"
 
 namespace CLEO
 {
