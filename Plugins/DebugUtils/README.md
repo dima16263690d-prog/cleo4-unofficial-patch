@@ -115,3 +115,34 @@ The matching engine supports:
 - Backtrace module rules.
 
 New entries are added only from our own reproduced or verified CLEO/GTA SA test results.
+
+
+## Crash diagnostics bridge
+
+The crash subsystem is optional and is controlled by `cleo/cleo_plugins/DebugUtils.ini`:
+
+```ini
+[DebugUtils.Crash]
+Enabled=1
+Window=1
+Backtrace=1
+OpcodeHistory=0
+MaxFrames=32
+```
+
+When `Enabled=0`, DebugUtils does not install its VEH/unhandled-exception
+crash hooks and CLEO does not maintain the crash snapshot.
+
+When enabled, the CLEO core exposes a small bridge snapshot containing only
+the last script pointer/name, opcode, script offset, result state and game tick.
+DebugUtils reads this snapshot only when a crash occurs. It does not walk the
+GTA active-script queue and does not write per-opcode crash data to disk.
+
+Crash reports contain the fault address, GTA module/RVA, exception information,
+instruction bytes, registers, stack, EBP backtrace and the last CLEO execution
+context. The interactive crash window can copy the report, open the log, or
+terminate GTA.
+
+The fault address comes directly from the Windows exception record. Additional
+GTA hooks are not required to discover the faulting instruction; hooks should
+only be added later for a specifically reproduced function-level investigation.
