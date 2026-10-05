@@ -78,9 +78,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="DebugUtils.ini" />
-    <None Include="CrashInfoSource.txt" />
     <None Include="README.md" />
-    <None Include="CrashInfo\EN-CrashList.txt">
+    <None Include="CrashInfo\CLEO-CrashList.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
