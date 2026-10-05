@@ -2949,8 +2949,8 @@ namespace
             *stopReason = STACKWALK_INVALID_INPUT;
 
         if (pStackWalk == nullptr ||
-            pSymFunctionTableAccess64 == nullptr ||
-            pSymGetModuleBase64 == nullptr ||
+            pSymFunctionTableAccess == nullptr ||
+            pSymGetModuleBase == nullptr ||
             sourceContext == nullptr ||
             frameAddresses == nullptr ||
             frameCount == nullptr ||
