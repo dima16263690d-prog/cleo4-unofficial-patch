@@ -2587,6 +2587,8 @@ namespace
 namespace
 {
     using StackWalk64Proc = decltype(&StackWalk64);
+    using SymInitializeProc = decltype(&SymInitialize);
+    using SymCleanupProc = decltype(&SymCleanup);
     using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
     using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
 
@@ -2613,9 +2615,6 @@ namespace
             return FALSE;
         }
 
-        // Deliberately keep this function free of STL/RAII objects.
-        // MSVC forbids SEH __try/__except in functions that require
-        // destruction of C++ objects.
         __try
         {
             CONTEXT context = *sourceContext;
@@ -2633,13 +2632,16 @@ namespace
 
             while (count < capacity)
             {
+                // hProcess is valid, so let DbgHelp use its standard memory
+                // reader. A custom ReadMemoryRoutine would require additional
+                // symbol callback registration.
                 const BOOL ok = pStackWalk64(
                     IMAGE_FILE_MACHINE_I386,
                     process,
                     thread,
                     &frame,
                     &context,
-                    &DebugUtilsReadProcessMemory,
+                    nullptr,
                     reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE64>(
                         pSymFunctionTableAccess64),
                     reinterpret_cast<PGET_MODULE_BASE_ROUTINE64>(
@@ -2701,6 +2703,14 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         reinterpret_cast<StackWalk64Proc>(
             GetProcAddress(dbgHelp, "StackWalk64"));
 
+    const auto pSymInitialize =
+        reinterpret_cast<SymInitializeProc>(
+            GetProcAddress(dbgHelp, "SymInitialize"));
+
+    const auto pSymCleanup =
+        reinterpret_cast<SymCleanupProc>(
+            GetProcAddress(dbgHelp, "SymCleanup"));
+
     const auto pSymFunctionTableAccess64 =
         reinterpret_cast<SymFunctionTableAccess64Proc>(
             GetProcAddress(dbgHelp, "SymFunctionTableAccess64"));
@@ -2718,6 +2728,19 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         return frames;
     }
 
+    const HANDLE process = GetCurrentProcess();
+    const HANDLE thread = GetCurrentThread();
+
+    // SymFunctionTableAccess64/SymGetModuleBase64 operate through the DbgHelp
+    // symbol handler. Initialize it for the crash-only operation.
+    bool symbolsInitialized = false;
+
+    if (pSymInitialize != nullptr)
+    {
+        symbolsInitialized =
+            pSymInitialize(process, nullptr, TRUE) != FALSE;
+    }
+
     const DWORD capacity =
         std::min<DWORD>(maxFrames, 64u);
 
@@ -2728,8 +2751,8 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         pStackWalk64,
         pSymFunctionTableAccess64,
         pSymGetModuleBase64,
-        GetCurrentProcess(),
-        GetCurrentThread(),
+        process,
+        thread,
         info->ContextRecord,
         frames.data(),
         capacity,
@@ -2740,6 +2763,9 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         frames.clear();
     else
         frames.resize(frameCount);
+
+    if (symbolsInitialized && pSymCleanup != nullptr)
+        pSymCleanup(process);
 
     FreeLibrary(dbgHelp);
     InterlockedExchange(&g_dbgHelpActive, 0);
