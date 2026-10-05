@@ -442,9 +442,14 @@ namespace CLEO
 
     void CAudioStream::SetVolume(float val)
     {
-        volume.Finish();
-        volume.Set(std::max(val, 0.0f), 0.0f);
-        if (streamInternal)
+        SetVolume(val, 0.0f);
+    }
+
+    void CAudioStream::SetVolume(float val, float transitionTime)
+    {
+        val = std::max(val, 0.0f);
+        volume.Set(val, transitionTime);
+        if (transitionTime <= 0.0f && streamInternal)
             BASS_ChannelSetAttribute(streamInternal, BASS_ATTRIB_VOL, volume.Get());
     }
 
