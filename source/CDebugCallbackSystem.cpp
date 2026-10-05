@@ -91,15 +91,15 @@ namespace CLEO
         if (g_crashSnapshotEnabled != 0 && script != nullptr)
         {
             DWORD offset = 0;
-            if (script->ip != nullptr && script->baseIp != nullptr &&
-                script->ip >= script->baseIp + 2)
+            if (script->GetBytePointer() != nullptr && script->GetBasePointer() != nullptr &&
+                script->GetBytePointer() >= script->GetBasePointer() + 2)
             {
-                offset = static_cast<DWORD>(script->ip - script->baseIp - 2);
+                offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
             }
 
             CLEO_DebugRecordCrashOpcode(
                 reinterpret_cast<uintptr_t>(script),
-                script->threadName,
+                script->GetName(),
                 opcode,
                 offset,
                 -1
@@ -117,15 +117,15 @@ namespace CLEO
         if (g_crashSnapshotEnabled != 0 && script != nullptr)
         {
             DWORD offset = 0;
-            if (script->ip != nullptr && script->baseIp != nullptr &&
-                script->ip >= script->baseIp + 2)
+            if (script->GetBytePointer() != nullptr && script->GetBasePointer() != nullptr &&
+                script->GetBytePointer() >= script->GetBasePointer() + 2)
             {
-                offset = static_cast<DWORD>(script->ip - script->baseIp - 2);
+                offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
             }
 
             CLEO_DebugRecordCrashOpcode(
                 reinterpret_cast<uintptr_t>(script),
-                script->threadName,
+                script->GetName(),
                 opcode,
                 offset,
                 static_cast<LONG>(result)
