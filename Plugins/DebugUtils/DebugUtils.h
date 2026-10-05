@@ -119,6 +119,9 @@ private:
     bool m_memoryTrace = false;
     bool m_diagnosticLogEnabled = false;
     bool m_legacyDebugOpcodes = false;
+    bool m_crashInfoAutoUpdate = true;
+    DWORD m_crashInfoConnectionTimeoutMs = 3000;
+    DWORD m_crashInfoDownloadTimeoutMs = 4000;
 
     std::set<uintptr_t> m_debugScripts;
 
@@ -161,6 +164,8 @@ private:
     void WriteCoreLimitNoticeLocked();
 
     void EnsureCrashInfoDatabase();
+    void UpdateCrashInfoDatabaseIfNeeded();
+    bool DownloadCrashInfoDatabase(const std::string& targetPath);
     void LoadCrashInfoList();
     const CrashInfoEntry* FindCrashInfo(
         DWORD address,
