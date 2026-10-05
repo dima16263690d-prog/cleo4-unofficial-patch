@@ -390,7 +390,6 @@ namespace
         case EXCEPTION_INT_OVERFLOW:
         case EXCEPTION_PRIV_INSTRUCTION:
         case EXCEPTION_STACK_OVERFLOW:
-        case 0xE06D7363: // MSVC C++ exception
             return true;
         default:
             return false;
