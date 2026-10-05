@@ -57,6 +57,9 @@
     <ClCompile Include="source\CSoundSystem.cpp">
       <Filter>source</Filter>
     </ClCompile>
+    <ClCompile Include="source\CAudioPluginAPI.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
     <ClCompile Include="source\CTextManager.cpp">
       <Filter>source</Filter>
     </ClCompile>
