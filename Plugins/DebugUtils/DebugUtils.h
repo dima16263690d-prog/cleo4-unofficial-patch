@@ -29,8 +29,13 @@ private:
         std::vector<std::string> errorModules;
         std::vector<DWORD> backtraceAddresses;
         std::vector<std::string> backtraceModules;
+        std::vector<DWORD> lastCommands;
+        std::string scriptName;
+        DWORD exceptionCode = 0;
+        int accessType = -1;
         bool wildcardError = false;
         bool hasMatcher = false;
+        bool autoDiscovered = false;
         std::string name;
         std::string issue;
         std::string about;
@@ -52,7 +57,7 @@ private:
     size_t m_corePendingWrites = 0;
     size_t m_coreBytes = 0;
     bool m_coreLimitNoticeWritten = false;
-    static constexpr size_t kCoreLogMaxBytes = 8u * 1024u;
+    static constexpr size_t kCoreLogMaxBytes = 1024u * 1024u;
 
     struct ScriptLogEvent
     {
@@ -89,6 +94,7 @@ private:
     bool m_crashHandlerInstalled = false;
     PVOID m_vectoredHandler = nullptr;
     volatile LONG m_crashInProgress = 0;
+    std::atomic<bool> m_scriptWriterStarted{ false };
 
     bool m_crashEnabled = true;
     bool m_crashWindowEnabled = true;
@@ -147,6 +153,7 @@ private:
     std::string MemoryLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
+    std::string CrashInfoAutoPath() const;
     std::string ConfigPath() const;
 
     void LoadConfig();
@@ -164,15 +171,19 @@ private:
     void ScriptWriterLoop();
     void WriteExternal(const std::string& filename, bool timestamp, const char* message);
     void RotateScriptLogIfNeeded(size_t incomingBytes);
+    void RotateCoreLogIfNeeded(size_t incomingBytes);
     void WriteCoreLimitNoticeLocked();
 
     void EnsureCrashInfoDatabase();
     void AppendAutomaticCrashInfo(
+        const std::string& fingerprint,
         DWORD faultAddress,
         DWORD exceptionCode,
         const char* exceptionType,
         const std::string& faultModule,
         DWORD faultRva,
+        int accessType,
+        uintptr_t targetAddress,
         const std::string& lastScript,
         DWORD lastOpcode,
         const std::vector<DWORD>& backtrace
@@ -181,7 +192,11 @@ private:
     const CrashInfoEntry* FindCrashInfo(
         DWORD address,
         const std::string& faultModule,
-        const std::vector<DWORD>& backtrace
+        const std::vector<DWORD>& backtrace,
+        DWORD exceptionCode,
+        int accessType,
+        const std::string& lastScript,
+        DWORD lastOpcode
     ) const;
 
     void WriteCoreHeader();
@@ -234,6 +249,21 @@ private:
 
     static std::string Basename(const std::string& path);
     static std::string ModuleNameForAddress(DWORD address);
+    static std::vector<DWORD> BuildStackWalk(PEXCEPTION_POINTERS info, DWORD maxFrames);
+    static std::string AccessTypeName(int accessType);
+    static std::string MemoryStateName(DWORD state);
+    static std::string MemoryProtectName(DWORD protect);
+    static std::string BuildCrashFingerprint(
+        DWORD exceptionCode,
+        DWORD faultAddress,
+        DWORD faultRva,
+        const std::string& faultModule,
+        int accessType,
+        uintptr_t targetAddress,
+        const std::string& lastScript,
+        DWORD lastOpcode,
+        const std::vector<DWORD>& backtrace
+    );
     static bool SafeReadDword(const DWORD* address, DWORD& value);
     static bool SafeReadBytes(const void* address, void* buffer, size_t size);
     static size_t ScriptOffset(const CScriptThread* thread);
