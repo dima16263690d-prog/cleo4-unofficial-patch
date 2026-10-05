@@ -12,14 +12,13 @@
 #include "CCustomOpcodeSystem.h"
 #include "CTextManager.h"
 #include "CSoundSystem.h"
-#include "FileEnumerator.h"
 #include "crc32.h"
 
 namespace CLEO
 {
     class CCleoInstance
     {
-        bool			m_bStarted;
+        bool            m_bStarted;
 
     public:
         CCleoInstance()
@@ -37,10 +36,20 @@ namespace CLEO
 
         void Start()
         {
-            CreateDirectory("cleo", NULL);
-            CreateDirectory("cleo/cleo_saves", NULL);
-            CreateDirectory("cleo/cleo_text", NULL);
-            CodeInjector.OpenReadWriteAccess();		// must do this earlier to ensure plugins write access on init
+            // CLEO 4 runtime directories. Keep resource ownership simple:
+            // .cs/.cs3/.cs4 -> ScriptEngine
+            // .cleo          -> PluginSystem
+            // cleo_saves     -> save sidecar data
+            // cleo_text      -> text subsystem
+            //
+            // No cleo_modules directory: this patch intentionally keeps the
+            // classic CLEO 4 script model without a separate .s module layer.
+            CreateDirectoryA("cleo", nullptr);
+            CreateDirectoryA("cleo\\cleo_plugins", nullptr);
+            CreateDirectoryA("cleo\\cleo_saves", nullptr);
+            CreateDirectoryA("cleo\\cleo_text", nullptr);
+
+            CodeInjector.OpenReadWriteAccess(); // must do this earlier to ensure plugins write access on init
             GameMenu.Inject(CodeInjector);
             DmaFix.Inject(CodeInjector);
             UpdateGameLogics = VersionManager.TranslateMemoryAddress(MA_UPDATE_GAME_LOGICS_FUNCTION);
@@ -54,24 +63,33 @@ namespace CLEO
             SoundSystem.Inject(CodeInjector);
             OpcodeSystem.Inject(CodeInjector);
             ScriptEngine.Inject(CodeInjector);
+
+            // Plugins are loaded only after the CLEO core is injected.
+            // CPluginSystem performs CLEO 5-style discovery and load ordering.
+            PluginSystem.LoadPlugins();
+
+            m_bStarted = true;
         }
 
         void Stop()
         {
             if (!m_bStarted) return;
+
+            PluginSystem.UnloadPlugins();
+            ScriptEngine.GameEnd();
+            m_bStarted = false;
         }
 
-        CDmaFix					DmaFix;
-        CGameMenu				GameMenu;
-        CHookSystem				HookSystem;
-        CCodeInjector			CodeInjector;
-        CGameVersionManager		VersionManager;
-        CScriptEngine			ScriptEngine;
-        CTextManager				TextManager;
-        CCustomOpcodeSystem		OpcodeSystem;
-        CSoundSystem				SoundSystem;
-        CPluginSystem			PluginSystem;
-        //CLegacy					Legacy;
+        CDmaFix                    DmaFix;
+        CGameMenu                 GameMenu;
+        CHookSystem               HookSystem;
+        CCodeInjector             CodeInjector;
+        CGameVersionManager       VersionManager;
+        CScriptEngine              ScriptEngine;
+        CTextManager              TextManager;
+        CCustomOpcodeSystem        OpcodeSystem;
+        CSoundSystem               SoundSystem;
+        CPluginSystem              PluginSystem;
     };
 
     CCleoInstance& GetInstance();

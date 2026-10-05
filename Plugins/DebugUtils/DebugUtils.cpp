@@ -8,6 +8,7 @@
 #include <cstring>
 #include <chrono>
 #include <cstddef>
+#include <fstream>
 #include <sstream>
 #include <CTimer.h>
 
@@ -306,48 +307,33 @@ void DebugUtils::LoadConfig()
 {
     const std::string path = ConfigPath();
 
-    // Create a visible default configuration on first run. The existing
-    // defaults below remain the source of truth for backwards compatibility;
-    // the INI is only materialized when it does not exist yet.
     if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
         std::ofstream config(path, std::ios::out | std::ios::trunc);
+
         if (config.is_open())
         {
-            config << "; DebugUtils configuration\\r\\n";
-            config << "; Changes are loaded when GTA starts.\\r\\n";
-            config << "; 1 = enabled, 0 = disabled.\\r\\n\\r\\n";
+            config << "; DebugUtils configuration\r\n";
+            config << "; Changes are loaded when GTA starts.\r\n";
+            config << "; 1 = enabled, 0 = disabled.\r\n\r\n";
 
-            config << "[DebugUtils.General]\\r\\n";
-            config << "; Enable legacy 0662/0663/0664 debug opcodes.\\r\\n";
-            config << "LegacyDebugOpcodes=0\\r\\n\\r\\n";
+            config << "[DebugUtils.General]\r\n";
+            config << "LegacyDebugOpcodes=0\r\n\r\n";
 
-            config << "[DebugUtils.Limits]\\r\\n";
-            config << "; Maximum opcodes processed by one script before hang guard interrupts it.\\r\\n";
-            config << "Command=2000000\\r\\n";
-            config << "; Maximum continuous execution time checked by the hang guard, in seconds.\\r\\n";
-            config << "Time=5\\r\\n\\r\\n";
+            config << "[DebugUtils.Limits]\r\n";
+            config << "Command=2000000\r\n";
+            config << "Time=5\r\n\r\n";
 
-            config << "[DebugUtils.ScriptLog]\\r\\n";
-            config << "; Create and write cleo_script.log.\\r\\n";
-            config << "Enabled=1\\r\\n";
-            config << "; Write every processed opcode for traced/debugged scripts.\\r\\n";
-            config << "OpcodeTrace=0\\r\\n";
-            config << "; Write 0AB1/0AB2 function call diagnostics.\\r\\n";
-            config << "FunctionTrace=0\\r\\n";
-            config << "; Collapse consecutive identical script log messages.\\r\\n";
-            config << "Deduplicate=1\\r\\n\\r\\n";
+            config << "[DebugUtils.ScriptLog]\r\n";
+            config << "Enabled=1\r\n";
+            config << "OpcodeTrace=0\r\n";
+            config << "FunctionTrace=0\r\n";
+            config << "Deduplicate=1\r\n\r\n";
 
-            config << "[DebugUtils.Logs]\\r\\n";
-            config << "; Create and write cleo_memory.log.\\r\\n";
-            config << "Memory=1\\r\\n";
-            config << "; Write detailed high-volume memory trace entries.\\r\\n";
-            config << "MemoryTrace=0\\r\\n";
-            config << "; Create and write cleo_diagnostic.log.\\r\\n";
-            config << "Diagnostic=0\\r\\n";
-
-            config.flush();
-            config.close();
+            config << "[DebugUtils.Logs]\r\n";
+            config << "Memory=1\r\n";
+            config << "MemoryTrace=0\r\n";
+            config << "Diagnostic=0\r\n";
         }
     }
 
@@ -1421,6 +1407,8 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr)
         return;
 
+    WriteOpcodeHistory("crash");
+
     char line[4096];
 
     SYSTEMTIME t{};
@@ -1643,6 +1631,62 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     sprintf_s(line, sizeof(line), "[end_crash] exception=0x%08X",
         info->ExceptionRecord->ExceptionCode);
     WinAppendLine(CrashLogPath(), line);
+}
+
+void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
+{
+    if (thread == nullptr)
+        return;
+
+    OpcodeHistoryEntry entry{};
+    entry.opcode = opcode & 0x7FFF;
+    entry.result = result;
+    entry.offset = static_cast<DWORD>(ScriptOffset(thread));
+    entry.scriptPtr = reinterpret_cast<uintptr_t>(thread);
+    strncpy_s(entry.scriptName, sizeof(entry.scriptName), thread->threadName, _TRUNCATE);
+
+    std::lock_guard<std::mutex> lock(m_opcodeHistoryMutex);
+    m_opcodeHistory[m_opcodeHistoryNext] = entry;
+    m_opcodeHistoryNext = (m_opcodeHistoryNext + 1) % kOpcodeHistorySize;
+    if (m_opcodeHistoryCount < kOpcodeHistorySize)
+        ++m_opcodeHistoryCount;
+}
+
+void DebugUtils::WriteOpcodeHistory(const char* reason)
+{
+    std::array<OpcodeHistoryEntry, kOpcodeHistorySize> snapshot{};
+    size_t count = 0;
+    size_t next = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_opcodeHistoryMutex);
+        count = m_opcodeHistoryCount;
+        next = m_opcodeHistoryNext;
+        snapshot = m_opcodeHistory;
+    }
+
+    WriteCore("[opcode_history] reason='%s' count=%u", reason ? reason : "unknown",
+        static_cast<unsigned>(count));
+
+    if (count == 0)
+        return;
+
+    const size_t start = (count == kOpcodeHistorySize) ? next : 0;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t index = (start + i) % kOpcodeHistorySize;
+        const OpcodeHistoryEntry& e = snapshot[index];
+
+        WriteCore(
+            "[opcode_history] #%03u script='%.8s' ptr=%p opcode=0x%04X result=%u off=0x%08X",
+            static_cast<unsigned>(i + 1),
+            e.scriptName,
+            reinterpret_cast<void*>(e.scriptPtr),
+            e.opcode,
+            e.result,
+            e.offset
+        );
+    }
 }
 
 LONG DebugUtils::HandleException(PEXCEPTION_POINTERS info)
@@ -2178,6 +2222,7 @@ int __stdcall DebugUtils::OnScriptOpcodeAfter(CScriptThread* thread, DWORD opcod
         return 0;
 
     s_instance->m_lastOpcodeResult = static_cast<DWORD>(result);
+    s_instance->RecordOpcode(thread, opcode, static_cast<DWORD>(result));
 
     if (s_instance->m_scriptOpcodeTrace ||
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
