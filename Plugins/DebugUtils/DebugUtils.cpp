@@ -232,6 +232,7 @@ namespace
         switch (message)
         {
         case WM_INITDIALOG:
+        {
             data = reinterpret_cast<CrashDialogData*>(lParam);
             SetWindowLongPtrW(hwnd, DWLP_USER, lParam);
 
@@ -263,6 +264,7 @@ namespace
                 russian ? L"\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0438\u0433\u0440\u0443" : L"Exit game"
             );
             return TRUE;
+        }
 
         case WM_COMMAND:
             switch (LOWORD(wParam))
