@@ -622,6 +622,10 @@ DebugUtils::DebugUtils()
 
     OpenLogs();
     WriteCore("[debugutils] configuration=%s", ConfigPath().c_str());
+    WriteCore(
+        "[debugutils] language=%s",
+        m_languageRussian ? "ru" : "en"
+    );
     WriteCore("[debugutils] log files initialized");
     WriteCoreHeader();
     WriteCoreThreadLayout();
