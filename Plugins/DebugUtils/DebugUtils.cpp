@@ -101,6 +101,72 @@ namespace
         return true;
     }
 
+    struct MainWindowSearchContext
+    {
+        DWORD processId = 0;
+        HWND window = nullptr;
+    };
+
+    static BOOL CALLBACK FindMainWindowProc(HWND hwnd, LPARAM lParam)
+    {
+        MainWindowSearchContext* context =
+            reinterpret_cast<MainWindowSearchContext*>(lParam);
+
+        if (context == nullptr)
+            return FALSE;
+
+        DWORD windowProcessId = 0;
+        GetWindowThreadProcessId(hwnd, &windowProcessId);
+
+        if (windowProcessId != context->processId)
+            return TRUE;
+
+        if (GetWindow(hwnd, GW_OWNER) != nullptr)
+            return TRUE;
+
+        if (!IsWindowVisible(hwnd))
+            return TRUE;
+
+        if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+            return TRUE;
+
+        context->window = hwnd;
+        return FALSE;
+    }
+
+    static HWND FindProcessMainWindow()
+    {
+        MainWindowSearchContext context{};
+        context.processId = GetCurrentProcessId();
+
+        EnumWindows(&FindMainWindowProc, reinterpret_cast<LPARAM>(&context));
+        return context.window;
+    }
+
+    static void PrepareCrashWindow(HWND dialog)
+    {
+        HWND gameWindow = FindProcessMainWindow();
+
+        if (gameWindow != nullptr && gameWindow != dialog)
+        {
+            ShowWindow(gameWindow, SW_MINIMIZE);
+            UpdateWindow(gameWindow);
+        }
+
+        if (dialog != nullptr)
+        {
+            SetWindowPos(
+                dialog,
+                HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+            );
+            ShowWindow(dialog, SW_SHOWNORMAL);
+            SetForegroundWindow(dialog);
+            SetActiveWindow(dialog);
+        }
+    }
+
     static INT_PTR CALLBACK CrashDialogProc(
         HWND hwnd,
         UINT message,
@@ -119,6 +185,7 @@ namespace
 
             SetWindowTextW(hwnd, data->title.c_str());
             SetDlgItemTextW(hwnd, IDC_CRASH_DETAILS, data->details.c_str());
+            PrepareCrashWindow(hwnd);
             SetDlgItemTextW(hwnd, IDC_CRASH_COPY, L"\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c");
             SetDlgItemTextW(hwnd, IDC_CRASH_OPEN_LOG, L"\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043b\u043e\u0433");
             SetDlgItemTextW(hwnd, IDC_CRASH_EXIT, L"\u0417\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0438\u0433\u0440\u0443");
