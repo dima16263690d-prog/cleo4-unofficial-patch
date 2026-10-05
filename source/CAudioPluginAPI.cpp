@@ -69,25 +69,18 @@ extern "C"
         return stream ? stream->GetVolume() : 0.0f;
     }
 
-    void WINAPI CLEO_Audio_SetVolume(DWORD handle, float value, float transitionSeconds)
+    void WINAPI CLEO_Audio_SetVolume(DWORD handle, float value)
     {
         auto stream = CLEO::ResolveAudioStream(handle);
         if (stream)
             stream->SetVolume(value);
-        (void)transitionSeconds;
     }
 
     void WINAPI CLEO_Audio_SetVolumeTransition(DWORD handle, float value, float transitionSeconds)
     {
         auto stream = CLEO::ResolveAudioStream(handle);
         if (stream)
-        {
-            // The legacy setter remains immediate. This API is the explicit
-            // modern transition path used by Audio.cleo.
-            stream->SetSpeed(stream->GetSpeed(), 0.0f);
-            stream->SetVolume(value);
-        }
-        (void)transitionSeconds;
+            stream->SetVolume(value, transitionSeconds);
     }
 
     float WINAPI CLEO_Audio_GetSpeed(DWORD handle)
