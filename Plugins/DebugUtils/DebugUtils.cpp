@@ -1061,7 +1061,20 @@ void DebugUtils::EnsureCrashInfoDatabase()
         }
     }
 
-    if (GetFileAttributesA(pluginCrashInfoRuPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+    bool russianDatabaseReady = false;
+    {
+        std::ifstream file(pluginCrashInfoRuPath);
+        if (file.is_open())
+        {
+            char header[512] = {};
+            file.read(header, sizeof(header) - 1);
+            header[file.gcount()] = '\0';
+            russianDatabaseReady =
+                strstr(header, "# DebugUtils-RU-Database-Version: 1") != nullptr;
+        }
+    }
+
+    if (!russianDatabaseReady)
     {
         HMODULE module = nullptr;
         if (GetModuleHandleExA(
