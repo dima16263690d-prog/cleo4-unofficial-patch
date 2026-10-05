@@ -7,7 +7,8 @@ wait 1000
 if
     31@ == 0
 then
-    0AAC: 31@ = load_audiostream "audio/test.mp3"
+    // Audio files are stored in GTA San Andreas\CLEO\audio\
+    0AAC: 31@ = load_audiostream "cleo/audio/test.mp3"
     if
         31@ <> 0
     then
