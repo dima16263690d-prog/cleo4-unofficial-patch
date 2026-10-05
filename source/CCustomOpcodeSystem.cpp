@@ -1596,8 +1596,8 @@ namespace CLEO {
 		{
 			switch (action)
 			{
-			case 0: stream->Stop();   break;
-			case 1: stream->Play();   break;
+			case 0: stream->LegacyStop(); break;
+			case 1: stream->LegacyPlay(); break;
 			case 2: stream->Pause();  break;
 			case 3: stream->Resume(); break;
 			default:
