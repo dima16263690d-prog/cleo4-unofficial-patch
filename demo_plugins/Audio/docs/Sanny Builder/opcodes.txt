@@ -1,0 +1,14 @@
+2500: is_audio_stream_playing 1@
+2501: 2@ = get_audiostream_duration 1@
+2502: 2@ = get_audio_stream_speed 1@
+2503: set_audio_stream_speed 1@ speed 2@
+2504: set_audio_stream_volume_with_transition 1@ volume 2@ time_ms 3@
+2505: set_audio_stream_speed_with_transition 1@ speed 2@ time_ms 3@
+2506: set_audio_stream_source_size 1@ radius 2@
+2507: 2@ = get_audio_stream_progress 1@
+2508: set_audio_stream_progress 1@ 2@
+2509: 2@ = get_audio_stream_type 1@
+250A: set_audio_stream_type 1@ type 2@
+250B: 2@ = get_audio_stream_progress_seconds 1@
+250C: set_audio_stream_progress_seconds 1@ 2@
+250D: set_audio_stream_looping 1@ enable 2@
