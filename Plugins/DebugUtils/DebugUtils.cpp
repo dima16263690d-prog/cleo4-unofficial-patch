@@ -2018,15 +2018,16 @@ void DebugUtils::LoadCrashInfoList()
         return loadedEntries;
     };
 
-    // Base: established GTA SA 1.0 US signatures from JuniorDjjr/CrashInfo.
-    // This is intentionally a separate file so upstream updates never erase
-    // project-specific signatures.
-    const std::string upstreamPath = UpstreamCrashInfoPath();
-    loadFile(upstreamPath, "CrashInfo-upstream");
-
-    // Local overlay: project-verified signatures and future additions.
+    // Load the local project overlay first. This gives project-verified
+    // signatures priority when the same address exists in both databases.
     const std::string localPath = CrashInfoPath();
     loadFile(localPath, "CLEO-local");
+
+    // Base: established GTA SA 1.0 US signatures from JuniorDjjr/CrashInfo.
+    // It is intentionally kept in a separate file so upstream updates never
+    // erase project-specific signatures.
+    const std::string upstreamPath = UpstreamCrashInfoPath();
+    loadFile(upstreamPath, "CrashInfo-upstream");
 
     if (m_crashInfo.empty())
     {
