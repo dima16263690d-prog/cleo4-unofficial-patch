@@ -86,3 +86,22 @@ Expected:
 - `[STACK WALK]` contains more than frame `#00` when DbgHelp can unwind the current call chain.
 - Frame modules are resolved where possible instead of all frames being `<unknown>`.
 - The report still keeps CLEO script/opcode information separate from crash causality.
+
+
+## Language / localization test
+
+INI:
+- `[DebugUtils.General]`
+- `Language=en` for the English crash window.
+- `Language=ru` for the Russian crash window.
+
+CrashInfo:
+- `CLEO-CrashList.txt` is the complete English verified baseline.
+- `CLEO-CrashList-RU.txt` contains Russian text overrides.
+- With `Language=ru`, DebugUtils loads the English baseline and applies the Russian overrides.
+- Entries without a Russian override remain available and use the English text.
+
+Expected:
+- Startup core log contains `[debugutils] language=en` or `language=ru`.
+- Crash window buttons and labels follow the selected language.
+- A localized CrashInfo entry shows Russian Issue/About/Solution text.
