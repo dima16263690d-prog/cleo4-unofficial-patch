@@ -136,6 +136,30 @@ DWORD WINAPI CLEO_GetScriptTextureById(CScriptThread* thread, int id); // ret Rw
 
 HSTREAM WINAPI CLEO_GetInternalAudioStream(CScriptThread* thread, DWORD stream); // arg CAudioStream *
 
+
+/*
+    Extended Audio API used by the optional Audio.cleo plugin.
+    These functions operate on the same stream handles returned by the
+    legacy CLEO 4 audio opcodes; they do not create a second BASS runtime.
+*/
+BOOL  WINAPI CLEO_Audio_IsValidStream(DWORD stream);
+DWORD WINAPI CLEO_Audio_GetState(DWORD stream);
+void  WINAPI CLEO_Audio_SetState(DWORD stream, DWORD action);
+float WINAPI CLEO_Audio_GetLength(DWORD stream);
+float WINAPI CLEO_Audio_GetDuration(DWORD stream);
+float WINAPI CLEO_Audio_GetVolume(DWORD stream);
+void  WINAPI CLEO_Audio_SetVolume(DWORD stream, float value);
+void  WINAPI CLEO_Audio_SetVolumeTransition(DWORD stream, float value, float transitionSeconds);
+float WINAPI CLEO_Audio_GetSpeed(DWORD stream);
+void  WINAPI CLEO_Audio_SetSpeed(DWORD stream, float value, float transitionSeconds);
+float WINAPI CLEO_Audio_GetProgress(DWORD stream);
+void  WINAPI CLEO_Audio_SetProgress(DWORD stream, float value);
+BOOL  WINAPI CLEO_Audio_GetLooping(DWORD stream);
+void  WINAPI CLEO_Audio_SetLooping(DWORD stream, BOOL enable);
+DWORD WINAPI CLEO_Audio_GetType(DWORD stream);
+void  WINAPI CLEO_Audio_SetType(DWORD stream, DWORD type);
+BOOL  WINAPI CLEO_Audio_Set3dSourceSize(DWORD stream, float radius);
+
 CScriptThread* WINAPI CLEO_CreateCustomScript(CScriptThread* fromThread, const char *script_name, int label);
 
 CScriptThread* WINAPI CLEO_GetLastCreatedCustomScript();
