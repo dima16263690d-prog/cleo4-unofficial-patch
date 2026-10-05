@@ -424,20 +424,20 @@ namespace
         CloseHandle(file);
     }
 
-    void WinAppendCrashRawLine(const char* text)
+    void WinWriteTextFile(const std::string& path, const std::string& text)
     {
-        if (text == nullptr)
+        if (path.empty() || text.empty())
             return;
 
         CreateDirectoryA("cleo", nullptr);
         CreateDirectoryA("cleo\\debug", nullptr);
 
         HANDLE file = CreateFileA(
-            "cleo\\debug\\gta_crash_hook.log",
-            FILE_APPEND_DATA,
+            path.c_str(),
+            GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr,
-            OPEN_ALWAYS,
+            CREATE_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             nullptr
         );
@@ -446,40 +446,25 @@ namespace
             return;
 
         DWORD written = 0;
-        WriteFile(file, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
-        WriteFile(file, "\r\n", 2, &written, nullptr);
+        const DWORD bytes = static_cast<DWORD>(
+            std::min<size_t>(text.size(), 0x7FFFFFFFu)
+        );
+
+        const BOOL ok = WriteFile(
+            file,
+            text.data(),
+            bytes,
+            &written,
+            nullptr
+        );
+
+        if (ok && written == bytes)
+            FlushFileBuffers(file);
+
         CloseHandle(file);
     }
 
-    void WriteCrashRawMarker(PEXCEPTION_POINTERS info)
-    {
-        if (info == nullptr || info->ExceptionRecord == nullptr)
-            return;
-
-        char line[512] = {};
-        const EXCEPTION_RECORD* record = info->ExceptionRecord;
-
-        sprintf_s(
-            line, sizeof(line),
-            "[crash_hook] VEH caught exception code=0x%08X address=0x%08X",
-            record->ExceptionCode,
-            static_cast<DWORD>(reinterpret_cast<uintptr_t>(record->ExceptionAddress))
-        );
-
-        WinAppendCrashRawLine(line);
-
-        if (record->NumberParameters >= 2)
-        {
-            sprintf_s(
-                line, sizeof(line),
-                "[crash_hook] access_type=%u target=0x%08X",
-                static_cast<unsigned>(record->ExceptionInformation[0]),
-                static_cast<DWORD>(record->ExceptionInformation[1])
-            );
-            WinAppendCrashRawLine(line);
-        }
-    }
-
+    void SkipUnusedVarArgs(CScriptThread* thread)
     void SkipUnusedVarArgs(CScriptThread* thread)
     {
         if (!thread)
@@ -2235,6 +2220,247 @@ bool DebugUtils::SafeReadDword(const DWORD* address, DWORD& value)
     {
         return false;
     }
+}
+
+namespace
+{
+    static volatile LONG g_dbgHelpActive = 0;
+
+    static BOOL CALLBACK DebugUtilsReadProcessMemory(
+        HANDLE process,
+        DWORD64 baseAddress,
+        PVOID buffer,
+        DWORD size,
+        LPDWORD bytesRead
+    )
+    {
+        SIZE_T read = 0;
+        if (!ReadProcessMemory(
+                process,
+                reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(baseAddress)),
+                buffer,
+                size,
+                &read))
+        {
+            if (bytesRead != nullptr)
+                *bytesRead = 0;
+            return FALSE;
+        }
+
+        if (bytesRead != nullptr)
+            *bytesRead = static_cast<DWORD>(read);
+
+        return TRUE;
+    }
+
+    static HMODULE GetDebugHelpModule()
+    {
+        return LoadLibraryA("DbgHelp.dll");
+    }
+}
+
+std::vector<DWORD> DebugUtils::BuildStackWalk(
+    PEXCEPTION_POINTERS info,
+    DWORD maxFrames
+)
+{
+    std::vector<DWORD> frames;
+
+    if (info == nullptr || info->ContextRecord == nullptr || maxFrames == 0)
+        return frames;
+
+    if (InterlockedCompareExchange(&g_dbgHelpActive, 1, 0) != 0)
+        return frames;
+
+    HMODULE dbgHelp = GetDebugHelpModule();
+    if (dbgHelp == nullptr)
+    {
+        InterlockedExchange(&g_dbgHelpActive, 0);
+        return frames;
+    }
+
+    using StackWalk64Proc = decltype(&StackWalk64);
+    using SymInitializeProc = decltype(&SymInitialize);
+    using SymCleanupProc = decltype(&SymCleanup);
+    using SymFunctionTableAccess64Proc = decltype(&SymFunctionTableAccess64);
+    using SymGetModuleBase64Proc = decltype(&SymGetModuleBase64);
+
+    const auto pStackWalk64 =
+        reinterpret_cast<StackWalk64Proc>(GetProcAddress(dbgHelp, "StackWalk64"));
+    const auto pSymInitialize =
+        reinterpret_cast<SymInitializeProc>(GetProcAddress(dbgHelp, "SymInitialize"));
+    const auto pSymCleanup =
+        reinterpret_cast<SymCleanupProc>(GetProcAddress(dbgHelp, "SymCleanup"));
+    const auto pSymFunctionTableAccess64 =
+        reinterpret_cast<SymFunctionTableAccess64Proc>(
+            GetProcAddress(dbgHelp, "SymFunctionTableAccess64"));
+    const auto pSymGetModuleBase64 =
+        reinterpret_cast<SymGetModuleBase64Proc>(
+            GetProcAddress(dbgHelp, "SymGetModuleBase64"));
+
+    if (pStackWalk64 == nullptr ||
+        pSymFunctionTableAccess64 == nullptr ||
+        pSymGetModuleBase64 == nullptr)
+    {
+        FreeLibrary(dbgHelp);
+        InterlockedExchange(&g_dbgHelpActive, 0);
+        return frames;
+    }
+
+    const HANDLE process = GetCurrentProcess();
+    const HANDLE thread = GetCurrentThread();
+
+    bool symbolsInitialized = false;
+
+    __try
+    {
+        if (pSymInitialize != nullptr)
+            symbolsInitialized = pSymInitialize(process, nullptr, TRUE) != FALSE;
+
+        CONTEXT context = *info->ContextRecord;
+        STACKFRAME64 frame{};
+
+        frame.AddrPC.Offset = context.Eip;
+        frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = context.Ebp;
+        frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = context.Esp;
+        frame.AddrStack.Mode = AddrModeFlat;
+
+        frames.push_back(context.Eip);
+
+        while (frames.size() < maxFrames)
+        {
+            const BOOL ok = pStackWalk64(
+                IMAGE_FILE_MACHINE_I386,
+                process,
+                thread,
+                &frame,
+                &context,
+                &DebugUtilsReadProcessMemory,
+                reinterpret_cast<PFUNCTION_TABLE_ACCESS_ROUTINE64>(
+                    pSymFunctionTableAccess64),
+                reinterpret_cast<PGET_MODULE_BASE_ROUTINE64>(
+                    pSymGetModuleBase64),
+                nullptr
+            );
+
+            if (!ok)
+                break;
+
+            const DWORD address =
+                static_cast<DWORD>(frame.AddrPC.Offset);
+
+            if (address == 0 ||
+                address == frames.back())
+                break;
+
+            frames.push_back(address);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        // Never let a broken stack prevent the crash report from being written.
+    }
+
+    if (symbolsInitialized && pSymCleanup != nullptr)
+        pSymCleanup(process);
+
+    FreeLibrary(dbgHelp);
+    InterlockedExchange(&g_dbgHelpActive, 0);
+
+    return frames;
+}
+
+std::string DebugUtils::AccessTypeName(int accessType)
+{
+    switch (accessType)
+    {
+    case 0: return "READ";
+    case 1: return "WRITE";
+    case 8: return "EXECUTE";
+    default: return "UNKNOWN";
+    }
+}
+
+std::string DebugUtils::MemoryStateName(DWORD state)
+{
+    switch (state)
+    {
+    case MEM_COMMIT: return "COMMIT";
+    case MEM_RESERVE: return "RESERVE";
+    case MEM_FREE: return "FREE";
+    default: return "UNKNOWN";
+    }
+}
+
+std::string DebugUtils::MemoryProtectName(DWORD protect)
+{
+    const DWORD base = protect & 0xFFu;
+
+    switch (base)
+    {
+    case PAGE_NOACCESS: return "NOACCESS";
+    case PAGE_READONLY: return "READONLY";
+    case PAGE_READWRITE: return "READWRITE";
+    case PAGE_WRITECOPY: return "WRITECOPY";
+    case PAGE_EXECUTE: return "EXECUTE";
+    case PAGE_EXECUTE_READ: return "EXECUTE_READ";
+    case PAGE_EXECUTE_READWRITE: return "EXECUTE_READWRITE";
+    case PAGE_EXECUTE_WRITECOPY: return "EXECUTE_WRITECOPY";
+    default: return "UNKNOWN";
+    }
+}
+
+std::string DebugUtils::BuildCrashFingerprint(
+    DWORD exceptionCode,
+    DWORD faultAddress,
+    DWORD faultRva,
+    const std::string& faultModule,
+    int accessType,
+    uintptr_t targetAddress,
+    const std::string& lastScript,
+    DWORD lastOpcode,
+    const std::vector<DWORD>& backtrace
+)
+{
+    uint32_t hash = 2166136261u;
+
+    auto mixByte = [&hash](BYTE value)
+    {
+        hash ^= value;
+        hash *= 16777619u;
+    };
+
+    auto mixDword = [&mixByte](DWORD value)
+    {
+        mixByte(static_cast<BYTE>(value));
+        mixByte(static_cast<BYTE>(value >> 8));
+        mixByte(static_cast<BYTE>(value >> 16));
+        mixByte(static_cast<BYTE>(value >> 24));
+    };
+
+    mixDword(exceptionCode);
+    mixDword(faultAddress);
+    mixDword(faultRva);
+    mixDword(static_cast<DWORD>(accessType));
+    mixDword(static_cast<DWORD>(targetAddress));
+
+    for (unsigned char ch : faultModule)
+        mixByte(ch);
+
+    for (unsigned char ch : lastScript)
+        mixByte(ch);
+
+    mixDword(lastOpcode == 0xFFFFFFFF ? 0xFFFFFFFFu : lastOpcode & 0x7FFFu);
+
+    const size_t count = std::min<size_t>(backtrace.size(), 8);
+    for (size_t i = 0; i < count; ++i)
+        mixDword(backtrace[i]);
+
+    char result[16] = {};
+    sprintf_s(result, sizeof(result), "%08X", hash);
+    return result;
 }
 
 void DebugUtils::ShowCrashDialog(
