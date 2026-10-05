@@ -1566,6 +1566,12 @@ void DebugUtils::LoadCrashInfoList()
         if (current == nullptr)
             continue;
 
+        if (line.rfind("Name: ", 0) == 0)
+        {
+            current->name = line.substr(6);
+            continue;
+        }
+
         if (line.rfind("Backtrace:", 0) == 0)
         {
             ExtractHexAddresses(line, 10, current->backtraceAddresses);
@@ -1741,6 +1747,41 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     const DWORD faultAddress = reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
     const std::string faultModule = ModuleNameForAddress(faultAddress);
 
+    // Classify the crash immediately using the address/module signature.
+    // Backtrace-dependent rules are resolved again after the backtrace is built.
+    const CrashInfoEntry* immediateMatch = FindCrashInfo(
+        faultAddress,
+        faultModule,
+        {}
+    );
+
+    if (immediateMatch != nullptr)
+    {
+        const char* crashName =
+            immediateMatch->name.empty()
+                ? "UNNAMED_SIGNATURE"
+                : immediateMatch->name.c_str();
+
+        sprintf_s(
+            line, sizeof(line),
+            "[CRASH_IDENTIFIED] name="%s" address=0x%08X module=%s confidence=%s",
+            crashName,
+            faultAddress,
+            faultModule.c_str(),
+            immediateMatch->wildcardError ? "fallback" : "exact"
+        );
+    }
+    else
+    {
+        sprintf_s(
+            line, sizeof(line),
+            "[CRASH_IDENTIFIED] name="UNKNOWN" address=0x%08X module=%s confidence=none",
+            faultAddress,
+            faultModule.c_str()
+        );
+    }
+    WinAppendLine(CrashLogPath(), line);
+
     sprintf_s(
         line, sizeof(line),
         "[crash] %04u-%02u-%02u %02u:%02u:%02u.%03u code=0x%08X type=%s address=0x%08X module=%s pid=%u tid=%u",
@@ -1906,8 +1947,9 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         const DWORD matchedAddress = match->errorAddresses.empty() ? 0 : match->errorAddresses.front();
         sprintf_s(
             line, sizeof(line),
-            "[crashinfo_match] mode=%s address=0x%08X backtrace_rules=%u %s",
+            "[crashinfo_match] mode=%s name="%s" address=0x%08X backtrace_rules=%u %s",
             match->wildcardError ? "wildcard" : "exact",
+            match->name.empty() ? "UNNAMED_SIGNATURE" : match->name.c_str(),
             matchedAddress,
             static_cast<unsigned>(match->backtraceAddresses.size()),
             match->description.c_str()
