@@ -68,6 +68,7 @@ void WINAPI CLEO_DebugRecordCrashOpcode(
     DWORD opcodeOffset,
     LONG result
 );
+void WINAPI CLEO_DebugRecordCrashOpcodeResult(LONG result);
 BOOL WINAPI CLEO_DebugGetCrashSnapshot(CLEO_CrashSnapshot* snapshot);
 
 #ifdef __cplusplus
