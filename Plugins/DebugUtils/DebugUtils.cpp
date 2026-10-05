@@ -1641,11 +1641,33 @@ void DebugUtils::RecordOpcode(CScriptThread* thread, DWORD opcode, DWORD result)
     OpcodeHistoryEntry entry{};
     entry.opcode = opcode & 0x7FFF;
     entry.result = result;
-    entry.offset = static_cast<DWORD>(ScriptOffset(thread));
+    entry.offset = static_cast<DWORD>(ScriptOffset(thread) >= 2 ? ScriptOffset(thread) - 2 : 0);
     entry.scriptPtr = reinterpret_cast<uintptr_t>(thread);
     strncpy_s(entry.scriptName, sizeof(entry.scriptName), thread->threadName, _TRUNCATE);
 
     std::lock_guard<std::mutex> lock(m_opcodeHistoryMutex);
+
+    // The Before callback creates a pending entry. The After callback fills
+    // that same entry with the opcode result. If an exception interrupts the
+    // opcode, the pending entry remains as the last executed opcode.
+    if (result != 0xFFFFFFFF &&
+        m_opcodeHistoryCount > 0)
+    {
+        const size_t lastIndex =
+            (m_opcodeHistoryNext + kOpcodeHistorySize - 1) % kOpcodeHistorySize;
+        OpcodeHistoryEntry& last = m_opcodeHistory[lastIndex];
+
+        if (last.result == 0xFFFFFFFF &&
+            last.opcode == entry.opcode &&
+            last.scriptPtr == entry.scriptPtr)
+        {
+            last.result = result;
+            last.offset = entry.offset;
+            strncpy_s(last.scriptName, sizeof(last.scriptName), entry.scriptName, _TRUNCATE);
+            return;
+        }
+    }
+
     m_opcodeHistory[m_opcodeHistoryNext] = entry;
     m_opcodeHistoryNext = (m_opcodeHistoryNext + 1) % kOpcodeHistorySize;
     if (m_opcodeHistoryCount < kOpcodeHistorySize)
@@ -1963,6 +1985,7 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
     s_instance->m_lastOpcodeOffset =
         static_cast<DWORD>(ScriptOffset(thread) >= 2 ? ScriptOffset(thread) - 2 : 0);
     s_instance->m_lastOpcodeResult = 0xFFFFFFFF;
+    s_instance->RecordOpcode(thread, opcode, 0xFFFFFFFF);
 
     const bool notFlag = thread->notFlag != 0;
 
