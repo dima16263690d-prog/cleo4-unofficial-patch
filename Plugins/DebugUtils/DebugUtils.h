@@ -263,6 +263,11 @@ private:
         size_t scanBytes,
         size_t maxCandidates
     );
+    static std::vector<DWORD> BuildHeuristicStackFrames(
+        DWORD stackPointer,
+        size_t scanBytes,
+        size_t maxFrames
+    );
     static std::string AccessTypeName(int accessType);
     static std::string MemoryStateName(DWORD state);
     static std::string MemoryProtectName(DWORD protect);
