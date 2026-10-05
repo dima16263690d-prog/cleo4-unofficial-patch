@@ -156,8 +156,10 @@ namespace CLEO
 
         // Legacy actions
         void Play();
+        void LegacyPlay();
         void Pause(bool change_state = true);
         void Stop();
+        void LegacyStop();
         void Resume();
         DWORD GetLength();             // legacy-compatible integer seconds
         DWORD GetState();              // legacy-compatible: -1/1/2
