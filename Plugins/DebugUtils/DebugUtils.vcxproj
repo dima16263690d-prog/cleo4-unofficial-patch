@@ -84,6 +84,9 @@
     <None Include="CrashInfo\CLEO-CrashList.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="CrashInfo\CLEO-CrashList-RU.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="CrashInfo\CLEO-CrashAuto.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
