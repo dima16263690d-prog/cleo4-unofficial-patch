@@ -98,18 +98,20 @@ Optional Rockstar debug opcodes can be enabled with LegacyDebugOpcodes=1:
 
 The 2101/2102 string parameters use CLEO opcode formatting, including varargs.
 
-## CrashInfo
+## CLEO Crash Database
 
-Reference database:
+DebugUtils uses its own local crash database:
 
-https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt
+cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt
 
-Development download helper:
+The database is bundled inside DebugUtils.cleo and is created automatically on first start. There is no network download and no automatic synchronization with another crash database.
 
-powershell -ExecutionPolicy Bypass -File tools\Get-CrashInfo.ps1 -GtaPath "C:\Games\GTA San Andreas"
+The matching engine supports:
 
-Expected local database:
+- exact fault addresses;
+- faulting module names;
+- wildcard signatures;
+- Backtrace address rules;
+- Backtrace module rules.
 
-cleo\debug\CrashInfo\EN-CrashList.txt
-
-DebugUtils also understands exact Error addresses, wildcard Error entries such as 0x*, and Backtrace rules. Crash reports include the exception type/code, fault module/base/RVA, registers, segment context, last script/opcode, exception parameters, memory region, process memory, a bounded backtrace, CrashInfo match details, and the active script queue. A bundled GTA SA 1.0 US database is included in the project output, with runtime fallback to cleo\cleo_plugins\CrashInfo\EN-CrashList.txt.
+New entries are added only from our own reproduced or verified CLEO/GTA SA test results.
