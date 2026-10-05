@@ -48,9 +48,9 @@ cleo_diagnostic.log:
 
 Repeated identical lines are collapsed into a single [repeat] count entry. High-frequency 0AB1/0AB2 function traces are disabled unless FunctionTrace=1. Low-level memory protection tracing is disabled unless MemoryTrace=1.
 
-The core log has a hard 8 KiB limit. Once the limit is reached, no further core records are appended.
+The core log rotates at 1 MiB instead of using an 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single [repeat] record.
 
-Each periodic memory sample stays compact: it records process memory together with the active script queue, native/custom counts, queue/custom/private-memory deltas, loaded CLEO/DebugUtils image sizes, active custom-script object storage, unique custom code-buffer bytes, and a combined known CLEO footprint. The process totals are exact; the CLEO footprint is explicitly limited to measured CLEO-owned categories and does not pretend to account for arbitrary GTA-owned allocations. No extra per-frame memory or script lines are generated.
+Memory diagnostics are opt-in. When Memory=0 there is no periodic memory scan. When enabled, samples stay compact and record only measured process/CLEO categories.
 
 ## Performance model
 
@@ -69,13 +69,13 @@ FunctionTrace=0
 Deduplicate=1
 
 [DebugUtils.Logs]
-Memory=1
+Memory=0
 MemoryTrace=0
 Diagnostic=0
 
 [DebugUtils.Limits]
-Command=2000000
-Time=5
+Command=0
+Time=0
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -139,9 +139,8 @@ the last script pointer/name, opcode, script offset, result state and game tick.
 DebugUtils reads this snapshot only when a crash occurs. It does not walk the
 GTA active-script queue and does not write per-opcode crash data to disk.
 
-Crash reports contain the fault address, GTA module/RVA, exception information,
-instruction bytes, registers, stack, EBP backtrace and the last CLEO execution
-context. The interactive crash window can copy the report, open the log, or
+Crash reports contain the fault address, GTA module/RVA, access target, registers,
+instruction bytes, StackWalk64 backtrace and the last CLEO execution context. The interactive crash window can copy the report, open the log, or
 terminate GTA.
 
 The fault address comes directly from the Windows exception record. Additional
