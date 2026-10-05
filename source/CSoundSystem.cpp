@@ -614,17 +614,30 @@ namespace CLEO
     }
 
     C3DAudioStream::C3DAudioStream(const char *src)
-        : CAudioStream(src),
+        : CAudioStream(),
           link(nullptr),
           position{0, 0, 0},
           sourceRadius(0.5f)
     {
         is3d = true;
 
-        if (!streamInternal)
-            return;
+        unsigned flags =
+            BASS_SAMPLE_3D |
+            BASS_SAMPLE_MONO |
+            BASS_SAMPLE_SOFTWARE |
+            BASS_STREAM_PRESCAN;
 
-        // 3D streams must be mono and software-mixed, matching BASS's 3D requirements.
+        if (GetInstance().SoundSystem.bUseFPAudio)
+            flags |= BASS_SAMPLE_FLOAT;
+
+        if (!(streamInternal = BASS_StreamCreateFile(FALSE, src, 0, 0, flags)) &&
+            !(streamInternal = BASS_StreamCreateURL(src, 0, flags, nullptr, nullptr)))
+        {
+            TRACE("Loading 3D audiostream %s failed. Error code: %d", src, BASS_ErrorGetCode());
+            return;
+        }
+
+        BASS_ChannelGetAttribute(streamInternal, BASS_ATTRIB_FREQ, &rate);
         BASS_ChannelSet3DAttributes(
             streamInternal,
             BASS_3DMODE_NORMAL,
@@ -635,20 +648,7 @@ namespace CLEO
             -1.0f
         );
         BASS_ChannelSetAttribute(streamInternal, BASS_ATTRIB_VOL, 0.0f);
-
-        // Recreate a 3D stream with the correct format flags if the generic
-        // constructor could not create an appropriate channel.
-        if (!BASS_ChannelSet3DAttributes(
-                streamInternal,
-                BASS_3DMODE_NORMAL,
-                sourceRadius,
-                -1.0f,
-                -1,
-                -1,
-                -1.0f))
-        {
-            TRACE("Failed to configure 3D audio stream %p", streamInternal);
-        }
+        OK = true;
     }
 
     C3DAudioStream::~C3DAudioStream()
