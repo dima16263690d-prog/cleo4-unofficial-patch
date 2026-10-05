@@ -87,6 +87,24 @@ namespace CLEO
 
     int NotifyScriptOpcodeProcessBefore(CRunningScript* script, DWORD opcode)
     {
+        if (g_crashSnapshotEnabled != 0 && script != nullptr)
+        {
+            DWORD offset = 0;
+            if (script->ip != nullptr && script->baseIp != nullptr &&
+                script->ip >= script->baseIp + 2)
+            {
+                offset = static_cast<DWORD>(script->ip - script->baseIp - 2);
+            }
+
+            CLEO_DebugRecordCrashOpcode(
+                reinterpret_cast<uintptr_t>(script),
+                script->threadName,
+                opcode,
+                offset,
+                -1
+            );
+        }
+
         if (auto callback = GetCallback(CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE))
             return reinterpret_cast<ScriptOpcodeProcessBeforeCallback>(callback)(script, opcode);
 
@@ -95,6 +113,24 @@ namespace CLEO
 
     OpcodeResult NotifyScriptOpcodeProcessAfter(CRunningScript* script, DWORD opcode, OpcodeResult result)
     {
+        if (g_crashSnapshotEnabled != 0 && script != nullptr)
+        {
+            DWORD offset = 0;
+            if (script->ip != nullptr && script->baseIp != nullptr &&
+                script->ip >= script->baseIp + 2)
+            {
+                offset = static_cast<DWORD>(script->ip - script->baseIp - 2);
+            }
+
+            CLEO_DebugRecordCrashOpcode(
+                reinterpret_cast<uintptr_t>(script),
+                script->threadName,
+                opcode,
+                offset,
+                static_cast<LONG>(result)
+            );
+        }
+
         if (auto callback = GetCallback(CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER))
         {
             const int callbackResult =
