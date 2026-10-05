@@ -3445,10 +3445,13 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
     else
     {
-        output +=
+        appendf(
             "database=NONE\r\n"
-            "name=Unknown / Unclassified Crash\r\n"
-            "confidence=UNKNOWN\r\n";
+            "name=%s\r\n"
+            "confidence=%s",
+            crashDisplayName.c_str(),
+            confidence
+        );
     }
 
     const bool faultInCleo =
