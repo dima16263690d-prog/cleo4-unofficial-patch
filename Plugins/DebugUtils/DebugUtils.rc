@@ -1,0 +1,4 @@
+#include "resource.h"
+#include <windows.h>
+
+IDR_CRASHINFO RCDATA "CrashInfo\\EN-CrashList.txt"
