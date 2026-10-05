@@ -83,6 +83,7 @@ private:
     size_t m_scriptBytes = 0;
     size_t m_scriptCommands = 0;
     bool m_crashHandlerInstalled = false;
+    PVOID m_vectoredHandler = nullptr;
     volatile LONG m_crashInProgress = 0;
     volatile DWORD m_lastOpcode = 0xFFFFFFFF;
     volatile DWORD m_lastOpcodeOffset = 0;
