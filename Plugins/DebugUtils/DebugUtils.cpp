@@ -257,7 +257,6 @@ DebugUtils::DebugUtils()
     LoadConfig();
     OpenLogs();
     EnsureCrashInfoDatabase();
-    UpdateCrashInfoDatabaseIfNeeded();
     LoadCrashInfoList();
     WriteCoreHeader();
     WriteCoreThreadLayout();
