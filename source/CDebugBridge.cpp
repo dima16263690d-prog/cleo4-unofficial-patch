@@ -113,6 +113,14 @@ extern "C" void WINAPI CLEO_DebugRecordCrashOpcode(
         g_threadCrashSnapshot.scriptName[5] = '\0';
     }
 }
+extern "C" void WINAPI CLEO_DebugRecordCrashOpcodeResult(LONG result)
+{
+    if (CLEO::g_crashSnapshotEnabled == 0)
+        return;
+
+    g_threadCrashSnapshot.opcodeResult = result;
+}
+
 extern "C" BOOL WINAPI CLEO_DebugGetCrashSnapshot(
     CLEO_CrashSnapshot* snapshot
 )
