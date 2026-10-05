@@ -378,13 +378,7 @@ void DebugUtils::LoadConfig()
             config << "[DebugUtils.Logs]\r\n";
             config << "Memory=1\r\n";
             config << "MemoryTrace=0\r\n";
-            config << "Diagnostic=0\r\n\r\n";
-
-            config << "[DebugUtils.CrashInfo]\r\n";
-            config << "Update=1\r\n";
-            config << "LastUpdate=1970-01-01\r\n";
-            config << "ConnectionTimeout=3\r\n";
-            config << "DownloadTimeout=4\r\n";
+            config << "Diagnostic=0\r\n";
         }
     }
 
@@ -459,27 +453,6 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
-
-    m_crashInfoAutoUpdate =
-        GetPrivateProfileIntA(
-            "DebugUtils.CrashInfo", "Update",
-            1,
-            path.c_str()
-        ) != 0;
-
-    m_crashInfoConnectionTimeoutMs =
-        static_cast<DWORD>(GetPrivateProfileIntA(
-            "DebugUtils.CrashInfo", "ConnectionTimeout",
-            3,
-            path.c_str()
-        )) * 1000u;
-
-    m_crashInfoDownloadTimeoutMs =
-        static_cast<DWORD>(GetPrivateProfileIntA(
-            "DebugUtils.CrashInfo", "DownloadTimeout",
-            4,
-            path.c_str()
-        )) * 1000u;
 }
 
 std::string DebugUtils::DebugDir() const
@@ -516,15 +489,15 @@ std::string DebugUtils::CrashLogPath() const
 
 std::string DebugUtils::CrashInfoPath() const
 {
-    return "cleo\\cleo_plugins\\CrashInfo\\EN-CrashList.txt";
+    return "cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt";
 }
 
 void DebugUtils::EnsureCrashInfoDatabase()
 {
     const std::string pluginCrashInfoDir = "cleo\\cleo_plugins\\CrashInfo\\";
-    const std::string pluginCrashInfoPath = pluginCrashInfoDir + "EN-CrashList.txt";
+    const std::string pluginCrashInfoPath = pluginCrashInfoDir + "CLEO-CrashList.txt";
     const std::string debugCrashInfoDir = DebugDir() + "CrashInfo\\";
-    const std::string debugCrashInfoPath = debugCrashInfoDir + "EN-CrashList.txt";
+    const std::string debugCrashInfoPath = debugCrashInfoDir + "CLEO-CrashList.txt";
 
     CreateDirectoryA("cleo", nullptr);
     CreateDirectoryA("cleo\\cleo_plugins", nullptr);
@@ -638,7 +611,7 @@ void DebugUtils::EnsureCrashInfoDatabase()
     if (size != 0)
     {
         WriteCore(
-            "[crashinfo] database ready path=%s size=%u source=%s",
+            "[crashinfo] own database ready path=%s size=%u source=%s",
             pluginCrashInfoPath.c_str(),
             static_cast<unsigned>(size),
             source.c_str()
@@ -1462,15 +1435,14 @@ void DebugUtils::LoadCrashInfoList()
 
     if (!file.is_open())
     {
-        loadedPath = DebugDir() + "CrashInfo\\EN-CrashList.txt";
+        loadedPath = DebugDir() + "CrashInfo\\CLEO-CrashList.txt";
         file.open(loadedPath);
     }
     if (!file.is_open())
     {
         WriteCore(
-            "[crashinfo] database not found at %s; source=%s",
-            loadedPath.c_str(),
-            "https://github.com/JuniorDjjr/CrashInfo/blob/main/Lists/GTA-SA-10US/EN-CrashList.txt"
+            "[crashinfo] own database not found at %s",
+            loadedPath.c_str()
         );
         return;
     }
