@@ -48,3 +48,6 @@ EXPORTS
 	_CLEO_Audio_GetType@4					@45
 	_CLEO_Audio_SetType@8					@46
 	_CLEO_Audio_Set3dSourceSize@8				@47
+	_CLEO_DebugSetCrashSnapshotEnabled@4		@48
+	_CLEO_DebugRecordCrashOpcode@20		@49
+	_CLEO_DebugGetCrashSnapshot@4		@50
