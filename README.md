@@ -202,3 +202,81 @@ Legacy 0AAC/0AC1
 Это позволяет постепенно переносить полезные Audio-возможности из исследования CLEO 5 в CLEO 4, не заменяя legacy audio layer.
 
 Интеграционный тест: `tests/AUDIO_25XX_TEST.cs`.
+
+
+## Текущее состояние разработки — test-xx02
+
+На этом этапе ветка `test-xx02` содержит проверенное развитие проекта поверх базового CLEO 4.4.4. Основной принцип сохраняется: улучшать CLEO 4, не ломая legacy-скрипты, legacy opcode и существующую модель совместимости.
+
+### DebugUtils — самостоятельная система диагностики
+
+Добавлен и расширен отдельный `DebugUtils.cleo`, предназначенный для лёгкой диагностики CLEO/GTA SA без постоянной тяжёлой crash-аналитики в обычном игровом цикле.
+
+Что уже сделано:
+
+- отдельные структурированные логи для core, scripts, memory, diagnostics и crash reports;
+- фоновая запись script-log через ограниченную очередь, чтобы диск не обслуживался внутри script callback;
+- дедупликация повторяющихся сообщений и ротация core-log на 1 MiB вместо старого жёсткого лимита;
+- отдельный crash handler с lazy-подключением DbgHelp только в crash path;
+- подробный снимок `EXCEPTION`, `FAULT`, `CPU`, `INSTRUCTION`, `MEMORY`, `PROCESS MEMORY`;
+- сохранение CLEO-контекста: script, opcode, script offset, opcode result и game tick;
+- встроенная verified CrashInfo база с exact-address/module/RVA/context matching;
+- отдельная `CLEO-CrashAuto.txt` для новых наблюдений без автоматического превращения их в verified записи;
+- русская локализация CrashInfo и crash window;
+- честное разделение контекста и причинности: script/last opcode не объявляются причиной без подтверждения;
+- crash-only StackWalk64/legacy/EBP попытки с `STACK_SCAN` fallback;
+- `STACK_SCAN` помечается как `heuristic=1`, а faulting EIP всегда сохраняется как frame `#00`;
+- добавлен `fault_ip_present=1/0`, чтобы отчёт явно показывал наличие faulting IP в backtrace;
+- heuristic backtrace не используется для загрязнения verified CrashInfo matcher/fingerprint.
+
+Подтверждённый тестовый результат для воспроизводимого `0xC0000005`:
+
+```text
+status=OK method=STACK_SCAN heuristic=1
+frames=25
+fault_ip_present=1
+#00 address=0x005D95CE module=gta_sa.exe rva=0x001D95CE
+```
+
+Это означает, что при отсутствии пригодного обычного unwind DebugUtils всё равно получает полезный crash snapshot и эвристический стек, не выдавая его за гарантированный call chain.
+
+### Audio.cleo — расширенный аудио API
+
+Добавлен отдельный plugin `Audio.cleo`, который расширяет аудио-возможности CLEO 4, не создавая второй audio engine и не дублируя владение BASS stream handles.
+
+Добавлены расширенные opcode `2500`–`250D`:
+
+- `2500` — playing state;
+- `2501` — duration;
+- `2502` / `2503` — speed read/set;
+- `2504` — volume transition;
+- `2505` — speed transition;
+- `2506` — 3D source size;
+- `2507` / `2508` — normalized progress read/set;
+- `2509` / `250A` — stream type read/set;
+- `250B` / `250C` — progress in seconds read/set;
+- `250D` — looping control.
+
+`2500`–`250C` реализуют расширенный CLEO 5-style набор управления уже существующими CLEO 4 stream handles. `250D` — наш собственный дополнительный opcode для управления looping.
+
+Для Sanny Builder добавлены соответствующие записи в `opcodes.txt` и `SASCM.INI`. Добавлен интеграционный тест `tests/AUDIO_25XX_TEST.cs`.
+
+### Audio core / API
+
+Для нового plugin API добавлен отдельный `CAudioPluginAPI`, а существующий `CSoundSystem` расширен так, чтобы новый Audio.cleo работал через общий CLEO 4 audio layer. Обновлён bundled BASS baseline; второй BASS engine в Audio.cleo не создаётся.
+
+## Что ещё осталось сделать DebugUtils
+
+Текущая crash-диагностика уже рабочая, поэтому дальнейшие задачи — улучшения качества, а не обязательное исправление базового crash path:
+
+- добавить optional `SymFromAddr` и вывод имён функций там, где символы реально доступны;
+- при необходимости расширить Crash report списком загруженных `.asi` / `.cleo` модулей;
+- добавить opt-in `OpcodeHistory` с несколькими последними opcode в crash context;
+- сделать diagnosis информативнее, отделяя known CrashInfo signature, stack presence и фактическую причинность;
+- улучшить качество heuristic stack scan без переименования его в полноценный unwind;
+- расширить crash test matrix на дополнительные воспроизводимые типы аварий и unknown-crash сценарии;
+- после накопления тестов зафиксировать финальный lightweight performance contract и завершённый статус DebugUtils.
+
+### Что сознательно не входит в текущий DebugUtils
+
+DebugUtils не пытается автоматически «чинить» GTA, не объявляет CLEO script виновным только по последнему opcode и не выдаёт heuristic stack scan за доказанную цепочку вызовов. Более глубокие game-specific hooks добавляются только под конкретно воспроизведённую проблему.
