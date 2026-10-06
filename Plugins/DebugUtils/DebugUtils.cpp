@@ -354,6 +354,8 @@ namespace
     struct DebugCustomScriptLayout
     {
         CScriptThread base;
+
+        // CCleoScriptState
         DWORD dwChecksum;
         BYTE* ownedBuffer;
         bool bSaveEnabled;
@@ -365,13 +367,17 @@ namespace
         size_t CodeSize;
         std::string ScriptFileDir;
         std::string ScriptFileName;
+        DWORD savedNodeId;
+
+        // CCustomScript relation state
         DebugCustomScriptLayout* parentThread;
         int childLabel;
-        DWORD savedNodeId;
+        std::list<DebugCustomScriptLayout*> childThreads;
+
+        // CScriptResources
         BYTE UseTextCommands;
         int NumDraws;
         int NumTexts;
-        std::list<DebugCustomScriptLayout*> childThreads;
         std::list<void*> script_textures;
         std::vector<BYTE> script_draws;
         std::vector<BYTE> script_texts;
@@ -380,6 +386,7 @@ namespace
     static_assert(sizeof(size_t) == 4, "CLEO4 DebugUtils is Win32; size_t must be 32-bit");
     static_assert(sizeof(CScriptThread) == 0xE0, "Unexpected CScriptThread layout");
     static_assert(offsetof(DebugCustomScriptLayout, CodeSize) == 0xFC, "Unexpected CCustomScript CodeSize offset");
+    static_assert(offsetof(DebugCustomScriptLayout, savedNodeId) == 0x130, "Unexpected CCustomScript savedNodeId offset");
 
     static const DebugCustomScriptLayout* GetDebugCustomScript(const CScriptThread* thread)
     {
