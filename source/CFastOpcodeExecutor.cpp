@@ -11,7 +11,7 @@ namespace CLEO
     extern WORD last_custom_opcode;
     extern CRunningScript *last_script;
 
-    CFastOpcodeExecutor::FastOpcodeHandler CFastOpcodeExecutor::s_groupHandlers[
+    FastOpcodeHandler CFastOpcodeExecutor::s_groupHandlers[
         CFastOpcodeExecutor::kOpcodeCount
     ] = {};
 
