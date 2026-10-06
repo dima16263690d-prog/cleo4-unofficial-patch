@@ -642,9 +642,10 @@ namespace CLEO
         if (pScript == nullptr)
             return;
 
-        GetInstance().ScriptEngine.DispatchScript(
+        if (!GetInstance().ScriptEngine.DispatchScript(
             reinterpret_cast<CRunningScript*>(pScript)
-        );
+        ))
+            return;
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)
