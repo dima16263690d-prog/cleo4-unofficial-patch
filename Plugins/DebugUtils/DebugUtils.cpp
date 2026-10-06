@@ -30,7 +30,7 @@ namespace
     // Visible in both the startup log and crash report so the installed
     // DebugUtils.cleo can be distinguished from stale copies.
     static constexpr char kDebugUtilsBuildId[] =
-        "test-xx02-stackwalk-fix-2026-10-06";
+        "test-xx02-stackwalk-esp-scan-2026-10-06";
 }
 
 namespace
@@ -3367,6 +3367,44 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     const DWORD capacity =
         std::min<DWORD>(maxFrames, 64u);
 
+    // DebugUtils treats the faulting instruction as frame #00 for every
+    // backtrace source. A heuristic scan can only discover return-address-like
+    // values from the stack, so it must never replace the faulting EIP.
+    const DWORD faultingEip = info->ContextRecord->Eip;
+
+    auto NormalizeFaultingIp = [faultingEip, capacity](std::vector<DWORD>& stackFrames)
+    {
+        if (capacity == 0)
+            return;
+
+        if (stackFrames.empty() || stackFrames[0] != faultingEip)
+        {
+            std::vector<DWORD> normalized;
+            normalized.reserve(std::min<size_t>(capacity, stackFrames.size() + 1));
+            normalized.push_back(faultingEip);
+
+            for (DWORD frame : stackFrames)
+            {
+                if (frame == faultingEip)
+                    continue;
+
+                if (normalized.size() >= capacity)
+                    break;
+
+                if (!normalized.empty() && normalized.back() == frame)
+                    continue;
+
+                normalized.push_back(frame);
+            }
+
+            stackFrames.swap(normalized);
+        }
+        else if (stackFrames.size() > capacity)
+        {
+            stackFrames.resize(capacity);
+        }
+    };
+
     // Register the faulting image explicitly with DbgHelp. SymInitialize(TRUE)
     // normally enumerates loaded modules, but an explicit load makes the x86
     // FPO lookup deterministic in the crash-only path.
@@ -3458,6 +3496,9 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
     if (ok64 && frameCount64 > 1)
     {
         frames.resize(frameCount64);
+        NormalizeFaultingIp(frames);
+        const bool faultIpPresent =
+            !frames.empty() && frames[0] == faultingEip;
 
         if (diagnostics != nullptr)
         {
@@ -3475,6 +3516,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                 stepsAttempted64,
                 static_cast<unsigned>(frameCount64),
                 static_cast<unsigned>(frameCount64),
+                faultIpPresent ? 1 : 0,
                 info->ContextRecord->Eip,
                 info->ContextRecord->Ebp,
                 info->ContextRecord->Esp
@@ -3520,6 +3562,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
         if (okLegacy && frameCountLegacy > 1)
         {
             frames.resize(frameCountLegacy);
+            NormalizeFaultingIp(frames);
         }
         else
         {
@@ -3535,19 +3578,43 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                     &stepsAttemptedEbp) != FALSE;
 
             if (ebpOk && frameCountEbp > 1)
+            {
                 frames.resize(frameCountEbp);
+                NormalizeFaultingIp(frames);
+            }
             else
             {
                 heuristicFrames =
                     BuildHeuristicStackFrames(
                         info->ContextRecord->Esp,
                         0x4000u,
-                        capacity);
+                        capacity > 0 ? capacity - 1 : 0);
 
-                heuristicOk = heuristicFrames.size() > 1;
+                heuristicOk = !heuristicFrames.empty();
                 if (heuristicOk)
                 {
-                    frames = heuristicFrames;
+                    frames.clear();
+                    frames.reserve(std::min<size_t>(
+                        capacity,
+                        heuristicFrames.size() + 1));
+
+                    frames.push_back(faultingEip);
+
+                    for (DWORD frame : heuristicFrames)
+                    {
+                        if (frame == faultingEip)
+                            continue;
+
+                        if (frames.size() >= capacity)
+                            break;
+
+                        if (frames.back() == frame)
+                            continue;
+
+                        frames.push_back(frame);
+                    }
+
+                    NormalizeFaultingIp(frames);
                     if (heuristicBacktrace != nullptr)
                         *heuristicBacktrace = true;
                 }
@@ -3562,10 +3629,13 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
 
             if (okLegacy && frameCountLegacy > 1)
             {
+                const bool faultIpPresent =
+                    !frames.empty() && frames[0] == faultingEip;
+
                 sprintf_s(
                     text,
                     sizeof(text),
-                    "status=OK method=LEGACY primary=%s legacy=%s symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp=NOT_NEEDED frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    "status=OK method=LEGACY primary=%s legacy=%s symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp=NOT_NEEDED frames=%u fault_ip_present=%d eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                     StackWalkStopReasonName(stopReason64),
                     StackWalkStopReasonName(stopReasonLegacy),
                     symbolsInitialized ? 1 : 0,
@@ -3578,6 +3648,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                     stepsAttemptedLegacy,
                     static_cast<unsigned>(frameCountLegacy),
                     static_cast<unsigned>(frameCountLegacy),
+                    faultIpPresent ? 1 : 0,
                     info->ContextRecord->Eip,
                     info->ContextRecord->Ebp,
                     info->ContextRecord->Esp
@@ -3585,10 +3656,13 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
             }
             else if (ebpOk && frameCountEbp > 1)
             {
+                const bool faultIpPresent =
+                    !frames.empty() && frames[0] == faultingEip;
+
                 sprintf_s(
                     text,
                     sizeof(text),
-                    "status=OK method=EBP_CHAIN primary=%s legacy=%s ebp=OK symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    "status=OK method=EBP_CHAIN primary=%s legacy=%s ebp=OK symbols_initialized=%d primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u frames=%u fault_ip_present=%d eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                     StackWalkStopReasonName(stopReason64),
                     pStackWalk == nullptr
                         ? "UNAVAILABLE"
@@ -3601,6 +3675,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                     stepsAttemptedEbp,
                     static_cast<unsigned>(frameCountEbp),
                     static_cast<unsigned>(frameCountEbp),
+                    faultIpPresent ? 1 : 0,
                     info->ContextRecord->Eip,
                     info->ContextRecord->Ebp,
                     info->ContextRecord->Esp
@@ -3611,7 +3686,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                 sprintf_s(
                     text,
                     sizeof(text),
-                    "status=OK method=STACK_SCAN heuristic=1 primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=OK symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=%u frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    "status=OK method=STACK_SCAN heuristic=1 primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=OK symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=%u frames=%u fault_ip_present=%d eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                     StackWalkStopReasonName(stopReason64),
                     pStackWalk == nullptr
                         ? "UNAVAILABLE"
@@ -3628,7 +3703,8 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                     stepsAttemptedEbp,
                     static_cast<unsigned>(frameCountEbp),
                     static_cast<unsigned>(heuristicFrames.size()),
-                    static_cast<unsigned>(heuristicFrames.size()),
+                    static_cast<unsigned>(frames.size()),
+                    (!frames.empty() && frames[0] == faultingEip) ? 1 : 0,
                     info->ContextRecord->Eip,
                     info->ContextRecord->Ebp,
                     info->ContextRecord->Esp
@@ -3639,7 +3715,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
                 sprintf_s(
                     text,
                     sizeof(text),
-                    "status=FAILED primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=NO_VALID_FRAMES symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=0 frames=0 eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                    "status=FAILED primary=%s legacy=%s ebp=NO_VALID_CHAIN scan=NO_VALID_FRAMES symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=%u legacy_frames=%u ebp_steps=%u ebp_frames=%u scan_frames=0 frames=0 fault_ip_present=0 eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                     StackWalkStopReasonName(stopReason64),
                     pStackWalk == nullptr
                         ? "UNAVAILABLE"
