@@ -629,6 +629,27 @@ namespace CLEO
         s.write(reinterpret_cast<const char *>(data), sizeof(T) * size);
     }
 
+    bool CScriptEngine::DispatchScript(CRunningScript *script)
+    {
+        if (script == nullptr)
+            return true;
+
+        // The engine boundary owns routing only. Legacy execution remains
+        // exactly where it was: CCustomScript::Process() for CLEO and the
+        // original ProcessScript() entry point for native GTA scripts.
+        if (!NotifyScriptProcessBefore(script))
+            return false;
+
+        CCustomScript *customScript = reinterpret_cast<CCustomScript*>(script);
+        if (customScript->IsCustom())
+            customScript->Process();
+        else
+            ProcessScript(script);
+
+        NotifyScriptProcessAfter(script);
+        return true;
+    }
+
     void __fastcall HOOK_ProcessScript(CCustomScript * pScript, int)
     {
         // Match CLEO 5 lifecycle: destroy scripts deferred by the previous
