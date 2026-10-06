@@ -30,6 +30,9 @@
     <ClCompile Include="source\CFastOpcodeExecutor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="source\CFastScriptExecutor.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
     <ClCompile Include="source\CCustomScript.cpp">
       <Filter>source</Filter>
     </ClCompile>
@@ -94,6 +97,9 @@
     </ClInclude>
     <ClInclude Include="source\CFastOpcodeExecutor.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CFastScriptExecutor.h">
+      <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CCustomOpcodeSystem.h">
       <Filter>source</Filter>
