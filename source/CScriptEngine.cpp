@@ -642,15 +642,9 @@ namespace CLEO
         if (pScript == nullptr)
             return;
 
-        if (!NotifyScriptProcessBefore(reinterpret_cast<CRunningScript*>(pScript)))
-            return;
-
-        if (pScript->IsCustom())
-            pScript->Process();
-        else
-            ProcessScript(pScript);
-
-        NotifyScriptProcessAfter(reinterpret_cast<CRunningScript*>(pScript));
+        GetInstance().ScriptEngine.DispatchScript(
+            reinterpret_cast<CRunningScript*>(pScript)
+        );
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)
