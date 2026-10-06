@@ -381,7 +381,7 @@ namespace CLEO
         char threadName[8];
 
         ThreadSavingInfo(CCustomScript *cs) :
-            hash(cs->dwChecksum), condResult(cs->bCondResult),
+            hash(cs->cleoState.dwChecksum), condResult(cs->bCondResult),
             logicalOp(cs->LogicalOp), notFlag(cs->NotFlag != false), ip_diff(cs->CurrentIP - reinterpret_cast<BYTE*>(cs->BaseIP))
         {
             sleepTime = cs->WakeTime >= *GameTimer ? 0 : cs->WakeTime - *GameTimer;
@@ -392,7 +392,7 @@ namespace CLEO
 
         void Apply(CCustomScript *cs)
         {
-            cs->dwChecksum = hash;
+            cs->cleoState.dwChecksum = hash;
             std::copy(tls, tls + 32, cs->LocalVar);
             std::copy(timers, timers + 2, cs->Timers);
             cs->bCondResult = condResult;
@@ -401,7 +401,7 @@ namespace CLEO
             cs->NotFlag = notFlag;
             cs->CurrentIP = reinterpret_cast<BYTE*>(cs->BaseIP) + ip_diff;
             std::copy(threadName, threadName + 8, cs->Name);
-            cs->bSaveEnabled = true;
+            cs->cleoState.bSaveEnabled = true;
         }
 
         ThreadSavingInfo() { }
@@ -780,7 +780,7 @@ namespace CLEO
 
     void CScriptEngine::RestorePendingChildScript(CCustomScript *parent, CCustomScript *child, int label)
     {
-        if (!parent || !child || parent->savedNodeId == 0)
+        if (!parent || !child || parent->cleoState.savedNodeId == 0)
             return;
 
         unsigned ordinal = 0;
@@ -797,7 +797,7 @@ namespace CLEO
 
         for (auto it = pendingChildSaves.begin(); it != pendingChildSaves.end(); ++it)
         {
-            if (it->parent_node_id != parent->savedNodeId ||
+            if (it->parent_node_id != parent->cleoState.savedNodeId ||
                 it->label != label ||
                 it->ordinal != ordinal)
             {
@@ -806,10 +806,10 @@ namespace CLEO
 
             const unsigned nodeId = it->node_id;
             it->Apply(child);
-            child->savedNodeId = nodeId;
+            child->cleoState.savedNodeId = nodeId;
 
             TRACE("Restored custom child script '%s' from sidecar parent=%08X node=%u label=%d ordinal=%u",
-                child->Name, parent->savedNodeId, nodeId, label, ordinal);
+                child->Name, parent->cleoState.savedNodeId, nodeId, label, ordinal);
 
             pendingChildSaves.erase(it);
             return;
@@ -818,13 +818,13 @@ namespace CLEO
 
     void CScriptEngine::RestorePendingScmFunctions(CCustomScript *cs)
     {
-        if (!cs || cs->savedNodeId == 0)
+        if (!cs || cs->cleoState.savedNodeId == 0)
             return;
 
         std::vector<const ScmFunctionSaveInfo*> savedStates;
         for (const auto& saved : pendingScmFunctionSaves)
         {
-            if (saved.node_id == cs->savedNodeId)
+            if (saved.node_id == cs->cleoState.savedNodeId)
                 savedStates.push_back(&saved);
         }
 
@@ -913,7 +913,7 @@ namespace CLEO
                 pendingScmFunctionSaves.begin(),
                 pendingScmFunctionSaves.end(),
                 [cs](const ScmFunctionSaveInfo& saved) {
-                    return saved.node_id == cs->savedNodeId;
+                    return saved.node_id == cs->cleoState.savedNodeId;
                 }),
             pendingScmFunctionSaves.end()
         );
@@ -921,12 +921,12 @@ namespace CLEO
         TRACE("[CLEO][LOAD][ScmFunction] restored %u active scopes for '%.8s' node=%u",
             static_cast<unsigned>(restoredFunctions.size()),
             cs->GetName(),
-            cs->savedNodeId);
+            cs->cleoState.savedNodeId);
     }
 
     void CScriptEngine::RestorePendingChildTree(CCustomScript *parent)
     {
-        if (!parent || parent->savedNodeId == 0)
+        if (!parent || parent->cleoState.savedNodeId == 0)
             return;
 
         for (;;)
@@ -938,13 +938,13 @@ namespace CLEO
             // label) deterministic.
             for (size_t i = 0; i < pendingChildSaves.size(); ++i)
             {
-                if (pendingChildSaves[i].parent_node_id != parent->savedNodeId)
+                if (pendingChildSaves[i].parent_node_id != parent->cleoState.savedNodeId)
                     continue;
 
                 bool lowerOrdinalPending = false;
                 for (size_t j = 0; j < pendingChildSaves.size(); ++j)
                 {
-                    if (pendingChildSaves[j].parent_node_id == parent->savedNodeId &&
+                    if (pendingChildSaves[j].parent_node_id == parent->cleoState.savedNodeId &&
                         pendingChildSaves[j].label == pendingChildSaves[i].label &&
                         pendingChildSaves[j].ordinal < pendingChildSaves[i].ordinal)
                     {
@@ -973,13 +973,13 @@ namespace CLEO
                     delete child;
 
                 DIAG("[CLEO][ERROR][CUSTOM] restore failed parent_node=%08X node=%u label=%d ordinal=%u",
-                    parent->savedNodeId, saved.node_id, saved.label, saved.ordinal);
+                    parent->cleoState.savedNodeId, saved.node_id, saved.label, saved.ordinal);
                 continue;
             }
 
             AddCustomScript(child);
             saved.Apply(child);
-            child->savedNodeId = saved.node_id;
+            child->cleoState.savedNodeId = saved.node_id;
             RestorePendingScmFunctions(child);
 
             RestorePendingChildTree(child);
@@ -1182,7 +1182,7 @@ namespace CLEO
     {
         auto cs = new CCustomScript(szFilePath);
 
-        if (!cs || !cs->bOK)
+        if (!cs || !cs->cleoState.bOK)
         {
             TRACE("Loading of custom script %s failed", szFilePath);
             if (cs) delete cs;
@@ -1194,7 +1194,7 @@ namespace CLEO
         {
             for (size_t i = 0; i < safe_header.n_stopped_threads; ++i)
             {
-                if (stopped_info[i] == cs->dwChecksum)
+                if (stopped_info[i] == cs->cleoState.dwChecksum)
                 {
                     TRACE("Custom script %s found in the stop-list", szFilePath);
                     InactiveScriptHashes.insert(stopped_info[i]);
@@ -1212,7 +1212,7 @@ namespace CLEO
                 if (safeInfoUsed.size() > i && safeInfoUsed[i])
                     continue;
 
-                if (safe_info[i].hash == cs->dwChecksum)
+                if (safe_info[i].hash == cs->cleoState.dwChecksum)
                 {
                     TRACE("Custom script %s found in the safe-list", szFilePath);
                     safe_info[i].Apply(cs);
@@ -1220,7 +1220,7 @@ namespace CLEO
                     if (safeInfoUsed.size() > i)
                     {
                         safeInfoUsed[i] = true;
-                        cs->savedNodeId = 0x80000000u | static_cast<unsigned>(i + 1);
+                        cs->cleoState.savedNodeId = 0x80000000u | static_cast<unsigned>(i + 1);
                     }
                     break;
                 }
@@ -1238,7 +1238,7 @@ namespace CLEO
         {
             std::list<CCustomScript *> savedThreads;
             std::for_each(CustomScripts.begin(), CustomScripts.end(), [this, &savedThreads](CCustomScript *cs) {
-                if ((cs->bSaveEnabled || !cs->childThreads.empty()) && cs->parentThread == nullptr)
+                if ((cs->cleoState.bSaveEnabled || !cs->childThreads.empty()) && cs->parentThread == nullptr)
                     savedThreads.push_back(cs);
             });
 
@@ -1249,7 +1249,7 @@ namespace CLEO
             // space stored only in the sidecar file.
             unsigned rootIndex = 0;
             for (auto cs : savedThreads)
-                cs->savedNodeId = 0x80000000u | (++rootIndex);
+                cs->cleoState.savedNodeId = 0x80000000u | (++rootIndex);
 
             std::vector<ChildThreadSavingInfo> childSaves;
             std::vector<ScmFunctionSaveInfo> functionSaves;
@@ -1270,7 +1270,7 @@ namespace CLEO
                     }
 
                     const unsigned nodeId = nextChildNodeId++;
-                    child->savedNodeId = nodeId;
+                    child->cleoState.savedNodeId = nodeId;
                     childSaves.emplace_back(child, parentNodeId, nodeId, ordinal);
                     CollectScmFunctionSaves(child, nodeId, functionSaves);
                     self(self, child, nodeId);
@@ -1279,8 +1279,8 @@ namespace CLEO
 
             for (auto root : savedThreads)
             {
-                CollectScmFunctionSaves(root, root->savedNodeId, functionSaves);
-                collectChildren(collectChildren, root, root->savedNodeId);
+                CollectScmFunctionSaves(root, root->cleoState.savedNodeId, functionSaves);
+                collectChildren(collectChildren, root, root->cleoState.savedNodeId);
             }
 
             // steam offset is different, so get it manually for now
@@ -1486,9 +1486,9 @@ namespace CLEO
         CCustomScript *cs = new CCustomScript(scriptName, false, parent, label);
 
         if (fromThread)
-            SetScriptCondResult(fromThread, cs != nullptr && cs->bOK);
+            SetScriptCondResult(fromThread, cs != nullptr && cs->cleoState.bOK);
 
-        if (cs == nullptr || !cs->bOK)
+        if (cs == nullptr || !cs->cleoState.bOK)
         {
             if (cs)
                 delete cs;
@@ -1588,7 +1588,7 @@ namespace CLEO
 
     void CScriptEngine::AddCustomScript(CCustomScript *cs)
     {
-        if (cs == nullptr || !cs->bOK)
+        if (cs == nullptr || !cs->cleoState.bOK)
             return;
 
         if (cs->IsMission())
@@ -1629,9 +1629,9 @@ namespace CLEO
         }
 
         // A saved child must not become an independently stopped root.
-        if (cs != CustomMission && cs->bSaveEnabled && !wasChild)
+        if (cs != CustomMission && cs->cleoState.bSaveEnabled && !wasChild)
         {
-            InactiveScriptHashes.insert(cs->dwChecksum);
+            InactiveScriptHashes.insert(cs->cleoState.dwChecksum);
             TRACE("Stopping custom script named %.*s", 8, cs->Name);
         }
 
