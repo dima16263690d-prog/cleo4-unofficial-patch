@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CTheScripts.h"
+#include <cstddef>
 #include <string>
 
 namespace CLEO
