@@ -7,6 +7,7 @@
 #include "CTextManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
+#include "CFastOpcodeExecutor.h"
 
 namespace CLEO {
 	DWORD FUNC_fopen;
@@ -176,20 +177,7 @@ namespace CLEO {
 
 	OpcodeResult __fastcall debugOpcodeDispatch(CRunningScript *thread, int, unsigned short opcode)
 	{
-		const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
-		if (action == CLEO_DEBUG_OPCODE_HANDLED)
-			return OR_CONTINUE;
-		if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
-			return OR_INTERRUPT;
-
-		OpcodeResult result;
-
-		if (opcode < 0x0AF0 && lowOpcodeHandlers[opcode] != nullptr)
-			result = lowOpcodeHandlers[opcode](thread);
-		else
-			result = debugOriginalOpcodeTable[opcode / 100](thread, opcode);
-
-		return NotifyScriptOpcodeProcessAfter(thread, opcode, result);
+		return CFastOpcodeExecutor::Dispatch(thread, opcode);
 	}
 	CustomOpcodeHandler extraOpcodeHandlers[100][300];
 
@@ -297,6 +285,11 @@ namespace CLEO {
 		// Wrap the complete dispatch table for DebugUtils. No legacy handler is
 		// replaced; the wrapper calls the original handler and returns its result.
 		std::copy(newOpcodeHandlerTable, newOpcodeHandlerTable + 329, debugOriginalOpcodeTable);
+
+		// Build the flat opcode -> existing handler map once. DebugUtils still
+		// observes every opcode through debugOpcodeDispatch.
+		CFastOpcodeExecutor::Initialize(debugOriginalOpcodeTable, 329);
+
 		std::fill(newOpcodeHandlerTable, newOpcodeHandlerTable + 329,
 			reinterpret_cast<_OpcodeHandler>(debugOpcodeDispatch));
 
