@@ -45,6 +45,8 @@
     <ClInclude Include="source\CHookSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.h" />
     <ClInclude Include="source\CCustomScript.h" />
+    <ClInclude Include="source\CCleoScriptState.h" />
+    <ClInclude Include="source\CScriptResources.h" />
     <ClInclude Include="source\ScmFunction.h" />
     <ClInclude Include="source\CDmaFix.h" />
     <ClInclude Include="source\CGameMenu.h" />
