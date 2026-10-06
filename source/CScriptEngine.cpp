@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "ScmFunction.h"
+#include "CDebugCallbackSystem.h"
 #include <cstdint>
 
 namespace CLEO
