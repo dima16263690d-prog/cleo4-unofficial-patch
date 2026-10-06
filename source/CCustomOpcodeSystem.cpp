@@ -8,6 +8,7 @@
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
 #include "CFastOpcodeExecutor.h"
+#include "CFastScriptExecutor.h"
 
 namespace CLEO {
 	DWORD FUNC_fopen;
@@ -323,18 +324,17 @@ namespace CLEO {
 		if (gvm.GetGameVersion() == GV_US10) {
 			// make it compatible with fastman92's limit adjuster (only required for 1.0 US)
 			RadarBlips = injector::ReadMemory<CMarker*>(0x583A05 + 2, true);
+
+			// Experimental hot-loop test for GTA SA 1.0 US.
+			// The old ScriptExecutionLoop remains above as the fallback implementation.
+			// This hook only changes the opcode execution loop; script semantics remain
+			// the same and the prepared FastOpcodeExecutor handles the opcode itself.
+			inj.Nop(0x469FB0, 0x469FFB - 0x469FB0);
+			inj.ReplaceFunction(CFastScriptExecutor::Execute, 0x469FF6);
 		}
 		else {
 			RadarBlips = gvm.TranslateMemoryAddress(MA_RADAR_BLIPS);
 		}
-
-		/*if(gvm.GetGameVersion() == GV_US10)
-		{
-		inj.Nop(0x469FB0, 0x469FFB - 0x469FB0);
-		inj.ReplaceFunction(ScriptExecutionLoop, 0x469FF6);
-		inj.Nop(0x469FF2, 0x469FFB - 0x469FF2);
-		inj.ReplaceFunction(ScriptExecutionLoop, 0x469FF6);
-		}*/
 	}
 
 	inline CRunningScript& operator>>(CRunningScript& thread, DWORD& uval)
