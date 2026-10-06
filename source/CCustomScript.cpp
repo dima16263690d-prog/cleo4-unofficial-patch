@@ -85,7 +85,7 @@ namespace CLEO
     void CCustomScript::Draw(char bBeforeFade)
     {
         // no point if this script doesn't draw
-        if (script_draws.size() || script_texts.size())
+        if (resources.script_draws.size() || resources.script_texts.size())
         {
             static CCustomScript * last;
             last = this;
@@ -101,17 +101,17 @@ namespace CLEO
     {
         // store this scripts draws + texts
         if (*numScriptDraws)
-            script_draws.assign(scriptDraws, scriptDraws + (*numScriptDraws * DRAW_DATA_SIZE));
-        else if (script_draws.size())
-            script_draws.clear();
+            resources.script_draws.assign(scriptDraws, scriptDraws + (*numScriptDraws * DRAW_DATA_SIZE));
+        else if (resources.script_draws.size())
+            resources.script_draws.clear();
         if (*numScriptTexts)
-            script_texts.assign(scriptTexts, scriptTexts + (*numScriptTexts * TEXT_DATA_SIZE));
-        else if (script_texts.size())
-            script_texts.clear();
+            resources.script_texts.assign(scriptTexts, scriptTexts + (*numScriptTexts * TEXT_DATA_SIZE));
+        else if (resources.script_texts.size())
+            resources.script_texts.clear();
 
-        UseTextCommands = *useTextCommands;
-        NumDraws = *numScriptDraws;
-        NumTexts = *numScriptTexts;
+        resources.UseTextCommands = *useTextCommands;
+        resources.NumDraws = *numScriptDraws;
+        resources.NumTexts = *numScriptTexts;
 
         // restore SCM draws + texts
         if (numStoredDraws) std::copy(storedDraws, storedDraws + (numStoredDraws * DRAW_DATA_SIZE), scriptDraws);
@@ -134,28 +134,28 @@ namespace CLEO
             std::copy(scriptTexts, scriptTexts + (numStoredTexts * TEXT_DATA_SIZE), storedTexts);
 
         // restore script draws + texts
-        if (!script_draws.size()) *numScriptDraws = 0;
+        if (!resources.script_draws.size()) *numScriptDraws = 0;
         else
         {
-            std::copy(script_draws.begin(), script_draws.end(), scriptDraws);
-            *numScriptDraws = NumDraws;
+            std::copy(resources.script_draws.begin(), resources.script_draws.end(), scriptDraws);
+            *numScriptDraws = resources.NumDraws;
         }
-        if (!script_texts.size()) *numScriptTexts = 0;
+        if (!resources.script_texts.size()) *numScriptTexts = 0;
         else
         {
-            std::copy(script_texts.begin(), script_texts.end(), scriptTexts);
-            *numScriptTexts = NumTexts;
+            std::copy(resources.script_texts.begin(), resources.script_texts.end(), scriptTexts);
+            *numScriptTexts = resources.NumTexts;
         }
-        *useTextCommands = UseTextCommands;
+        *useTextCommands = resources.UseTextCommands;
     }
     void CCustomScript::StoreScriptTextures()
     {
         // store this scripts textures + restore SCM textures + make sure this scripts textures arent cleared by another
-        if (script_textures.size())
-            script_textures.clear();
+        if (resources.script_textures.size())
+            resources.script_textures.clear();
         for (int i = 0; i<NUM_STORED_SPRITES; ++i)
         {
-            script_textures.push_back(*(RwTexture**)&scriptSprites[i]);
+            resources.script_textures.push_back(*(RwTexture**)&scriptSprites[i]);
             scriptSprites[i] = storedSprites[i];
         }
 
@@ -173,12 +173,12 @@ namespace CLEO
         //std::copy(scriptSprites, scriptSprites + NUM_STORED_SPRITES, storedSprites);
 
         // ensure SCM textures arent cleared - except by the SCM
-        if (!script_textures.size())
+        if (!resources.script_textures.size())
             std::fill((RwTexture**)scriptSprites, (RwTexture**)scriptSprites + NUM_STORED_SPRITES, nullptr);
         else
         {
             // restore textures for this script
-            for (auto i = script_textures.begin(); i != script_textures.end(); ++i, ++n)
+            for (auto i = resources.script_textures.begin(); i != resources.script_textures.end(); ++i, ++n)
             {
                 if (n >= NUM_STORED_SPRITES) break;
                 *(RwTexture**)(&scriptSprites[n]) = *i;
@@ -199,15 +199,13 @@ namespace CLEO
 
 
     CCustomScript::CCustomScript(const char *szFileName, bool bIsMiss, CCustomScript *parent, int label)
-        : CRunningScript(), ownedBuffer(nullptr), bSaveEnabled(false), bOK(false),
-        LastSearchPed(0), LastSearchCar(0), LastSearchObj(0),
-        CompatVer(CLEO_VERSION), CodeSize(0), parentThread(nullptr), childLabel(label), savedNodeId(0)
-    {
+        : CRunningScript(), cleoState(), parentThread(nullptr), childLabel(label), childThreads(), resources()    {
         IsCustom(1);
         bIsMission = bUseMissionCleanup = bIsMiss;
-        UseTextCommands = 0;
-        NumDraws = 0;
-        NumTexts = 0;
+        cleoState.CompatVer = CLEO_VERSION;
+        resources.UseTextCommands = 0;
+        resources.NumDraws = 0;
+        resources.NumTexts = 0;
 
         TRACE("Loading custom script %s...", szFileName);
 
@@ -224,14 +222,14 @@ namespace CLEO
 				if (!parent->IsCustom())
 					throw std::logic_error("Trying to create external thread from non-custom parent thread");
 				// Child scripts inherit the parent's CLEO compatibility mode.
-				CompatVer = parent->GetCompatibility();
+				cleoState.CompatVer = parent->GetCompatibility();
 				BaseIP = parent->GetBasePointer();
 				CurrentIP = parent->GetBasePointer() - label;
-								CodeSize = parent->GetCodeSize();
-				ScriptFileDir = parent->GetScriptFileDir();
-				ScriptFileName = parent->GetScriptFileName();
+								cleoState.CodeSize = parent->GetcleoState.CodeSize();
+				cleoState.ScriptFileDir = parent->GetcleoState.ScriptFileDir();
+				cleoState.ScriptFileName = parent->GetcleoState.ScriptFileName();
 memcpy(Name, parent->Name, sizeof(Name));
-				dwChecksum = parent->dwChecksum;
+				cleoState.dwChecksum = parent->cleoState.dwChecksum;
 				parentThread = parent;
 				parent->childThreads.push_back(this);
 			}
@@ -243,7 +241,7 @@ memcpy(Name, parent->Name, sizeof(Name));
 				std::size_t length;
 				is.seekg(0, std::ios::end);
 				length = static_cast<std::size_t>(is.tellg());
-				CodeSize = length;
+				cleoState.CodeSize = length;
 				is.seekg(0, std::ios::beg);
 
 				if (bIsMiss)
@@ -254,8 +252,8 @@ memcpy(Name, parent->Name, sizeof(Name));
 					BaseIP = CurrentIP = missionBlock;
 				}
 				else {
-					ownedBuffer = new BYTE[length];
-					BaseIP = CurrentIP = ownedBuffer;
+					cleoState.ownedBuffer = new BYTE[length];
+					BaseIP = CurrentIP = cleoState.ownedBuffer;
 				}
 				is.read(reinterpret_cast<char *>(BaseIP), length);
 
@@ -267,22 +265,22 @@ memcpy(Name, parent->Name, sizeof(Name));
 
 				if (sep)
 				{
-					ScriptFileDir.assign(szFileName, static_cast<size_t>(sep - szFileName));
+					cleoState.ScriptFileDir.assign(szFileName, static_cast<size_t>(sep - szFileName));
 					fname = sep + 1;
 				}
 				else
 				{
-					ScriptFileDir.clear();
+					cleoState.ScriptFileDir.clear();
 					fname = szFileName;
 				}
 
-				ScriptFileName = fname;
+				cleoState.ScriptFileName = fname;
 				memcpy(Name, fname, sizeof(Name));
 				Name[7] = '\0';
-				dwChecksum = crc32(reinterpret_cast<BYTE *>(BaseIP), length);
+				cleoState.dwChecksum = crc32(reinterpret_cast<BYTE *>(BaseIP), length);
 			}
 			lastScriptCreated = this;
-            bOK = true;
+            cleoState.bOK = true;
             if (parent)
             {
             }
@@ -310,8 +308,8 @@ memcpy(Name, parent->Name, sizeof(Name));
             parentThread = nullptr;
         }
 
-        if (ownedBuffer)
-            delete[] ownedBuffer;
+        if (cleoState.ownedBuffer)
+            delete[] cleoState.ownedBuffer;
 
 		RunScriptDeleteDelegate(reinterpret_cast<CRunningScript*>(this));
 		if (lastScriptCreated == this) lastScriptCreated = nullptr;
