@@ -2,6 +2,7 @@
 #include "CCodeInjector.h"
 #include "CCustomOpcodeSystem.h"
 #include "CCustomScript.h"
+#include "CScriptRuntime.h"
 
 namespace CLEO
 {
@@ -50,11 +51,7 @@ namespace CLEO
         void							RestorePendingScmFunctions(CCustomScript *script);
         void							RestorePendingChildTree(CCustomScript *parent);
 
-        // Single entry point for the engine layer to route one GTA script
-        // through the existing CLEO/native execution path. This is the
-        // structural boundary for the new engine patch; it does not alter
-        // Process() or the legacy Execution Engine.
-        bool                            DispatchScript(CRunningScript *script);
+        CScriptRuntime               Runtime;
         inline size_t				WorkingScriptsCount() { return CustomScripts.size(); }
         virtual void					Inject(CCodeInjector&);
 
