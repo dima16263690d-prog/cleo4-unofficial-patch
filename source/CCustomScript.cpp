@@ -225,9 +225,9 @@ namespace CLEO
 				cleoState.CompatVer = parent->GetCompatibility();
 				BaseIP = parent->GetBasePointer();
 				CurrentIP = parent->GetBasePointer() - label;
-								cleoState.CodeSize = parent->GetcleoState.CodeSize();
-				cleoState.ScriptFileDir = parent->GetcleoState.ScriptFileDir();
-				cleoState.ScriptFileName = parent->GetcleoState.ScriptFileName();
+								cleoState.CodeSize = parent->GetCodeSize();
+				cleoState.ScriptFileDir = parent->GetScriptFileDir();
+				cleoState.ScriptFileName = parent->GetScriptFileName();
 memcpy(Name, parent->Name, sizeof(Name));
 				cleoState.dwChecksum = parent->cleoState.dwChecksum;
 				parentThread = parent;
