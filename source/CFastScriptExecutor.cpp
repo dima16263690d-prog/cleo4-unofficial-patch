@@ -7,6 +7,12 @@
 
 namespace CLEO
 {
+    extern WORD last_opcode;
+    extern WORD last_custom_opcode;
+    extern char last_thread[9];
+    extern CRunningScript *last_script;
+    extern ptrdiff_t last_off;
+
     char CFastScriptExecutor::Execute()
     {
         CCustomScript *thread;
