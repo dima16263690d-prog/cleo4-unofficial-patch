@@ -3,6 +3,7 @@
 #include "CCleoScriptState.h"
 #include "CScriptResources.h"
 #include <list>
+#include <string>
 
 namespace CLEO
 {
