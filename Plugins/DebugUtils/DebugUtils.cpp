@@ -3506,7 +3506,7 @@ std::vector<DWORD> DebugUtils::BuildStackWalk(
             sprintf_s(
                 text,
                 sizeof(text),
-                "status=OK method=PRIMARY primary=%s legacy=NOT_NEEDED ebp=NOT_NEEDED symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=0 legacy_frames=0 ebp_steps=0 ebp_frames=0 frames=%u eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
+                "status=OK method=PRIMARY primary=%s legacy=NOT_NEEDED ebp=NOT_NEEDED symbols_initialized=%d fpo_table=%d symbol_module_loaded=%d symbol_load_error=%u symbol_module_base=0x%08X primary_steps=%u primary_frames=%u legacy_steps=0 legacy_frames=0 ebp_steps=0 ebp_frames=0 frames=%u fault_ip_present=%d eip=0x%08X ebp_reg=0x%08X esp=0x%08X",
                 StackWalkStopReasonName(stopReason64),
                 symbolsInitialized ? 1 : 0,
                 functionTableAvailable ? 1 : 0,
