@@ -2170,7 +2170,7 @@ namespace CLEO {
 		void *mem;
 		*thread >> mem;
 
-		GetSmartMemoryEngine().Memory().Free(mem);
+		GetSmartMemoryEngine().Memory().Free(thread, mem);
 		return OR_CONTINUE;
 	}
 
