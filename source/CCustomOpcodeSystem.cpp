@@ -5,6 +5,7 @@
 #include "CCustomOpcodeSystem.h"
 #include "ScmFunction.h"
 #include "CTextManager.h"
+#include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
 #include "CFastOpcodeExecutor.h"
@@ -2154,8 +2155,10 @@ namespace CLEO {
 	{
 		DWORD size;
 		*thread >> size;
-		void *mem = malloc(size);
-		if (mem) GetInstance().OpcodeSystem.m_pAllocations.insert(mem);
+
+		CCustomScript *cs = reinterpret_cast<CCustomScript *>(thread);
+		void *mem = GetSmartMemoryEngine().Memory().Allocate(cs, static_cast<size_t>(size));
+
 		*thread << mem;
 		SetScriptCondResult(thread, mem != nullptr);
 		return OR_CONTINUE;
@@ -2166,12 +2169,8 @@ namespace CLEO {
 	{
 		void *mem;
 		*thread >> mem;
-		auto & allocs = GetInstance().OpcodeSystem.m_pAllocations;
-		if (allocs.find(mem) != allocs.end())
-		{
-			free(mem);
-			allocs.erase(mem);
-		}
+
+		GetSmartMemoryEngine().Memory().Free(mem);
 		return OR_CONTINUE;
 	}
 
