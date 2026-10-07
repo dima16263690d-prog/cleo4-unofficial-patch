@@ -242,14 +242,14 @@ namespace CLEO {
 		{
 			do
 			{
-				ptrdiff_t off = thread->IsCustom() ? thread->GetBytePointer() - thread->GetBasePointer() : thread->GetBytePointer() - scmBlock;
+				ptrdiff_t off = reinterpret_cast<CCustomScript *>(thread)->IsCustom() ? thread->GetBytePointer() - thread->GetBasePointer() : thread->GetBytePointer() - scmBlock;
 				WORD opcode = thread->ReadDataWord();
 				last_opcode = opcode;
 				last_off = off;
 				memcpy(last_thread, thread->GetName(), 8);
 				last_thread[8] = '\0';
 
-				thread->SetNotFlag((opcode & 0x8000) != 0);
+				reinterpret_cast<CCustomScript *>(thread)->SetNotFlag((opcode & 0x8000) != 0);
 				opcode &= 0x7FFF;
 
 				const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
