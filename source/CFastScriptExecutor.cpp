@@ -7,6 +7,10 @@
 
 namespace CLEO
 {
+    // Legacy executor used for active 0AB1/0AB2 scopes. It keeps the exact
+    // pre-fast-loop opcode dispatch semantics for function execution.
+    extern char ExecuteLegacyScriptLoop(CRunningScript *thread);
+
     extern WORD last_opcode;
     extern WORD last_custom_opcode;
     extern char last_thread[9];
@@ -26,6 +30,12 @@ namespace CLEO
         {
             do
             {
+                // Once 0AB1 has entered a function scope, hand execution back
+                // to the legacy loop. This preserves the previously working
+                // 0AD1/wait/0AB2 behavior while normal scripts stay on fast-loop.
+                if (thread->GetScmFunction() != 0)
+                    return ExecuteLegacyScriptLoop(thread);
+
                 // Read the opcode directly from the current IP. This keeps the
                 // legacy execution order intact while removing the indirect
                 // newOpcodeHandlerTable[opcode / 100] dispatch from the hot loop.
