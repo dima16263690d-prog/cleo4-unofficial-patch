@@ -17,7 +17,7 @@ namespace CLEO
 
         // Fast opcode path used by the existing DebugUtils dispatch boundary.
         // It preserves the before/after callbacks and calls the original handler.
-        static OpcodeResult __fastcall Dispatch(CRunningScript *thread, unsigned short opcode);
+        static __forceinline OpcodeResult __fastcall Dispatch(CRunningScript *thread, unsigned short opcode);
 
     private:
         static FastOpcodeHandler s_groupHandlers[kOpcodeCount];
