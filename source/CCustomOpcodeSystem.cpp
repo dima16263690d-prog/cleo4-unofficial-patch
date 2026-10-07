@@ -229,12 +229,12 @@ namespace CLEO {
 		return customOpcodeHandlers[opcode - 0x0A8C](thread);
 	}
 
-	char ScriptExecutionLoop()
+	char ExecuteLegacyScriptLoop(CRunningScript *thread)
 	{
-		CCustomScript *thread;
 		OpcodeResult res;
 
-		_asm mov thread, esi
+		if (!thread)
+			return 0;
 
 		last_script = thread;
 
@@ -248,18 +248,40 @@ namespace CLEO {
 				last_off = off;
 				memcpy(last_thread, thread->GetName(), 8);
 				last_thread[8] = '\0';
+
 				thread->SetNotFlag((opcode & 0x8000) != 0);
 				opcode &= 0x7FFF;
-				res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+
+				const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
+				if (action == CLEO_DEBUG_OPCODE_HANDLED)
+					res = OR_CONTINUE;
+				else if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
+					res = OR_INTERRUPT;
+				else
+				{
+					if (opcode < 0x0AF0 && lowOpcodeHandlers[opcode] != nullptr)
+						res = lowOpcodeHandlers[opcode](thread);
+					else
+						res = debugOriginalOpcodeTable[opcode / 100](thread, opcode);
+
+					res = NotifyScriptOpcodeProcessAfter(thread, opcode, res);
+				}
 			} while (res == OR_CONTINUE);
 		}
-		catch (const char * e)
+		catch (const char *e)
 		{
 			char str[128];
 			sprintf(str, "%s encountered while parsing opcode '%04X' in script '%s'", e, last_opcode, last_thread);
 			Error(str);
 		}
 		return 0;
+	}
+
+	char ScriptExecutionLoop()
+	{
+		CCustomScript *thread;
+		_asm mov thread, esi
+		return ExecuteLegacyScriptLoop(reinterpret_cast<CRunningScript *>(thread));
 	}
 
 	void CCustomOpcodeSystem::Inject(CCodeInjector& inj)
