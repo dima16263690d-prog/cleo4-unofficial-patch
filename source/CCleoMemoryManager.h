@@ -1,13 +1,13 @@
 #pragma once
 
 #include <Windows.h>
+#include "CTheScripts.h"
 #include <cstddef>
 #include <mutex>
 #include <unordered_map>
 
 namespace CLEO
 {
-    class CRunningScript;
     class CCleoMemoryManager
     {
     public:
