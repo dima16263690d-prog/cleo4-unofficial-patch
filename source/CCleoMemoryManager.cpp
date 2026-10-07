@@ -1,122 +1,216 @@
 #include "stdafx.h"
 #include "CCleoMemoryManager.h"
 #include "CDebugBridge.h"
+#include "CDebugCallbackSystem.h"
+#include "CTheScripts.h"
+
+#include <cstdlib>
 
 namespace CLEO
 {
-    size_t CCleoMemoryManager::AlignToPage(size_t size) const
+    CCleoMemoryManager::CCleoMemoryManager()
     {
-        if (size == 0)
-            return 0;
+        RegisterCallback(CLEO_CB_GAME_END, reinterpret_cast<uintptr_t>(&GameEndCallback));
 
-        const size_t page = m_pageSize ? m_pageSize : 4096;
-        const size_t remainder = size % page;
-        if (remainder == 0)
-            return size;
-
-        const size_t aligned = size + (page - remainder);
-        if (aligned < size)
-            return 0;
-
-        return aligned;
+        MEMORY_TRACE(
+            "INIT limits blocks=%d size=%d MB",
+            m_configLimitAllocationCount,
+            m_configLimitAllocationSize / (1024 * 1024)
+        );
     }
 
-    void CCleoMemoryManager::LogStatsLocked(const char* reason) const
+    void __stdcall CCleoMemoryManager::GameEndCallback()
     {
-        MEMORY_TRACE("%s reserved=%llu MB committed=%llu MB used=%llu MB free=%llu MB allocations=%llu",
-            reason,
-            static_cast<unsigned long long>(m_reserved / (1024 * 1024)),
-            static_cast<unsigned long long>(m_committed / (1024 * 1024)),
-            static_cast<unsigned long long>(m_used / (1024 * 1024)),
-            static_cast<unsigned long long>((AbsoluteLimit - m_used) / (1024 * 1024)),
-            static_cast<unsigned long long>(m_allocations.size()));
+        GetSmartMemoryEngine().Memory().OnGameEnd();
     }
 
-    void* CCleoMemoryManager::Allocate(const void* owner, size_t size)
+    void CCleoMemoryManager::RegisterMemoryAllocationLocked(
+        CRunningScript* owner,
+        void* address,
+        size_t size
+    )
     {
-        if (size == 0)
-            return nullptr;
+        m_allocations[address] = Allocation{ size, owner };
 
-        const size_t committed = AlignToPage(size);
-        if (committed == 0 || committed > AbsoluteLimit)
-            return nullptr;
+        auto& info = m_scriptAllocations[owner];
+        ++info.count;
+        info.size += size;
 
+        m_totalBytes += size;
+        if (m_totalBytes > m_peakBytes)
+            m_peakBytes = m_totalBytes;
+    }
+
+    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address, bool freeMemory)
+    {
+        auto it = m_allocations.find(address);
+        if (it == m_allocations.end())
+            return false;
+
+        const Allocation allocation = it->second;
+
+        if (freeMemory)
         {
-            std::lock_guard<std::mutex> lock(m_mutex);
-
-            if (size > AbsoluteLimit - m_used ||
-                committed > AbsoluteLimit - m_committed)
-            {
-                MEMORY_TRACE("REJECT size=%llu MB limit=2048 MB used=%llu MB committed=%llu MB",
-                    static_cast<unsigned long long>(size / (1024 * 1024)),
-                    static_cast<unsigned long long>(m_used / (1024 * 1024)),
-                    static_cast<unsigned long long>(m_committed / (1024 * 1024)));
-                return nullptr;
-            }
+            std::free(address);
         }
 
-        void* memory = VirtualAlloc(nullptr, committed, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        auto scriptIt = m_scriptAllocations.find(allocation.owner);
+        if (scriptIt != m_scriptAllocations.end())
+        {
+            scriptIt->second.count--;
+            if (scriptIt->second.size >= allocation.size)
+                scriptIt->second.size -= allocation.size;
+            else
+                scriptIt->second.size = 0;
+
+            if (scriptIt->second.count <= 0)
+                m_scriptAllocations.erase(scriptIt);
+        }
+
+        if (m_totalBytes >= allocation.size)
+            m_totalBytes -= allocation.size;
+        else
+            m_totalBytes = 0;
+
+        m_allocations.erase(it);
+        return true;
+    }
+
+    void CCleoMemoryManager::LogScriptWarningLocked(
+        CRunningScript* owner,
+        const char* reason
+    ) const
+    {
+        const auto it = m_scriptAllocations.find(owner);
+        if (it == m_scriptAllocations.end())
+            return;
+
+        const char* scriptName = owner ? owner->GetName() : "unknown";
+
+        MEMORY_TRACE(
+            "WARNING %s script='%.8s' blocks=%d size=%llu KB",
+            reason,
+            scriptName,
+            it->second.count,
+            static_cast<unsigned long long>(it->second.size / 1024)
+        );
+    }
+
+    void CCleoMemoryManager::LogRemainingLocked() const
+    {
+        MEMORY_TRACE(
+            "GAME_END remaining_blocks=%llu remaining_bytes=%llu KB",
+            static_cast<unsigned long long>(m_allocations.size()),
+            static_cast<unsigned long long>(m_totalBytes / 1024)
+        );
+
+        for (const auto& entry : m_scriptAllocations)
+        {
+            CRunningScript* owner = entry.first;
+            const AllocationInfo& info = entry.second;
+
+            if (info.count <= 0)
+                continue;
+
+            MEMORY_TRACE(
+                "LEAK script='%.8s' blocks=%d size=%llu KB",
+                owner ? owner->GetName() : "unknown",
+                info.count,
+                static_cast<unsigned long long>(info.size / 1024)
+            );
+        }
+    }
+
+    void* CCleoMemoryManager::Allocate(CRunningScript* owner, size_t size)
+    {
+        if (size == 0)
+        {
+            // CLEO5 explicitly removed the prohibition on zero-sized blocks.
+            // calloc(0, 1) is implementation-defined, so return nullptr here
+            // while keeping the tracker consistent.
+            MEMORY_TRACE("ALLOC size=0 -> null");
+            return nullptr;
+        }
+
+        void* memory = std::calloc(1, size);
         if (!memory)
         {
-            MEMORY_TRACE("OS_ALLOC_FAIL size=%llu KB error=%lu",
-                static_cast<unsigned long long>(committed / 1024),
-                static_cast<unsigned long>(GetLastError()));
+            MEMORY_TRACE(
+                "ALLOC_FAIL script='%.8s' size=%llu bytes",
+                owner ? owner->GetName() : "unknown",
+                static_cast<unsigned long long>(size)
+            );
             return nullptr;
         }
 
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        m_allocations.emplace(memory, Allocation{ size, committed, owner });
-        m_reserved += committed;
-        m_committed += committed;
-        m_used += size;
-        if (m_used > m_peakUsed)
-            m_peakUsed = m_used;
+        RegisterMemoryAllocationLocked(owner, memory, size);
 
-        if (!m_workingMarkReported && m_used >= WorkingMark)
+        auto it = m_scriptAllocations.find(owner);
+        if (it != m_scriptAllocations.end())
         {
-            m_workingMarkReported = true;
-            LogStatsLocked("WORKING_MARK");
+            if (m_configLimitAllocationSize > 0 &&
+                it->second.size > static_cast<size_t>(m_configLimitAllocationSize))
+            {
+                LogScriptWarningLocked(owner, "size_limit_exceeded");
+            }
+            else if (
+                m_configLimitAllocationCount > 0 &&
+                it->second.count > m_configLimitAllocationCount)
+            {
+                LogScriptWarningLocked(owner, "block_limit_exceeded");
+            }
         }
 
         return memory;
     }
 
-    bool CCleoMemoryManager::Free(void* address)
+    bool CCleoMemoryManager::Free(CRunningScript* owner, void* address)
     {
         if (!address)
             return true;
 
         std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_allocations.find(address);
+
+        const auto it = m_allocations.find(address);
         if (it == m_allocations.end())
         {
-            MEMORY_TRACE("FREE_REJECT address=0x%08X reason=unknown",
-                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address)));
+            MEMORY_TRACE(
+                "FREE_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
+                owner ? owner->GetName() : "unknown",
+                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address))
+            );
             return false;
         }
 
-        const Allocation allocation = it->second;
-        if (!VirtualFree(address, 0, MEM_RELEASE))
-        {
-            MEMORY_TRACE("FREE_FAIL address=0x%08X error=%lu",
-                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address)),
-                static_cast<unsigned long>(GetLastError()));
-            return false;
-        }
-
-        m_reserved -= allocation.committed;
-        m_committed -= allocation.committed;
-        m_used -= allocation.requested;
-        m_allocations.erase(it);
-
-        if (m_used < WorkingMark)
-            m_workingMarkReported = false;
-
-        return true;
+        return UnregisterMemoryAllocationLocked(address, true);
     }
 
-    size_t CCleoMemoryManager::ReleaseOwner(const void* owner)
+    bool CCleoMemoryManager::Forget(CRunningScript* owner, void* address)
+    {
+        if (!address)
+            return true;
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        const auto it = m_allocations.find(address);
+        if (it == m_allocations.end())
+        {
+            MEMORY_TRACE(
+                "FORGET_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
+                owner ? owner->GetName() : "unknown",
+                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address))
+            );
+            return false;
+        }
+
+        // Deliberately do not free() the memory. This is the CLEO5
+        // distinction between forget_memory and free_memory.
+        return UnregisterMemoryAllocationLocked(address, false);
+    }
+
+    size_t CCleoMemoryManager::ReleaseOwner(CRunningScript* owner)
     {
         if (!owner)
             return 0;
@@ -135,27 +229,46 @@ namespace CLEO
             void* address = it->first;
             const Allocation allocation = it->second;
 
-            if (VirtualFree(address, 0, MEM_RELEASE))
-            {
-                m_reserved -= allocation.committed;
-                m_committed -= allocation.committed;
-                m_used -= allocation.requested;
-                ++released;
-                it = m_allocations.erase(it);
-            }
+            std::free(address);
+
+            if (m_totalBytes >= allocation.size)
+                m_totalBytes -= allocation.size;
             else
-            {
-                ++it;
-            }
+                m_totalBytes = 0;
+
+            ++released;
+            it = m_allocations.erase(it);
         }
 
-        if (m_used < WorkingMark)
-            m_workingMarkReported = false;
+        m_scriptAllocations.erase(owner);
 
         if (released)
-            LogStatsLocked("OWNER_RELEASE");
+        {
+            MEMORY_TRACE(
+                "OWNER_RELEASE script='%.8s' blocks=%llu",
+                owner->GetName(),
+                static_cast<unsigned long long>(released)
+            );
+        }
 
         return released;
+    }
+
+    void CCleoMemoryManager::OnGameEnd()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        LogRemainingLocked();
+
+        for (const auto& entry : m_allocations)
+            std::free(entry.first);
+
+        m_allocations.clear();
+        m_scriptAllocations.clear();
+        m_totalBytes = 0;
+
+        MEMORY_TRACE("GAME_END cleanup_complete peak=%llu KB",
+            static_cast<unsigned long long>(m_peakBytes / 1024));
     }
 
     CCleoMemoryManager::Stats CCleoMemoryManager::GetStats() const
@@ -163,43 +276,17 @@ namespace CLEO
         std::lock_guard<std::mutex> lock(m_mutex);
 
         Stats result;
-        result.reserved = m_reserved;
-        result.committed = m_committed;
-        result.used = m_used;
-        result.free = AbsoluteLimit - m_used;
-        result.allocationCount = m_allocations.size();
-        result.peakUsed = m_peakUsed;
+        result.totalBlocks = m_allocations.size();
+        result.totalBytes = m_totalBytes;
+        result.peakBytes = m_peakBytes;
+        result.configuredBlockLimit = m_configLimitAllocationCount;
+        result.configuredSizeLimit = m_configLimitAllocationSize;
         return result;
-    }
-
-    bool CCleoMemoryManager::Owns(void* address) const
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_allocations.find(address) != m_allocations.end();
-    }
-
-    void CCleoMemoryManager::Maintenance()
-    {
-        // Stage 1 intentionally does not perform speculative compaction or
-        // background freeing. Every block is explicitly owned and released.
-        // The maintenance entry point remains the boundary for future
-        // frame-based cleanup/rebalance without touching the legacy executor.
     }
 
     CSmartMemoryEngine& GetSmartMemoryEngine()
     {
         static CSmartMemoryEngine engine;
         return engine;
-    }
-
-    void CSmartMemoryEngine::Tick()
-    {
-        ++m_tick;
-        m_memory.Maintenance();
-    }
-
-    CCleoMemoryManager::Stats CSmartMemoryEngine::GetStats() const
-    {
-        return m_memory.GetStats();
     }
 }
