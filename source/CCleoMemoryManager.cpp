@@ -1,7 +1,6 @@
 #include "stdafx.h"
 #include "CCleoMemoryManager.h"
 #include "CDebugBridge.h"
-#include "CDebugCallbackSystem.h"
 #include "CTheScripts.h"
 
 #include <cstdlib>
@@ -10,18 +9,11 @@ namespace CLEO
 {
     CCleoMemoryManager::CCleoMemoryManager()
     {
-        RegisterCallback(CLEO_CB_GAME_END, reinterpret_cast<uintptr_t>(&GameEndCallback));
-
         MEMORY_TRACE(
             "INIT limits blocks=%d size=%d MB",
             m_configLimitAllocationCount,
             m_configLimitAllocationSize / (1024 * 1024)
         );
-    }
-
-    void __stdcall CCleoMemoryManager::GameEndCallback()
-    {
-        GetSmartMemoryEngine().Memory().OnGameEnd();
     }
 
     void CCleoMemoryManager::RegisterMemoryAllocationLocked(
@@ -132,7 +124,7 @@ namespace CLEO
             return nullptr;
         }
 
-        void* memory = std::calloc(1, size);
+        void* memory = std::calloc(size ? size : 1, 1);
         if (!memory)
         {
             MEMORY_TRACE(
