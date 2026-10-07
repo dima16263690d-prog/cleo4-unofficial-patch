@@ -305,16 +305,9 @@ namespace CLEO {
 		// fill the rest with default handler
 		std::fill(newOpcodeHandlerTable + 28, newOpcodeHandlerTable + 329, reinterpret_cast<_OpcodeHandler>(extraOpcodeHandler));
 
-		// Wrap the complete dispatch table for DebugUtils. No legacy handler is
-		// replaced; the wrapper calls the original handler and returns its result.
-		std::copy(newOpcodeHandlerTable, newOpcodeHandlerTable + 329, debugOriginalOpcodeTable);
-
-		// Build the flat opcode -> existing handler map once. DebugUtils still
-		// observes every opcode through debugOpcodeDispatch.
-		CFastOpcodeExecutor::Initialize(debugOriginalOpcodeTable, 329);
-
-		std::fill(newOpcodeHandlerTable, newOpcodeHandlerTable + 329,
-			reinterpret_cast<_OpcodeHandler>(debugOpcodeDispatch));
+		// Keep the original CLEO4 opcode execution path.
+		// The experimental fast dispatcher is not installed into the legacy
+		// opcode table. This preserves the v1.0-test execution semantics.
 
 		FUNC_fopen = gvm.TranslateMemoryAddress(MA_FOPEN_FUNCTION);
 		FUNC_fclose = gvm.TranslateMemoryAddress(MA_FCLOSE_FUNCTION);
@@ -347,12 +340,6 @@ namespace CLEO {
 			// make it compatible with fastman92's limit adjuster (only required for 1.0 US)
 			RadarBlips = injector::ReadMemory<CMarker*>(0x583A05 + 2, true);
 
-			// Experimental hot-loop test for GTA SA 1.0 US.
-			// The old ScriptExecutionLoop remains above as the fallback implementation.
-			// This hook only changes the opcode execution loop; script semantics remain
-			// the same and the prepared FastOpcodeExecutor handles the opcode itself.
-			inj.Nop(0x469FB0, 0x469FFB - 0x469FB0);
-			inj.ReplaceFunction(CFastScriptExecutor::Execute, 0x469FF6);
 		}
 		else {
 			RadarBlips = gvm.TranslateMemoryAddress(MA_RADAR_BLIPS);
