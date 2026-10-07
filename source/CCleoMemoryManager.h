@@ -65,7 +65,6 @@ namespace CLEO
         void LogScriptWarningLocked(CRunningScript* owner, const char* reason) const;
         void LogRemainingLocked() const;
 
-        static void __stdcall GameEndCallback();
     };
 
     class CSmartMemoryEngine
