@@ -5539,7 +5539,9 @@ void __stdcall DebugUtils::OnScriptDeleted(CScriptThread* thread)
     if (!s_instance || !thread)
         return;
 
-    s_instance->m_debugScripts.erase(reinterpret_cast<uintptr_t>(thread));
+    const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
+    s_instance->m_debugScripts.erase(scriptPtr);
+    s_instance->m_seenScripts.erase(scriptPtr);
 
     s_instance->m_breakpoints.erase(
         std::remove_if(
