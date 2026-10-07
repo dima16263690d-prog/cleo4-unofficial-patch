@@ -33,7 +33,7 @@ namespace CLEO
         }
     }
 
-    OpcodeResult __fastcall CFastOpcodeExecutor::Dispatch(
+    __forceinline OpcodeResult __fastcall CFastOpcodeExecutor::Dispatch(
         CRunningScript *thread,
         unsigned short opcode
     )
