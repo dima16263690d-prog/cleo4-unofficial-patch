@@ -3,6 +3,7 @@
 #include "CCustomScript.h"
 #include "ScmFunction.h"
 #include "CDebugCallbackSystem.h"
+#include "CCleoMemoryManager.h"
 #include <cstdint>
 
 namespace CLEO
@@ -234,6 +235,11 @@ namespace CLEO
 
         // All custom shutdown goes through the central lifecycle path.
         RemoveAllCustomScripts();
+
+        // CLEO-style memory cleanup happens after scripts are destroyed,
+        // so per-script ownership can be released before the final leak scan.
+        GetSmartMemoryEngine().Memory().OnGameEnd();
+
         scriptsLoaded = false;
         NotifyGameEnd();
     }
