@@ -63,13 +63,23 @@ namespace CLEO
         }
         catch (const char *e)
         {
+            // Crash snapshots may be disabled in the hot loop, so last_thread
+            // can legitimately contain an older script name. Build the error
+            // message from the current thread only when an exception happens.
+            char scriptName[9] = "none";
+            if (thread != nullptr)
+            {
+                memcpy(scriptName, thread->GetName(), 8);
+                scriptName[8] = '\0';
+            }
+
             char str[128];
             sprintf(
                 str,
                 "%s encountered while parsing opcode '%04X' in script '%s'",
                 e,
                 last_opcode,
-                last_thread
+                scriptName
             );
             Error(str);
         }
