@@ -5176,13 +5176,11 @@ BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
         s_instance->m_currentScriptCommands = 0;
     }
 
-    for (const auto& breakpoint : s_instance->m_breakpoints)
-    {
-        if (breakpoint.scriptPtr == reinterpret_cast<uintptr_t>(thread))
-            return FALSE;
-    }
-
     const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
+
+    // Record the first observation before breakpoint handling. A breakpoint
+    // may return FALSE and skip the rest of the script-process callback chain,
+    // but the script must still receive exactly one [script_begin] record.
     if (s_instance->m_seenScripts.insert(scriptPtr).second)
     {
         s_instance->WriteScript(
@@ -5196,6 +5194,12 @@ BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
             thread->external ? 1 : 0,
             thread->missionFlag ? 1 : 0
         );
+    }
+
+    for (const auto& breakpoint : s_instance->m_breakpoints)
+    {
+        if (breakpoint.scriptPtr == scriptPtr)
+            return FALSE;
     }
 
     return TRUE;
@@ -5542,6 +5546,8 @@ void __stdcall DebugUtils::OnScriptDeleted(CScriptThread* thread)
     const uintptr_t scriptPtr = reinterpret_cast<uintptr_t>(thread);
     s_instance->m_debugScripts.erase(scriptPtr);
     s_instance->m_seenScripts.erase(scriptPtr);
+    if (s_instance->m_currentScriptPtr == scriptPtr)
+        s_instance->m_currentScriptPtr = 0;
 
     s_instance->m_breakpoints.erase(
         std::remove_if(
