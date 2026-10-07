@@ -15,6 +15,7 @@
     <ClCompile Include="source\CDebugCallbackSystem.cpp" />
     <ClCompile Include="source\CDebugBridge.cpp" />
     <ClCompile Include="source\CMemory.cpp" />
+    <ClCompile Include="source\CCleoMemoryManager.cpp" />
     <ClCompile Include="source\CHookSystem.cpp" />
     <ClCompile Include="source\CCustomOpcodeSystem.cpp" />
     <ClCompile Include="source\CFastOpcodeExecutor.cpp" />
@@ -44,6 +45,7 @@
     <ClInclude Include="source\CCodeInjector.h" />
     <ClInclude Include="source\CDebugBridge.h" />
     <ClInclude Include="source\CMemory.h" />
+    <ClInclude Include="source\CCleoMemoryManager.h" />
     <ClInclude Include="source\CHookSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.h" />
     <ClInclude Include="source\CFastOpcodeExecutor.h" />
