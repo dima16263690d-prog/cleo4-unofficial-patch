@@ -242,30 +242,23 @@ namespace CLEO {
 		{
 			do
 			{
-				ptrdiff_t off = reinterpret_cast<CCustomScript *>(thread)->IsCustom() ? thread->GetBytePointer() - thread->GetBasePointer() : thread->GetBytePointer() - scmBlock;
+				CCustomScript *cs = reinterpret_cast<CCustomScript *>(thread);
+				ptrdiff_t off = cs->IsCustom()
+					? thread->GetBytePointer() - thread->GetBasePointer()
+					: thread->GetBytePointer() - scmBlock;
+
 				WORD opcode = thread->ReadDataWord();
 				last_opcode = opcode;
 				last_off = off;
 				memcpy(last_thread, thread->GetName(), 8);
 				last_thread[8] = '\0';
 
-				reinterpret_cast<CCustomScript *>(thread)->SetNotFlag((opcode & 0x8000) != 0);
+				cs->SetNotFlag((opcode & 0x8000) != 0);
 				opcode &= 0x7FFF;
 
-				const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
-				if (action == CLEO_DEBUG_OPCODE_HANDLED)
-					res = OR_CONTINUE;
-				else if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
-					res = OR_INTERRUPT;
-				else
-				{
-					if (opcode < 0x0AF0 && lowOpcodeHandlers[opcode] != nullptr)
-						res = lowOpcodeHandlers[opcode](thread);
-					else
-						res = debugOriginalOpcodeTable[opcode / 100](thread, opcode);
-
-					res = NotifyScriptOpcodeProcessAfter(thread, opcode, res);
-				}
+				// Exact legacy CLEO4 dispatch: use the prepared opcode table
+				// exactly as v1.0-test did. No debug/fast dispatcher is involved.
+				res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
 			} while (res == OR_CONTINUE);
 		}
 		catch (const char *e)
@@ -274,6 +267,7 @@ namespace CLEO {
 			sprintf(str, "%s encountered while parsing opcode '%04X' in script '%s'", e, last_opcode, last_thread);
 			Error(str);
 		}
+
 		return 0;
 	}
 
