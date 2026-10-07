@@ -7,6 +7,7 @@
 
 namespace CLEO
 {
+    class CRunningScript;
     class CCleoMemoryManager
     {
     public:
