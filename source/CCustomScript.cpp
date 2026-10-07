@@ -3,6 +3,7 @@
 #include "cleo.h"
 #include "crc32.h"
 #include "ScmFunction.h"
+#include "CCleoMemoryManager.h"
 
 namespace CLEO
 {
@@ -301,6 +302,7 @@ memcpy(Name, parent->Name, sizeof(Name));
     CCustomScript::~CCustomScript()
     {
         ScmFunction::ReleaseForScript(this);
+        GetSmartMemoryEngine().Memory().ReleaseOwner(this);
 
         if (parentThread)
         {
