@@ -4,6 +4,7 @@
 #include "crc32.h"
 #include "ScmFunction.h"
 #include "CCleoMemoryManager.h"
+#include <cstring>
 
 namespace CLEO
 {
@@ -34,11 +35,11 @@ namespace CLEO
     WORD numStoredDraws = 0;
     WORD numStoredTexts = 0;
 
-    static void RestoreTextDrawDefaults()
+    static void FillTextDrawDefaults(BYTE* texts)
     {
         for (int i = 0; i<NUM_STORED_TEXTS; ++i)
         {
-            CTextDrawer * pText = (CTextDrawer*)&scriptTexts[i*TEXT_DATA_SIZE];
+            CTextDrawer * pText = (CTextDrawer*)&texts[i*TEXT_DATA_SIZE];
             pText->m_fScaleX = 0.48f;
             pText->m_fScaleY = 1.12f;
             pText->m_Colour = CRGBA(0xE1, 0xE1, 0xE1, 0xFF);
@@ -62,6 +63,20 @@ namespace CLEO
             pText->m_nParam1 = -1;
             pText->m_nParam2 = -1;
         }
+    }
+
+    static void RestoreTextDrawDefaults()
+    {
+        // Called up to twice per processed script every frame, so copy a
+        // prebuilt block instead of setting every field of all 96 entries.
+        static BYTE defaultTexts[TEXT_ARRAY_SIZE] = {};
+        static bool defaultTextsReady = false;
+        if (!defaultTextsReady)
+        {
+            FillTextDrawDefaults(defaultTexts);
+            defaultTextsReady = true;
+        }
+        std::memcpy(scriptTexts, defaultTexts, TEXT_ARRAY_SIZE);
     }
 
 
