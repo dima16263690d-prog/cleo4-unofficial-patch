@@ -16,6 +16,7 @@ namespace CLEO
     extern void(__cdecl* DrawScriptStuff)(char bBeforeFade);
     extern void(__cdecl* DrawScriptStuff_H)(char bBeforeFade);
     extern CCustomScript* lastScriptCreated;
+    extern DWORD* GameTimer;
     extern BYTE* MissionLoaded;
     extern void RunScriptDeleteDelegate(CRunningScript* script);
 
@@ -66,6 +67,23 @@ namespace CLEO
 
     void CCustomScript::Process()
     {
+        // A sleeping non-mission script executes no commands this frame
+        // (GTA's ProcessScript only runs it once GameTimer >= WakeTime), so
+        // skip the draw/texture swap and apply only the per-frame text reset.
+        if (!bIsMission && !bUseMissionCleanup && !bWastedBustedCheck && GameTimer && *GameTimer < WakeTime)
+        {
+            if (resources.UseTextCommands)
+            {
+                resources.script_draws.clear();
+                resources.script_texts.clear();
+                resources.NumDraws = 0;
+                resources.NumTexts = 0;
+                if (resources.UseTextCommands == 1)
+                    resources.UseTextCommands = 0;
+            }
+            return;
+        }
+
         RestoreScriptSpecifics();
 
         bool bNeedDefaults = false;
@@ -152,11 +170,13 @@ namespace CLEO
     void CCustomScript::StoreScriptTextures()
     {
         // store this scripts textures + restore SCM textures + make sure this scripts textures arent cleared by another
-        if (resources.script_textures.size())
-            resources.script_textures.clear();
-        for (int i = 0; i<NUM_STORED_SPRITES; ++i)
+        // Reuse the list nodes instead of reallocating all of them every frame.
+        if (resources.script_textures.size() != NUM_STORED_SPRITES)
+            resources.script_textures.resize(NUM_STORED_SPRITES);
+        auto texture = resources.script_textures.begin();
+        for (int i = 0; i<NUM_STORED_SPRITES; ++i, ++texture)
         {
-            resources.script_textures.push_back(*(RwTexture**)&scriptSprites[i]);
+            *texture = *(RwTexture**)&scriptSprites[i];
             scriptSprites[i] = storedSprites[i];
         }
 
