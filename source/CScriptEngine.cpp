@@ -1717,6 +1717,11 @@ namespace CLEO
 
     void CScriptEngine::DeleteWaitingScripts()
     {
+        // Most script-processing calls have no deferred deletions.
+        // Avoid constructing a temporary list when there is nothing to delete.
+        if (ScriptsWaitingForDelete.empty())
+            return;
+
         // Destruction is deliberately separated from queue/registry removal.
         std::list<CCustomScript *> waiting;
         waiting.swap(ScriptsWaitingForDelete);
