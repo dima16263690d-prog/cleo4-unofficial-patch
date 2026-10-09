@@ -82,6 +82,9 @@ namespace CLEO
 
     CSmartMemoryEngine& GetSmartMemoryEngine();
 
+    // Large Address Aware flag of gta_sa.exe (4 GB address space on x64 Windows).
+    bool IsGameLargeAddressAware();
+
     // Ask Windows to keep more of the game resident (soft working-set limits).
     void ConfigureProcessMemory();
 

@@ -287,16 +287,19 @@ namespace CLEO
         return engine;
     }
 
-    void ConfigureProcessMemory()
+    bool IsGameLargeAddressAware()
     {
         // Large Address Aware is a flag in gta_sa.exe's PE header; it is read
         // when the process is created and cannot be enabled from an ASI.
         auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(GetModuleHandle(nullptr));
         auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
             reinterpret_cast<const BYTE*>(dos) + dos->e_lfanew);
-        const bool largeAddressAware =
-            (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
-        MEMORY_TRACE("PROCESS large_address_aware=%d", largeAddressAware ? 1 : 0);
+        return (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+    }
+
+    void ConfigureProcessMemory()
+    {
+        MEMORY_TRACE("PROCESS large_address_aware=%d", IsGameLargeAddressAware() ? 1 : 0);
 
         // Windows starts every process with a ~200 KB minimum working set and
         // trims game pages under memory pressure, which shows up as stutter
