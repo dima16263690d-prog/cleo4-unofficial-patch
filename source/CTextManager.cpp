@@ -20,9 +20,24 @@ namespace CLEO
     const char* (__fastcall * CText__Get)(CText*, int dummy, const char*);
     DWORD _CText__TKey__locate;
 
-    char message_buf_big[7][0x80];
-    char message_buf_low[0x80];
-    char message_buf_high[0x80];
+    // GTA keeps the text pointer for the whole display time (and queues
+    // low-priority messages), so each call gets its own slot instead of all
+    // scripts overwriting one shared buffer.
+    const size_t MESSAGE_BUF_SIZE = 0x100;
+    const size_t MESSAGE_BUF_COUNT = 16;
+    char message_buf_big[7][MESSAGE_BUF_COUNT][MESSAGE_BUF_SIZE];
+    char message_buf_low[MESSAGE_BUF_COUNT][MESSAGE_BUF_SIZE];
+    char message_buf_high[MESSAGE_BUF_COUNT][MESSAGE_BUF_SIZE];
+    unsigned message_slot_big[7];
+    unsigned message_slot_low;
+    unsigned message_slot_high;
+
+    static const char *StoreMessage(char (*bufs)[MESSAGE_BUF_SIZE], unsigned& slot, const char *text)
+    {
+        char *buf = bufs[slot++ % MESSAGE_BUF_COUNT];
+        strncpy_s(buf, MESSAGE_BUF_SIZE, text ? text : "", _TRUNCATE);
+        return buf;
+    }
 
     const char * __fastcall CText__TKey__locate(CText__TKey *key, int dummy, const char *gxt, bool& found)
     {
@@ -50,20 +65,18 @@ namespace CLEO
 
     void PrintBig(const char *text, unsigned time, unsigned style)
     {
-        strcpy(message_buf_big[style - 1], text);
-        _PrintBig(message_buf_big[style - 1], time, style - 1);
+        if (style < 1 || style > 7) return;
+        _PrintBig(StoreMessage(message_buf_big[style - 1], message_slot_big[style - 1], text), time, style - 1);
     }
 
     void Print(const char *text, unsigned time)
     {
-        strcpy(message_buf_low, text);
-        _Print(message_buf_low, time, false, false);
+        _Print(StoreMessage(message_buf_low, message_slot_low, text), time, false, false);
     }
 
     void PrintNow(const char *text, unsigned time)
     {
-        strcpy(message_buf_high, text);
-        _PrintNow(message_buf_high, time, false, false);
+        _PrintNow(StoreMessage(message_buf_high, message_slot_high, text), time, false, false);
     }
 
     bool TestCheat(const char* cheat)

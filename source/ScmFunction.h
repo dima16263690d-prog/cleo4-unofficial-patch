@@ -25,7 +25,7 @@ namespace CLEO
 		std::string savedScriptFileDir;
 		std::string savedScriptFileName;
 
-		static const size_t store_size = 0x400;
+		static const size_t store_size = 0x4000;
 		static ScmFunction *Store[store_size];
 		static size_t allocationPlace;
 
