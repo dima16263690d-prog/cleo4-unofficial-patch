@@ -239,6 +239,7 @@ namespace CLEO
         // CLEO-style memory cleanup happens after scripts are destroyed,
         // so per-script ownership can be released before the final leak scan.
         GetSmartMemoryEngine().Memory().OnGameEnd();
+        CompactProcessHeaps();
 
         scriptsLoaded = false;
         NotifyGameEnd();

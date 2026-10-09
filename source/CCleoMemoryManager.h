@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace CLEO
 {
@@ -15,6 +16,7 @@ namespace CLEO
         {
             int count = 0;
             size_t size = 0;
+            std::unordered_set<void*> blocks;
         };
 
         struct Stats
@@ -79,4 +81,10 @@ namespace CLEO
     };
 
     CSmartMemoryEngine& GetSmartMemoryEngine();
+
+    // Ask Windows to keep more of the game resident (soft working-set limits).
+    void ConfigureProcessMemory();
+
+    // Return free heap pages to Windows after a game session was torn down.
+    void CompactProcessHeaps();
 }

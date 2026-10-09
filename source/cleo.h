@@ -13,6 +13,7 @@
 #include "CTextManager.h"
 #include "CSoundSystem.h"
 #include "crc32.h"
+#include "CCleoMemoryManager.h"
 
 namespace CLEO
 {
@@ -48,6 +49,8 @@ namespace CLEO
             CreateDirectoryA("cleo\\cleo_plugins", nullptr);
             CreateDirectoryA("cleo\\cleo_saves", nullptr);
             CreateDirectoryA("cleo\\cleo_text", nullptr);
+
+            ConfigureProcessMemory();
 
             CodeInjector.OpenReadWriteAccess(); // must do this earlier to ensure plugins write access on init
             GameMenu.Inject(CodeInjector);
