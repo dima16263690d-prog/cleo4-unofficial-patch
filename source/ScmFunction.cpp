@@ -8,10 +8,13 @@ namespace CLEO
 
     void* ScmFunction::operator new(size_t size)
     {
+        // Slot 0 is reserved: scripts use id 0 for "no active function", so a
+        // function stored there would be picked up by unrelated scripts.
+        if (allocationPlace == 0 || allocationPlace >= store_size) allocationPlace = 1;
         size_t start_search = allocationPlace;
         while (Store[allocationPlace])
         {
-            if (++allocationPlace >= store_size) allocationPlace = 0;
+            if (++allocationPlace >= store_size) allocationPlace = 1;
             if (allocationPlace == start_search) throw std::bad_alloc();
         }
         ScmFunction *obj = reinterpret_cast<ScmFunction *>(::operator new(size));
@@ -144,7 +147,7 @@ namespace CLEO
     }
 
     ScmFunction* ScmFunction::Store[store_size] = { /* default initializer - nullptr */ };
-    size_t ScmFunction::allocationPlace = 0;
+    size_t ScmFunction::allocationPlace = 1;
 
     void ResetScmFunctionStore()
     {
@@ -152,6 +155,6 @@ namespace CLEO
         {
             if (scmFunc) delete scmFunc;
         }
-        ScmFunction::allocationPlace = 0;
+        ScmFunction::allocationPlace = 1;
     }
 }

@@ -4,6 +4,7 @@
 #include "crc32.h"
 #include "ScmFunction.h"
 #include "CCleoMemoryManager.h"
+#include <cstring>
 
 namespace CLEO
 {
@@ -16,6 +17,7 @@ namespace CLEO
     extern void(__cdecl* DrawScriptStuff)(char bBeforeFade);
     extern void(__cdecl* DrawScriptStuff_H)(char bBeforeFade);
     extern CCustomScript* lastScriptCreated;
+    extern DWORD* GameTimer;
     extern BYTE* MissionLoaded;
     extern void RunScriptDeleteDelegate(CRunningScript* script);
 
@@ -33,11 +35,11 @@ namespace CLEO
     WORD numStoredDraws = 0;
     WORD numStoredTexts = 0;
 
-    static void RestoreTextDrawDefaults()
+    static void FillTextDrawDefaults(BYTE* texts)
     {
         for (int i = 0; i<NUM_STORED_TEXTS; ++i)
         {
-            CTextDrawer * pText = (CTextDrawer*)&scriptTexts[i*TEXT_DATA_SIZE];
+            CTextDrawer * pText = (CTextDrawer*)&texts[i*TEXT_DATA_SIZE];
             pText->m_fScaleX = 0.48f;
             pText->m_fScaleY = 1.12f;
             pText->m_Colour = CRGBA(0xE1, 0xE1, 0xE1, 0xFF);
@@ -63,9 +65,40 @@ namespace CLEO
         }
     }
 
+    static void RestoreTextDrawDefaults()
+    {
+        // Called up to twice per processed script every frame, so copy a
+        // prebuilt block instead of setting every field of all 96 entries.
+        static BYTE defaultTexts[TEXT_ARRAY_SIZE] = {};
+        static bool defaultTextsReady = false;
+        if (!defaultTextsReady)
+        {
+            FillTextDrawDefaults(defaultTexts);
+            defaultTextsReady = true;
+        }
+        std::memcpy(scriptTexts, defaultTexts, TEXT_ARRAY_SIZE);
+    }
+
 
     void CCustomScript::Process()
     {
+        // A sleeping non-mission script executes no commands this frame
+        // (GTA's ProcessScript only runs it once GameTimer >= WakeTime), so
+        // skip the draw/texture swap and apply only the per-frame text reset.
+        if (!bIsMission && !bUseMissionCleanup && !bWastedBustedCheck && GameTimer && *GameTimer < WakeTime)
+        {
+            if (resources.UseTextCommands)
+            {
+                resources.script_draws.clear();
+                resources.script_texts.clear();
+                resources.NumDraws = 0;
+                resources.NumTexts = 0;
+                if (resources.UseTextCommands == 1)
+                    resources.UseTextCommands = 0;
+            }
+            return;
+        }
+
         RestoreScriptSpecifics();
 
         bool bNeedDefaults = false;
@@ -152,11 +185,13 @@ namespace CLEO
     void CCustomScript::StoreScriptTextures()
     {
         // store this scripts textures + restore SCM textures + make sure this scripts textures arent cleared by another
-        if (resources.script_textures.size())
-            resources.script_textures.clear();
-        for (int i = 0; i<NUM_STORED_SPRITES; ++i)
+        // Reuse the list nodes instead of reallocating all of them every frame.
+        if (resources.script_textures.size() != NUM_STORED_SPRITES)
+            resources.script_textures.resize(NUM_STORED_SPRITES);
+        auto texture = resources.script_textures.begin();
+        for (int i = 0; i<NUM_STORED_SPRITES; ++i, ++texture)
         {
-            resources.script_textures.push_back(*(RwTexture**)&scriptSprites[i]);
+            *texture = *(RwTexture**)&scriptSprites[i];
             scriptSprites[i] = storedSprites[i];
         }
 

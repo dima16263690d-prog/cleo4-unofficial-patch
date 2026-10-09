@@ -239,9 +239,41 @@ namespace CLEO
         // CLEO-style memory cleanup happens after scripts are destroyed,
         // so per-script ownership can be released before the final leak scan.
         GetSmartMemoryEngine().Memory().OnGameEnd();
+        CompactProcessHeaps();
 
         scriptsLoaded = false;
         NotifyGameEnd();
+    }
+
+    // GTA's streaming budget for models/textures (CStreaming::ms_memoryAvailable)
+    // defaults to 50 MB. Raise it once the game has initialised streaming;
+    // never lower a value another mod already set.
+    static void ApplyStreamingMemoryLimit()
+    {
+        DWORD *memoryAvailable = nullptr;
+        switch (GetInstance().VersionManager.GetGameVersion())
+        {
+        case GV_US10:
+        case GV_EU10:
+            memoryAvailable = reinterpret_cast<DWORD*>(0x8A5A80);
+            break;
+        default:
+            TRACE("[MEMORY] STREAMING limit unchanged: address unknown for this game version");
+            return;
+        }
+
+        // 1 GB only fits safely in the 4 GB address space given by LAA.
+        const bool largeAddressAware = IsGameLargeAddressAware();
+        const DWORD desired = (largeAddressAware ? 1024u : 512u) * 1024 * 1024;
+        const DWORD current = *memoryAvailable;
+
+        if (current < desired)
+            *memoryAvailable = desired;
+
+        TRACE("[MEMORY] STREAMING limit %u -> %u MB (large_address_aware=%d)",
+            current / (1024 * 1024),
+            *memoryAvailable / (1024 * 1024),
+            largeAddressAware ? 1 : 0);
     }
 
     // called to initialise the scripts (after the main.scm has actually had a chance to set up)
@@ -250,6 +282,7 @@ namespace CLEO
         TRACE("Scripts initialized");
         GetInstance().ScriptEngine.GameEnd();
         InitScm();
+        ApplyStreamingMemoryLimit();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
@@ -261,6 +294,7 @@ namespace CLEO
         TRACE("Scripts exclusively initialized");
         GetInstance().ScriptEngine.GameEnd();
         InitScm();
+        ApplyStreamingMemoryLimit();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();
@@ -272,6 +306,7 @@ namespace CLEO
         TRACE("Scripts loaded");
         GetInstance().ScriptEngine.GameEnd();
         InitScm();
+        ApplyStreamingMemoryLimit();
         GetInstance().TextManager.ClearDynamicFxts();
         GetInstance().OpcodeSystem.FinalizeScriptObjects();
         GetInstance().SoundSystem.UnloadAllStreams();

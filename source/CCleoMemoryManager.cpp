@@ -4,6 +4,7 @@
 #include "CTheScripts.h"
 
 #include <cstdlib>
+#include <malloc.h>
 
 namespace CLEO
 {
@@ -27,6 +28,7 @@ namespace CLEO
         auto& info = m_scriptAllocations[owner];
         ++info.count;
         info.size += size;
+        info.blocks.insert(address);
 
         m_totalBytes += size;
         if (m_totalBytes > m_peakBytes)
@@ -50,6 +52,7 @@ namespace CLEO
         if (scriptIt != m_scriptAllocations.end())
         {
             scriptIt->second.count--;
+            scriptIt->second.blocks.erase(address);
             if (scriptIt->second.size >= allocation.size)
                 scriptIt->second.size -= allocation.size;
             else
@@ -210,29 +213,30 @@ namespace CLEO
         std::lock_guard<std::mutex> lock(m_mutex);
         size_t released = 0;
 
-        for (auto it = m_allocations.begin(); it != m_allocations.end(); )
-        {
-            if (it->second.owner != owner)
-            {
-                ++it;
-                continue;
-            }
+        // Walk only this script's blocks instead of every tracked allocation,
+        // so tearing down many scripts on reset stays linear.
+        auto ownerIt = m_scriptAllocations.find(owner);
+        if (ownerIt == m_scriptAllocations.end())
+            return 0;
 
-            void* address = it->first;
-            const Allocation allocation = it->second;
+        for (void* address : ownerIt->second.blocks)
+        {
+            auto it = m_allocations.find(address);
+            if (it == m_allocations.end())
+                continue;
 
             std::free(address);
 
-            if (m_totalBytes >= allocation.size)
-                m_totalBytes -= allocation.size;
+            if (m_totalBytes >= it->second.size)
+                m_totalBytes -= it->second.size;
             else
                 m_totalBytes = 0;
 
             ++released;
-            it = m_allocations.erase(it);
+            m_allocations.erase(it);
         }
 
-        m_scriptAllocations.erase(owner);
+        m_scriptAllocations.erase(ownerIt);
 
         if (released)
         {
@@ -255,8 +259,9 @@ namespace CLEO
         for (const auto& entry : m_allocations)
             std::free(entry.first);
 
-        m_allocations.clear();
-        m_scriptAllocations.clear();
+        // swap() also releases the hash tables' bucket arrays, clear() keeps them.
+        std::unordered_map<void*, Allocation>().swap(m_allocations);
+        std::unordered_map<CRunningScript*, AllocationInfo>().swap(m_scriptAllocations);
         m_totalBytes = 0;
 
         MEMORY_TRACE("GAME_END cleanup_complete peak=%llu KB",
@@ -280,5 +285,65 @@ namespace CLEO
     {
         static CSmartMemoryEngine engine;
         return engine;
+    }
+
+    bool IsGameLargeAddressAware()
+    {
+        // Large Address Aware is a flag in gta_sa.exe's PE header; it is read
+        // when the process is created and cannot be enabled from an ASI.
+        auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(GetModuleHandle(nullptr));
+        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+            reinterpret_cast<const BYTE*>(dos) + dos->e_lfanew);
+        return (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+    }
+
+    void ConfigureProcessMemory()
+    {
+        MEMORY_TRACE("PROCESS large_address_aware=%d", IsGameLargeAddressAware() ? 1 : 0);
+
+        // Windows starts every process with a ~200 KB minimum working set and
+        // trims game pages under memory pressure, which shows up as stutter
+        // when they are paged back in. Raise the soft limits; the *_DISABLE
+        // flags keep them as hints, so Windows can still trim if RAM runs out.
+        const SIZE_T desiredMin = 256u * 1024 * 1024;
+        const SIZE_T desiredMax = 1024u * 1024 * 1024;
+
+        HANDLE process = GetCurrentProcess();
+        SIZE_T currentMin = 0, currentMax = 0;
+        DWORD flags = 0;
+        if (!GetProcessWorkingSetSizeEx(process, &currentMin, &currentMax, &flags))
+            return;
+
+        if (currentMin >= desiredMin)
+            return;
+
+        const SIZE_T newMax = currentMax > desiredMax ? currentMax : desiredMax;
+        const BOOL ok = SetProcessWorkingSetSizeEx(
+            process,
+            desiredMin,
+            newMax,
+            QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
+
+        MEMORY_TRACE(
+            "PROCESS working_set min=%u->%u KB max=%u->%u KB result=%d error=%u",
+            static_cast<unsigned>(currentMin / 1024),
+            static_cast<unsigned>(desiredMin / 1024),
+            static_cast<unsigned>(currentMax / 1024),
+            static_cast<unsigned>(newMax / 1024),
+            ok ? 1 : 0,
+            ok ? 0u : static_cast<unsigned>(GetLastError()));
+    }
+
+    void CompactProcessHeaps()
+    {
+        HANDLE processHeap = GetProcessHeap();
+        HANDLE crtHeap = reinterpret_cast<HANDLE>(_get_heap_handle());
+
+        const SIZE_T largestFree = HeapCompact(processHeap, 0);
+        if (crtHeap && crtHeap != processHeap)
+            HeapCompact(crtHeap, 0);
+
+        MEMORY_TRACE("HEAP_COMPACT largest_free_block=%u KB",
+            static_cast<unsigned>(largestFree / 1024));
     }
 }
