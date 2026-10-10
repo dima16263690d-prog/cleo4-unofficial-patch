@@ -145,7 +145,7 @@ CLEO 4.4.4 Legacy
 - отдельная CLEO Memory Manager;
 - контролируемый GTA/CLEO Bridge;
 - подготовка Custom Runtime и Custom VM;
-- возможность будущих Worker Contexts без принудительного перевода legacy scripts на новый runtime.
+- улучшение существующего однопоточного исполнения без изменения поведения legacy-скриптов.
 
 ### Главный принцип
 
