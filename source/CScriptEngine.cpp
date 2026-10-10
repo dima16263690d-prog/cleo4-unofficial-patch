@@ -1,2 +1,1 @@
-#include "stdafx.h"
-// PLACEHOLDER
+RESTORE_NEEDED
