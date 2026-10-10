@@ -10,6 +10,7 @@ namespace
 {
     // 0 = not started, 1 = running, 2 = done
     volatile LONG g_cleoInitState = 0;
+    HINSTANCE g_cleoModule = nullptr;
 
     bool ModuleExportsUltimateASILoader(HMODULE module)
     {
@@ -80,10 +81,98 @@ namespace
         return false;
     }
 
+    // LINK/2012 Mod Loader is itself an ASI. It must find this module as
+    // CLEO.asi and will call _CLEO_GetVersion@0, then patch our IAT so
+    // FindFirstFile can inject scripts from modloader/ folders.
+    bool IsModLoaderPresent()
+    {
+        return GetModuleHandleA("modloader.asi") != nullptr ||
+            GetModuleHandleA("modloader.dll") != nullptr;
+    }
+
+    // Pin the process current directory to the folder that contains this
+    // CLEO module (normally the game root). Mod Loader and some ASI loaders
+    // may chdir into modloader/ or scripts/ while loading; relative paths
+    // like "./cleo" and FilesWalk("./*.cs") must still resolve to the game.
+    void EnsureGameWorkingDirectory()
+    {
+        HMODULE module = g_cleoModule;
+        if (module == nullptr)
+        {
+            if (!GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(&EnsureGameWorkingDirectory),
+                    &module))
+            {
+                return;
+            }
+        }
+
+        char modulePath[MAX_PATH] = {};
+        const DWORD length = GetModuleFileNameA(module, modulePath, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH)
+            return;
+
+        // Strip the file name, keep the trailing directory separator removed.
+        char* slash = strrchr(modulePath, '\\');
+        if (slash == nullptr)
+            slash = strrchr(modulePath, '/');
+        if (slash == nullptr)
+            return;
+
+        *slash = '\0';
+
+        // Warn if the module is not named CLEO.asi — Mod Loader only treats
+        // CLEO.asi / III.CLEO.asi / VC.CLEO.asi as the main CLEO host.
+        const char* fileName = slash + 1;
+        if (_stricmp(fileName, "CLEO.asi") != 0 &&
+            _stricmp(fileName, "III.CLEO.asi") != 0 &&
+            _stricmp(fileName, "VC.CLEO.asi") != 0)
+        {
+            TRACE(
+                "[compat] Module is named '%s'; Mod Loader expects CLEO.asi "
+                "in the game root for script injection and path translation.",
+                fileName
+            );
+        }
+
+        if (!SetCurrentDirectoryA(modulePath))
+        {
+            TRACE("[compat] SetCurrentDirectory failed for '%s'", modulePath);
+            return;
+        }
+
+        TRACE("[compat] Working directory set to game/module folder: %s", modulePath);
+    }
+
+    void LogLoaderEnvironment()
+    {
+        if (IsUltimateASILoaderPresent())
+            TRACE("[compat] Ultimate ASI Loader detected");
+
+        if (IsModLoaderPresent())
+        {
+            TRACE(
+                "[compat] Mod Loader detected (modloader.asi). "
+                "Keep CLEO.asi in the game root; scripts/plugins under "
+                "modloader/ are injected via Mod Loader path translation."
+            );
+        }
+        else
+        {
+            TRACE("[compat] Mod Loader not loaded (optional)");
+        }
+    }
+
     void InitializeCleoOnce()
     {
         if (InterlockedCompareExchange(&g_cleoInitState, 1, 0) != 0)
             return;
+
+        // Must run before any relative CreateDirectory / FilesWalk / chdir("./cleo").
+        EnsureGameWorkingDirectory();
+        LogLoaderEnvironment();
 
         const auto gameVersion = CLEO::GetInstance().VersionManager.GetGameVersion();
 
@@ -130,12 +219,14 @@ extern "C" __declspec(dllexport) void InitializeASI()
     InitializeCleoOnce();
 }
 
-extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        // Silent's ASI Loader / other classic loaders only call LoadLibrary and
-        // never invoke InitializeASI. Init from DllMain for them.
+        g_cleoModule = hinstDLL;
+
+        // Silent's ASI Loader / Mod Loader / other classic loaders only call
+        // LoadLibrary and do not know about InitializeASI. Init from DllMain.
         //
         // Ultimate ASI Loader (dinput8.dll, other.dll, vorbisFile.dll, ...):
         // skip heavy init here (loader lock) and let InitializeASI run after
