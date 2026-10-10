@@ -1,7 +1,7 @@
 #pragma once
 
-// Shared internal symbols for split CScriptEngine translation units.
-// Not part of the public CLEO API.
+// Shared symbols for split CScriptEngine translation units.
+// Internal only — not part of the public CLEO API.
 
 #include "CScriptEngine.h"
 #include "CCustomScript.h"
