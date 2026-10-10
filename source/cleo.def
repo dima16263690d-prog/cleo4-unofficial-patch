@@ -1,6 +1,7 @@
 LIBRARY
 
 EXPORTS 
+	InitializeASI							@51
 	_CLEO_GetFloatOpcodeParam@4				@1
 	_CLEO_GetGameVersion@0					@2
 	_CLEO_GetIntOpcodeParam@4				@3
