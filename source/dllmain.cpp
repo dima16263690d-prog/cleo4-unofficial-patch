@@ -2,33 +2,37 @@
 #include "cleo.h"
 #include "CDebugBridge.h"
 
-#include <stacktrace>
+#include <psapi.h>
+
+#pragma comment(lib, "psapi.lib")
 
 namespace
 {
-    // One-shot initialization protects against loaders that invoke both
-    // DllMain fallback and InitializeASI.
+    // 0 = not started, 1 = running, 2 = done
     volatile LONG g_cleoInitState = 0;
 
-    bool LoadedByUltimateASILoader()
+    // Ultimate ASI Loader exports IsUltimateASILoader from its proxy module
+    // (dinput8/vorbisFile/dsound/...). Detect by loaded modules, not by file
+    // name and not by stack walking inside DllMain (safer under loader lock).
+    bool IsUltimateASILoaderPresent()
     {
-        // Ultimate ASI Loader deliberately exports this marker. Detect it on
-        // the current load stack rather than by DLL name: its proxy may be
-        // named dinput8.dll, vorbisFile.dll, d3d9.dll, or something else.
-        for (const auto& frame : std::stacktrace::current())
-        {
-            HMODULE module = nullptr;
-            const auto address = reinterpret_cast<LPCWSTR>(frame.native_handle());
+        HMODULE modules[512];
+        DWORD bytesNeeded = 0;
 
-            if (GetModuleHandleExW(
-                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                    address,
-                    &module) &&
-                GetProcAddress(module, "IsUltimateASILoader") != nullptr)
-            {
+        if (!EnumProcessModules(
+                GetCurrentProcess(),
+                modules,
+                sizeof(modules),
+                &bytesNeeded))
+        {
+            return false;
+        }
+
+        const DWORD count = bytesNeeded / sizeof(HMODULE);
+        for (DWORD i = 0; i < count; ++i)
+        {
+            if (GetProcAddress(modules[i], "IsUltimateASILoader") != nullptr)
                 return true;
-            }
         }
 
         return false;
@@ -78,6 +82,7 @@ namespace
 
 // Ultimate ASI Loader calls this after LoadLibrary (outside the Windows loader
 // lock when DontLoadFromDllMain=1, which is its default).
+// Must remain exported: see source/cleo.def (InitializeASI).
 extern "C" __declspec(dllexport) void InitializeASI()
 {
     InitializeCleoOnce();
@@ -85,11 +90,15 @@ extern "C" __declspec(dllexport) void InitializeASI()
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
-    if (reason == DLL_PROCESS_ATTACH && !LoadedByUltimateASILoader())
+    if (reason == DLL_PROCESS_ATTACH)
     {
-        // Legacy ASI loaders only call LoadLibrary and do not know about
-        // InitializeASI, so retain a compatibility fallback for them.
-        InitializeCleoOnce();
+        // Silent's ASI Loader / other classic loaders only call LoadLibrary and
+        // never invoke InitializeASI. Init from DllMain for them.
+        //
+        // Ultimate ASI Loader: skip heavy init here (loader lock) and let
+        // InitializeASI run after LoadLibrary returns.
+        if (!IsUltimateASILoaderPresent())
+            InitializeCleoOnce();
     }
 
     // CCleoInstance's global destructor keeps the existing Stop() cleanup.
