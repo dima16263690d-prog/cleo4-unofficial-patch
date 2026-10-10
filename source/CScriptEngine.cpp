@@ -683,21 +683,30 @@ namespace CLEO
 
     void __fastcall HOOK_ProcessScript(CCustomScript * pScript, int)
     {
-        // Match CLEO 5 lifecycle: destroy scripts deferred by the previous
-        // processing boundary before attempting to initialize the runtime.
+        // Destroy scripts deferred by the previous processing boundary.
         GetInstance().ScriptEngine.DeleteWaitingScripts();
 
-        // CLEO 5 retries GameBegin from the script-processing hook because
-        // pActiveScripts may not be ready during the initial SCM callbacks.
+        // Wait until GTA's active script queue is ready before loading CLEO scripts.
         GetInstance().ScriptEngine.GameBegin();
 
         if (pScript == nullptr)
             return;
 
-        if (!GetInstance().ScriptEngine.Runtime.DispatchScript(
-            reinterpret_cast<CRunningScript*>(pScript)
-        ))
+        CRunningScript *script = reinterpret_cast<CRunningScript*>(pScript);
+
+        // Keep DebugUtils/plugin callbacks at the existing processing boundary.
+        if (!NotifyScriptProcessBefore(script))
             return;
+
+        // Native GTA scripts retain GTA's original executor. CLEO scripts keep
+        // their existing CCustomScript::Process() path.
+        CCustomScript *customScript = reinterpret_cast<CCustomScript*>(script);
+        if (customScript->IsCustom())
+            customScript->Process();
+        else
+            ProcessScript(script);
+
+        NotifyScriptProcessAfter(script);
     }
 
     void HOOK_DrawScriptStuff(char bBeforeFade)
