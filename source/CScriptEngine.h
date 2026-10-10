@@ -3,6 +3,7 @@
 #include "CCustomOpcodeSystem.h"
 #include "CCustomScript.h"
 #include "CScriptRuntime.h"
+#include <list>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,6 +20,7 @@ namespace CLEO
     {
         friend class CCustomScript;
         std::list<CCustomScript *> CustomScripts;
+        std::list<CCustomScript *> m_drawableScripts;
         std::list<CCustomScript *> ScriptsWaitingForDelete;
         std::set<unsigned long> InactiveScriptHashes;
 
@@ -36,6 +38,7 @@ namespace CLEO
         CCustomScript *CustomMission;
 
         CCustomScript			*	LoadScript(const char *szFilePath);
+        void UpdateDrawableScript(CCustomScript* script, bool drawable);
 
     public:
         static SCRIPT_VAR			CleoVariables[0x400];
