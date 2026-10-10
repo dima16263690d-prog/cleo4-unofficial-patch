@@ -5,9 +5,20 @@
 #include "CDebugCallbackSystem.h"
 #include "CCleoMemoryManager.h"
 #include <cstdint>
+#include <algorithm>
+#include <cctype>
 
 namespace CLEO
 {
+    static std::string NormalizeCustomScriptName(const char* name)
+    {
+        std::string key = name ? name : "";
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return key;
+    }
+
     DWORD FUNC_AddScriptToQueue;
     DWORD FUNC_RemoveScriptFromQueue;
     DWORD FUNC_StopScript;
@@ -1480,9 +1491,29 @@ namespace CLEO
         if (name == nullptr)
             return nullptr;
 
+        // Preserve legacy precedence: the custom mission is searched first.
         if (CustomMission && _stricmp(name, CustomMission->Name) == 0)
             return CustomMission;
 
+        // Most lookups are now average O(1). Confirm with _stricmp so the
+        // cache never changes the legacy case-insensitive matching semantics.
+        const auto key = NormalizeCustomScriptName(name);
+        const auto indexed = m_customScriptsByName.find(key);
+        if (indexed != m_customScriptsByName.end())
+        {
+            for (auto cs : indexed->second)
+            {
+                if (cs != nullptr &&
+                    m_customScriptRegistry.find(cs) != m_customScriptRegistry.end() &&
+                    _stricmp(name, cs->Name) == 0)
+                {
+                    return cs;
+                }
+            }
+        }
+
+        // Compatibility fallback for scripts whose public Name storage was
+        // modified directly by a plugin or memory opcode after registration.
         for (auto cs : CustomScripts)
         {
             if (_stricmp(name, cs->Name) == 0)
@@ -1556,6 +1587,11 @@ namespace CLEO
         if (script == nullptr || activeThreadQueue == nullptr)
             return false;
 
+        // CLEO script state is tracked by lifecycle operations, avoiding a
+        // full GTA active-queue walk for the common custom-script case.
+        if (m_customScriptRegistry.find(script) != m_customScriptRegistry.end())
+            return m_activeCustomScriptRegistry.find(script) != m_activeCustomScriptRegistry.end();
+
         for (auto current = *activeThreadQueue; current != nullptr; current = current->GetNext())
         {
             if (current == script)
@@ -1569,6 +1605,11 @@ namespace CLEO
     {
         if (script == nullptr)
             return false;
+
+        // Includes active, temporarily unregistered and pending-delete CLEO
+        // scripts, matching the lifetime currently represented by the lists.
+        if (m_customScriptRegistry.find(script) != m_customScriptRegistry.end())
+            return true;
 
         if (activeThreadQueue != nullptr)
         {
@@ -1632,6 +1673,16 @@ namespace CLEO
         if (cs == nullptr || !cs->cleoState.bOK)
             return;
 
+        // Registration is idempotent: a script must never be inserted into
+        // the GTA queue or custom lists twice.
+        if (!m_customScriptRegistry.insert(cs).second)
+        {
+            TRACE("[engine] Duplicate custom-script registration rejected: %.*s", 8, cs->Name);
+            return;
+        }
+
+        m_activeCustomScriptRegistry.insert(cs);
+
         if (cs->IsMission())
         {
             TRACE("Registering custom mission named %.*s", 8, cs->Name);
@@ -1641,6 +1692,7 @@ namespace CLEO
         {
             TRACE("Registering custom script named %.*s", 8, cs->Name);
             CustomScripts.push_back(cs);
+            m_customScriptsByName[NormalizeCustomScriptName(cs->Name)].push_back(cs);
         }
 
         // Registry -> GTA queue -> active state.
@@ -1653,6 +1705,16 @@ namespace CLEO
         if (cs == nullptr)
             return;
 
+        // Prevent repeated stop requests from enqueueing the same object for
+        // deletion more than once. Keep it in the main registry until the
+        // deferred destructor boundary, preserving pointer-validity semantics.
+        if (m_customScriptRegistry.find(cs) == m_customScriptRegistry.end() ||
+            !m_pendingDeleteRegistry.insert(cs).second)
+        {
+            return;
+        }
+
+        m_activeCustomScriptRegistry.erase(cs);
         const bool wasChild = cs->parentThread != nullptr;
 
         // 1. Break the parent relation first.
@@ -1693,6 +1755,19 @@ namespace CLEO
         else
         {
             TRACE("Unregistering custom script named %.*s", 8, cs->Name);
+
+            // Remove the pointer from every name bucket. This also cleans up
+            // stale cache entries if a plugin changed the public script name.
+            for (auto it = m_customScriptsByName.begin(); it != m_customScriptsByName.end(); )
+            {
+                auto& scripts = it->second;
+                scripts.erase(std::remove(scripts.begin(), scripts.end(), cs), scripts.end());
+                if (scripts.empty())
+                    it = m_customScriptsByName.erase(it);
+                else
+                    ++it;
+            }
+
             CustomScripts.remove(cs);
         }
 
@@ -1717,12 +1792,23 @@ namespace CLEO
 
     void CScriptEngine::DeleteWaitingScripts()
     {
+        // This hook runs for every GTA ProcessScript call. Avoid even the
+        // temporary list/swap work on the overwhelmingly common empty path.
+        if (ScriptsWaitingForDelete.empty())
+            return;
+
         // Destruction is deliberately separated from queue/registry removal.
         std::list<CCustomScript *> waiting;
         waiting.swap(ScriptsWaitingForDelete);
 
         for (auto cs : waiting)
         {
+            // Remove the pointer before destruction callbacks run, so they
+            // cannot treat an object being destroyed as a valid script.
+            m_pendingDeleteRegistry.erase(cs);
+            m_activeCustomScriptRegistry.erase(cs);
+            m_customScriptRegistry.erase(cs);
+
             TRACE("Deleting inactive script named %.*s", 8, cs->Name);
             delete cs;
         }
@@ -1737,6 +1823,7 @@ namespace CLEO
             if (activeThreadQueue != nullptr)
                 RemoveScriptFromQueue(cs, activeThreadQueue);
             cs->SetActive(false);
+            m_activeCustomScriptRegistry.erase(cs);
         }
 
         if (CustomMission != nullptr)
@@ -1744,6 +1831,7 @@ namespace CLEO
             if (activeThreadQueue != nullptr)
                 RemoveScriptFromQueue(CustomMission, activeThreadQueue);
             CustomMission->SetActive(false);
+            m_activeCustomScriptRegistry.erase(CustomMission);
         }
     }
 
@@ -1755,12 +1843,14 @@ namespace CLEO
         {
             AddScriptToQueue(cs, activeThreadQueue);
             cs->SetActive(true);
+            m_activeCustomScriptRegistry.insert(cs);
         }
 
         if (CustomMission != nullptr)
         {
             AddScriptToQueue(CustomMission, activeThreadQueue);
             CustomMission->SetActive(true);
+            m_activeCustomScriptRegistry.insert(CustomMission);
         }
     }
 
