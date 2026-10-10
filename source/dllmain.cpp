@@ -11,11 +11,53 @@ namespace
     // 0 = not started, 1 = running, 2 = done
     volatile LONG g_cleoInitState = 0;
 
-    // Ultimate ASI Loader exports IsUltimateASILoader from its proxy module
-    // (dinput8/vorbisFile/dsound/...). Detect by loaded modules, not by file
-    // name and not by stack walking inside DllMain (safer under loader lock).
+    bool ModuleExportsUltimateASILoader(HMODULE module)
+    {
+        return module != nullptr &&
+            GetProcAddress(module, "IsUltimateASILoader") != nullptr;
+    }
+
+    // Fast path: known Ultimate ASI Loader / proxy DLL names used with GTA SA.
+    // Includes dinput8.dll (most common UAL name) and other.dll (custom proxy).
+    bool IsKnownAsiLoaderProxyPresent()
+    {
+        static const wchar_t* const kProxyNames[] =
+        {
+            L"dinput8.dll",
+            L"other.dll",
+            L"vorbisFile.dll",
+            L"vorbishooked.dll",
+            L"dsound.dll",
+            L"dinput.dll",
+            L"d3d8.dll",
+            L"d3d9.dll",
+            L"d3d11.dll",
+            L"ddraw.dll",
+            L"winmm.dll",
+            L"version.dll",
+            L"wininet.dll",
+            L"winhttp.dll",
+            L"msimg32.dll",
+            L"xlive.dll",
+        };
+
+        for (const wchar_t* name : kProxyNames)
+        {
+            if (ModuleExportsUltimateASILoader(GetModuleHandleW(name)))
+                return true;
+        }
+
+        return false;
+    }
+
+    // Ultimate ASI Loader exports IsUltimateASILoader from its proxy module.
+    // Prefer known proxy names (dinput8.dll, other.dll, ...), then scan all
+    // loaded modules. Avoid stack walking inside DllMain.
     bool IsUltimateASILoaderPresent()
     {
+        if (IsKnownAsiLoaderProxyPresent())
+            return true;
+
         HMODULE modules[512];
         DWORD bytesNeeded = 0;
 
@@ -31,7 +73,7 @@ namespace
         const DWORD count = bytesNeeded / sizeof(HMODULE);
         for (DWORD i = 0; i < count; ++i)
         {
-            if (GetProcAddress(modules[i], "IsUltimateASILoader") != nullptr)
+            if (ModuleExportsUltimateASILoader(modules[i]))
                 return true;
         }
 
@@ -95,8 +137,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
         // Silent's ASI Loader / other classic loaders only call LoadLibrary and
         // never invoke InitializeASI. Init from DllMain for them.
         //
-        // Ultimate ASI Loader: skip heavy init here (loader lock) and let
-        // InitializeASI run after LoadLibrary returns.
+        // Ultimate ASI Loader (dinput8.dll, other.dll, vorbisFile.dll, ...):
+        // skip heavy init here (loader lock) and let InitializeASI run after
+        // LoadLibrary returns.
         if (!IsUltimateASILoaderPresent())
             InitializeCleoOnce();
     }
