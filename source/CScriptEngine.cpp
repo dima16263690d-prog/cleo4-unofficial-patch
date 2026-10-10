@@ -152,12 +152,15 @@ namespace CLEO
 
     SCRIPT_VAR * __fastcall _GetScriptParamPointer2(CRunningScript *pScript, int dummy, int unused)
     {
+        SCRIPT_VAR *result;
         _asm
         {
             mov ecx, pScript
             push unused
             call FUNC_GetScriptParamPointer2
+            mov result, eax
         }
+        return result;
     }
 
     void(__cdecl * InitScm)();
