@@ -708,13 +708,57 @@ namespace CLEO
         return bBeforeFade ? DrawScriptStuff_H(bBeforeFade) : DrawScriptStuff(bBeforeFade);
     }
 
+    void CScriptEngine::UpdateDrawableScript(CCustomScript* script, bool drawable)
+    {
+        if (script == nullptr)
+            return;
+
+        auto existing = std::find(m_drawableScripts.begin(), m_drawableScripts.end(), script);
+
+        if (!drawable)
+        {
+            if (existing != m_drawableScripts.end())
+                m_drawableScripts.erase(existing);
+            return;
+        }
+
+        // No draw data transition means no list work. The list contains only
+        // scripts with persistent draw/text state, in CustomScripts order.
+        if (existing != m_drawableScripts.end())
+            return;
+
+        const auto scriptPosition = std::find(CustomScripts.begin(), CustomScripts.end(), script);
+        if (scriptPosition == CustomScripts.end())
+            return; // custom missions are drawn separately
+
+        auto nextScript = scriptPosition;
+        ++nextScript;
+        for (; nextScript != CustomScripts.end(); ++nextScript)
+        {
+            const auto nextDrawable = std::find(
+                m_drawableScripts.begin(), m_drawableScripts.end(), *nextScript);
+            if (nextDrawable != m_drawableScripts.end())
+            {
+                m_drawableScripts.insert(nextDrawable, script);
+                return;
+            }
+        }
+
+        m_drawableScripts.push_back(script);
+    }
+
     void CScriptEngine::DrawScriptStuff(char bBeforeFade)
     {
-        for (auto i = CustomScripts.begin(); i != CustomScripts.end(); ++i)
+        // Draw only scripts that currently own draw/text records. Advance the
+        // iterator first because Draw() may clear its records and unregister
+        // itself from m_drawableScripts.
+        for (auto it = m_drawableScripts.begin(); it != m_drawableScripts.end(); )
         {
-            auto script = *i;
-            script->Draw(bBeforeFade);
+            auto current = it++;
+            if (*current != nullptr)
+                (*current)->Draw(bBeforeFade);
         }
+
         if (auto script = GetCustomMission())
             script->Draw(bBeforeFade);
     }
@@ -1715,6 +1759,7 @@ namespace CLEO
         }
 
         m_activeCustomScriptRegistry.erase(cs);
+        UpdateDrawableScript(cs, false);
         const bool wasChild = cs->parentThread != nullptr;
 
         // 1. Break the parent relation first.
