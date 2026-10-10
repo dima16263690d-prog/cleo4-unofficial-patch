@@ -134,6 +134,9 @@ namespace CLEO
     void CCustomScript::StoreScriptDraws()
     {
         // store this scripts draws + texts
+        const bool hadDrawableResources =
+            !resources.script_draws.empty() || !resources.script_texts.empty();
+
         if (*numScriptDraws)
             resources.script_draws.assign(scriptDraws, scriptDraws + (*numScriptDraws * DRAW_DATA_SIZE));
         else if (resources.script_draws.size())
@@ -146,6 +149,11 @@ namespace CLEO
         resources.UseTextCommands = *useTextCommands;
         resources.NumDraws = *numScriptDraws;
         resources.NumTexts = *numScriptTexts;
+
+        const bool hasDrawableResources =
+            !resources.script_draws.empty() || !resources.script_texts.empty();
+        if (hadDrawableResources != hasDrawableResources)
+            GetInstance().ScriptEngine.UpdateDrawableScript(this, hasDrawableResources);
 
         // restore SCM draws + texts
         if (numStoredDraws) std::copy(storedDraws, storedDraws + (numStoredDraws * DRAW_DATA_SIZE), scriptDraws);
