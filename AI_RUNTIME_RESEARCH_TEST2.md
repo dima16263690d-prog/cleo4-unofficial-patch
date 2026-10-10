@@ -1,4 +1,9 @@
-# AI RUNTIME RESEARCH — CLEO 4 Runtime Reverse Architecture — TEST 2
+# ARCHIVE — Old Runtime / Worker Research (not an active project plan)
+
+> **Status:** historical notes from a separate experimental branch. The Scheduler and worker-execution proposals in this file are abandoned and are not part of the current CLEO 4.4.4 project direction. The active project remains single-threaded on GTA SA's game thread. Do not treat the ideas or roadmap below as tasks to implement. The document is retained only as an archive of past investigation.
+
+---
+
 
 Внутренний рабочий контекст проекта.
 
