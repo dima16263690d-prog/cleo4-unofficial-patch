@@ -89,12 +89,18 @@ namespace CLEO
         {
             if (resources.UseTextCommands)
             {
+                const bool hadDrawableResources =
+                    !resources.script_draws.empty() || !resources.script_texts.empty();
+
                 resources.script_draws.clear();
                 resources.script_texts.clear();
                 resources.NumDraws = 0;
                 resources.NumTexts = 0;
                 if (resources.UseTextCommands == 1)
                     resources.UseTextCommands = 0;
+
+                if (hadDrawableResources)
+                    GetInstance().ScriptEngine.UpdateDrawableScript(this, false);
             }
             return;
         }
