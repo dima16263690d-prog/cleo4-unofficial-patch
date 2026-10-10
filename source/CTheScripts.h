@@ -104,8 +104,14 @@ public:
     inline	bool				IsMission() {
         return bIsMission;
     }
+    // Name[8] is not always NUL-terminated (GTA native threads). Copy into a
+    // 9-byte buffer so %s logging never reads past the field.
+    // Note: do not call GetName() twice in one expression — buffer is reused.
     inline	const char		*	GetName() {
-        return Name;
+        thread_local char safeName[9];
+        memcpy(safeName, Name, 8);
+        safeName[8] = '\0';
+        return safeName;
     }
     inline	BYTE			*	GetBasePointer() {
         return (BYTE*)BaseIP;
@@ -161,13 +167,6 @@ public:
     inline	bool				GetConditionResult() {
         return bCondResult != 0;
     }
-    /*
-    inline	int			GetLocalVarVal(int i) {
-    return IsMission() ? CTheScripts::GetMissionLocal(i) : GetIntVar(i);
-    }
-    inline	int		*	GetLocalVarPtr(int i) {
-    return IsMission() ? CTheScripts::GetMissionLocalPtr(i) : GetIntVarPtr(i);
-    }*/
 
     inline	char			ReadDataType() {
         return ReadDataByte();
@@ -187,46 +186,6 @@ public:
     inline	short		ReadDataArrayFlags() {
         return ReadDataByte();
     }
-    /*
-    inline	int			ReadDataGlobalIntVal()
-    {
-    short i = ReadDataVarIndex();
-    return CTheScripts::GetGlobalVarVal(i);
-    };
-
-    inline	int			ReadDataLocalIntVal()
-    {
-    short i = ReadDataVarIndex();
-    return IsMission() ? CTheScripts::GetMissionLocal(i) : GetIntVar(i);
-    };*/
-    /*
-    inline	int			ReadDataGlobalArrayIntVal()
-    {
-    short	offset = ReadDataArrayOffset(),
-    index = ReadDataArrayIndex(),
-    size = ReadDataArraySize(),
-    flags = ReadDataArrayFlags(),
-    indexVal;
-
-    if(flags >= 0x80) indexVal = GetLocalVarVal(index);
-    else indexVal = CTheScripts::GetGlobalVarVal(index);
-
-    return CTheScripts::GetGlobalVarVal(indexVal + offset);
-    };
-
-    inline	int			ReadDataLocalArrayIntVal()
-    {
-    short	offset = ReadDataArrayOffset(),
-    index = ReadDataArrayIndex(),
-    size = ReadDataArraySize(),
-    flags = ReadDataArrayFlags(),
-    indexVal;
-
-    if(flags >= 0x80) indexVal = GetLocalVarVal(index);
-    else indexVal = CTheScripts::GetGlobalVarVal(index);
-
-    return GetLocalVarVal(indexVal + offset);
-    };*/
 
     inline	void		IncPtr(int n = 1) {
         CurrentIP += n;
