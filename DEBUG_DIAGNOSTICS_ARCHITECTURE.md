@@ -105,8 +105,8 @@ remains supported.
 DebugUtils does not:
 
 - become part of the Memory Engine
-- enable worker threads in the runtime scheduler
+- change the existing .cs/.cs3/.cs4 execution path
 - add the GTA-CLEO bridge
 - replace the legacy .cs/.cs3/.cs4 execution engine
 
-Diagnostics are now a prerequisite for further scheduler/runtime changes.
+Diagnostics support stability and performance work on the existing single-threaded runtime. They do not add a scheduler or worker execution.
