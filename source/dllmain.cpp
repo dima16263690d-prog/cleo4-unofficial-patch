@@ -2,20 +2,59 @@
 #include "cleo.h"
 #include "CDebugBridge.h"
 
-class Starter
-{
-    static Starter dummy;
-    Starter()
-    {
-        auto gv = CLEO::GetInstance().VersionManager.GetGameVersion();
-        TRACE("Started on game of version: %s",
-            (gv == CLEO::GV_US10) ? "SA 1.0 us" :
-            (gv == CLEO::GV_EU11) ? "SA 1.01 eu" :
-            (gv == CLEO::GV_EU10) ? "SA 1.0 eu" :
-            (gv == CLEO::GV_STEAM) ? "SA 3.0 steam" :
-            "<!unknown!>");
+#include <stacktrace>
 
-        if (gv != CLEO::GV_US10 && gv != CLEO::GV_EU11 && gv != CLEO::GV_EU10 && gv != CLEO::GV_STEAM)
+namespace
+{
+    // One-shot initialization protects against loaders that invoke both
+    // DllMain fallback and InitializeASI.
+    volatile LONG g_cleoInitState = 0;
+
+    bool LoadedByUltimateASILoader()
+    {
+        // Ultimate ASI Loader deliberately exports this marker. Detect it on
+        // the current load stack rather than by DLL name: its proxy may be
+        // named dinput8.dll, vorbisFile.dll, d3d9.dll, or something else.
+        for (const auto& frame : std::stacktrace::current())
+        {
+            HMODULE module = nullptr;
+            const auto address = reinterpret_cast<LPCWSTR>(frame.native_handle());
+
+            if (GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    address,
+                    &module) &&
+                GetProcAddress(module, "IsUltimateASILoader") != nullptr)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void InitializeCleoOnce()
+    {
+        if (InterlockedCompareExchange(&g_cleoInitState, 1, 0) != 0)
+            return;
+
+        const auto gameVersion = CLEO::GetInstance().VersionManager.GetGameVersion();
+
+        TRACE(
+            "Started on game of version: %s",
+            (gameVersion == CLEO::GV_US10) ? "SA 1.0 us" :
+            (gameVersion == CLEO::GV_EU11) ? "SA 1.01 eu" :
+            (gameVersion == CLEO::GV_EU10) ? "SA 1.0 eu" :
+            (gameVersion == CLEO::GV_STEAM) ? "SA 3.0 steam" :
+            "<!unknown!>"
+        );
+
+        if (gameVersion != CLEO::GV_US10 &&
+            gameVersion != CLEO::GV_EU11 &&
+            gameVersion != CLEO::GV_EU10 &&
+            gameVersion != CLEO::GV_STEAM)
+        {
             Error(
                 "Unknown game version.\n"
                 "The list of all supported executables:\n\n"
@@ -27,55 +66,32 @@ class Starter
                 "  6) gta_sa.exe, 1C localization, 15 806 464 bytes;\n"
                 "  7) gta_sa.exe, original 1.0 eu, unknown size;\n"
                 "  8) gta_sa.exe, public no-dvd 1.0eu, 14 386 176 bytes;\n"
-                "  9) gta_sa.exe, original 3.0 steam executable, unknown size;"
+                "  9) gta_sa.exe, original 3.0 steam executable, unknown size;\n"
                 " 10) gta_sa.exe, decrypted 3.0 steam executable, 5 697 536 bytes."
             );
+        }
 
         CLEO::GetInstance().Start();
+        InterlockedExchange(&g_cleoInitState, 2);
     }
-    ~Starter()
-    {
-        CLEO::GetInstance().Stop();
-    }
-};
+}
 
-Starter Starter::dummy;
-
-extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+// Ultimate ASI Loader calls this after LoadLibrary (outside the Windows loader
+// lock when DontLoadFromDllMain=1, which is its default).
+extern "C" __declspec(dllexport) void InitializeASI()
 {
-    /*auto gv = CLEO::GetInstance().VersionManager.GetGameVersion();
+    InitializeCleoOnce();
+}
 
-    switch (fdwReason)
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH && !LoadedByUltimateASILoader())
     {
-    case DLL_PROCESS_ATTACH:
-    TRACE("Started on game of version: %s",
-    (gv == CLEO::GV_US10)? "SA 1.0 us"  :
-    (gv == CLEO::GV_EU11)? "SA 1.01 eu" :
-    (gv == CLEO::GV_EU10)? "SA 1.0 eu" :
-    (gv == CLEO::GV_STEAM)? "SA 3.0 steam" :
-    "<!unknown!>");
+        // Legacy ASI loaders only call LoadLibrary and do not know about
+        // InitializeASI, so retain a compatibility fallback for them.
+        InitializeCleoOnce();
+    }
 
-    if (gv != CLEO::GV_US10 && gv != CLEO::GV_EU11 && gv != CLEO::GV_EU10 && gv != CLEO::GV_STEAM)
-    Error(
-    "Unknown game version.\n"
-    "The list of all supported executables:\n\n"
-    "  1) gta_sa.exe, original 1.0 us, 14 405 632 bytes;\n"
-    "  2) gta_sa.exe, public no-dvd 1.0 us, 14 383 616 bytes;\n"
-    "  3) gta_sa_compact.exe, listener's executable, 5 189 632 bytes;\n"
-    "  4) gta_sa.exe, original 1.01 eu, 14 405 632 bytes;\n"
-    "  5) gta_sa.exe, public no-dvd 1.01 eu, 15 806 464 bytes;\n"
-    "  6) gta_sa.exe, 1C localization, 15 806 464 bytes;\n"
-    "  7) gta_sa.exe, original 1.0 eu, unknown size;\n"
-    "  8) gta_sa.exe, public no-dvd 1.0eu, 14 386 176 bytes;\n"
-    "  9) gta_sa.exe, original 3.0 steam executable, unknown size;"
-    " 10) gta_sa.exe, decrypted 3.0 steam executable, 5 697 536 bytes."
-    );
-
-    CLEO::GetInstance().Start();
-    break;
-    case DLL_PROCESS_DETACH:
-    CLEO::GetInstance().Stop();
-    break;
-    }*/
+    // CCleoInstance's global destructor keeps the existing Stop() cleanup.
     return TRUE;
 }
