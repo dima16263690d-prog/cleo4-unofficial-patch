@@ -8,20 +8,20 @@ namespace CLEO
 {
     const char CLEO_VERSION_STR[] = VERSION_STRING;
 
-    void(__cdecl	* TextDraw)				(float x, float y, const char* text);
-    void(__cdecl	* SetTextAlign)			(BYTE nAlign);
-    void(__cdecl	* SetTextFont)			(BYTE nFont);
-    void(__cdecl* SetTextEdge)			(char nEdge);
-    void(__cdecl	* SetLetterSize)			(float w, float h);
-    void(__cdecl	* SetLetterColor)		(RGBA color);
+    void(__cdecl\t* TextDraw)\t\t\t\t(float x, float y, const char* text);
+    void(__cdecl\t* SetTextAlign)\t\t\t(BYTE nAlign);
+    void(__cdecl\t* SetTextFont)\t\t\t(BYTE nFont);
+    void(__cdecl* SetTextEdge)\t\t\t(char nEdge);
+    void(__cdecl\t* SetLetterSize)\t\t\t(float w, float h);
+    void(__cdecl\t* SetLetterColor)\t\t\t(RGBA color);
 
     // thiscalls dont work with memory_pointer operator overload template
-    DWORD	CMenuManager__ScaleX;
-    DWORD	CMenuManager__ScaleY;
-    DWORD	CTexture__DrawInRect;
-    //void	(__thiscall	* CTexture__DrawInRect)	(void *texture, RwRect2D *rect, RwRGBA color);
+    DWORD\tCMenuManager__ScaleX;
+    DWORD\tCMenuManager__ScaleY;
+    DWORD\tCTexture__DrawInRect;
+    //void\t(__thiscall\t* CTexture__DrawInRect)\t(void *texture, RwRect2D *rect, RwRGBA color);
 
-    CMenuManager *	MenuManager;
+    CMenuManager *\tMenuManager;
 
     float CGameMenu_ScaleX(CMenuManager *pMenu, float w)
     {
@@ -66,7 +66,8 @@ namespace CLEO
         auto cs_count = GetInstance().ScriptEngine.WorkingScriptsCount();
         auto plugin_count = GetInstance().PluginSystem.GetNumPlugins();
         std::ostringstream cleo_text;
-        cleo_text << "CLEO v" << CLEO_VERSION_STR;
+        // Display the project branding in-game. Keep VERSION_STRING unchanged for API compatibility.
+        cleo_text << "CLEO 4 NEFPATH";
 #ifdef _DEBUG
         cleo_text << " DEBUG";
 #endif
@@ -75,9 +76,11 @@ namespace CLEO
         if (SetTextEdge) SetTextEdge(1);
         SetLetterSize(CGameMenu_ScaleX(MenuManager, 0.23f), CGameMenu_ScaleY(MenuManager, 0.4f));
 
-        SetLetterColor(RGBA(/*0xE1, 0xE1, 0xE1, 0xFF*/0xAD, 0xCE, 0xC4, 0xFF));
+        // Mint accent for the NEFPATH branding.
+        SetLetterColor(RGBA(0xAD, 0xCE, 0xC4, 0xFF));
         TextDraw(CGameMenu_ScaleX(MenuManager, 6.0f), CGameMenu_ScaleY(MenuManager, 428.0f), cleo_text.str().c_str());
         cleo_text.str("");
+        cleo_text.clear();
 
         if (cs_count || plugin_count)
         {
@@ -90,7 +93,7 @@ namespace CLEO
 
             SetLetterSize(CGameMenu_ScaleX(MenuManager, 0.18f), CGameMenu_ScaleY(MenuManager, 0.34f));
 
-            SetLetterColor(RGBA(/*0xE1, 0xE1, 0xE1, 0xFF*/0xAD, 0xCE, 0xC4, 0xFF));
+            SetLetterColor(RGBA(0xAD, 0xCE, 0xC4, 0xFF));
             TextDraw(CGameMenu_ScaleX(MenuManager, 6.0f), CGameMenu_ScaleY(MenuManager, 436.0f), cleo_text.str().c_str());
         }
     }
