@@ -70,6 +70,36 @@ namespace
         return reinterpret_cast<const DebugCustomScriptLayout*>(thread);
     }
 
+    // A native GTA thread and a CLEO custom thread are the same size as the
+    // CRunningScript base (0xE0), so the CCustomScript storage offsets
+    // (CodeSize at 0xFC, relation fields, std::string members) are only valid
+    // for threads that actually own that extended layout. CCustomScript marks
+    // itself with IsCustom() at byte +0xDF. baseIp is not a discriminator:
+    // native SCM threads keep a non-null main.scm pointer there too.
+    static bool IsCustomScriptThread(const CScriptThread* thread)
+    {
+        if (thread == nullptr)
+            return false;
+
+        return *reinterpret_cast<const volatile BYTE*>(
+            reinterpret_cast<const BYTE*>(thread) + 0xDF) != 0;
+    }
+
+    // Copies the 8-byte GTA thread name into a 9-byte, always NUL-terminated
+    // buffer. threadName is not guaranteed to be NUL-terminated.
+    static void SafeThreadName(const CScriptThread* thread, char (&out)[9])
+    {
+        out[8] = '\0';
+
+        if (thread == nullptr)
+        {
+            memcpy(out, "none", 5);
+            return;
+        }
+
+        memcpy(out, thread->threadName, 8);
+    }
+
     constexpr DWORD kGtaSa10ActiveScripts = 0x00A8B42C;
 
     static const char* ExceptionName(DWORD code)

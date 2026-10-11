@@ -21,6 +21,19 @@
 
 namespace
 {
+    // The vectored handler runs in first-chance territory, before stack
+    // unwinding, where no STL, file I/O or GUI work is permitted. It records
+    // only this fixed-size snapshot. The unhandled filter later reports it so
+    // that a crash preceded by a handled first-chance fault still shows both.
+    struct FirstChanceSnapshot
+    {
+        DWORD code;
+        DWORD address;
+        DWORD threadId;
+    };
+
+    static volatile FirstChanceSnapshot g_firstChance{};
+
     struct CrashDialogData
     {
         std::wstring title;
@@ -797,7 +810,6 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         crashDisplayName = "Unknown / Unclassified Crash";
     }
 
-    char report[8192] = {};
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
@@ -848,12 +860,12 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         faultRva
     );
 
-    if (record->NumberParameters >= 2)
+    if (exceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        record->NumberParameters >= 2)
     {
         appendf(
-            "access=%s (%d)\r\ntarget=0x%08X",
+            "access=%s\r\ntarget=0x%08X",
             accessName.c_str(),
-            accessType,
             static_cast<DWORD>(targetAddress)
         );
     }
@@ -1099,6 +1111,35 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         crashSnapshotValid ? crashSnapshot.gameTick : 0
     );
 
+    output += "\r\n[FIRST CHANCE]\r\n";
+    {
+        MemoryBarrier();
+        const DWORD firstChanceCode = g_firstChance.code;
+
+        if (firstChanceCode == 0)
+        {
+            output += "captured=0\r\n";
+        }
+        else
+        {
+            const DWORD firstChanceAddress = g_firstChance.address;
+            const DWORD firstChanceThread = g_firstChance.threadId;
+
+            appendf(
+                "captured=1\r\n"
+                "code=0x%08X (%s)\r\n"
+                "address=0x%08X\r\n"
+                "module=%s\r\n"
+                "thread_id=%u",
+                firstChanceCode,
+                ExceptionName(firstChanceCode),
+                firstChanceAddress,
+                ModuleNameForAddress(firstChanceAddress).c_str(),
+                firstChanceThread
+            );
+        }
+    }
+
     output += "\r\n[CRASH MATCHER]\r\n";
     if (match != nullptr)
     {
@@ -1179,6 +1220,47 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     if (match == nullptr || wildcardMatch)
         output +=
             "auto_database=UNVERIFIED candidate written to CLEO-CrashAuto.txt\r\n";
+
+    // The opcode ring buffer is filled only when OpcodeHistory is enabled. It
+    // is dumped here (not during opcode execution) so the crash path owns the
+    // only formatting cost. try_lock keeps this safe inside the exception
+    // handler: if another thread held the lock during the fault, we skip the
+    // dump instead of deadlocking the crash report.
+    if (m_crashOpcodeHistory &&
+        m_opcodeHistoryMutex.try_lock())
+    {
+        output += "\r\n[OPCODE HISTORY]\r\n";
+
+        const size_t count = m_opcodeHistoryCount;
+        const size_t next = m_opcodeHistoryNext;
+
+        if (count == 0)
+        {
+            output += "count=0\r\n";
+        }
+        else
+        {
+            appendf("count=%u", static_cast<unsigned>(count));
+
+            const size_t start = (count == kOpcodeHistorySize) ? next : 0;
+            for (size_t i = 0; i < count; ++i)
+            {
+                const OpcodeHistoryEntry& e =
+                    m_opcodeHistory[(start + i) % kOpcodeHistorySize];
+
+                appendf(
+                    "#%03u script=%.8s opcode=0x%04X result=%u off=0x%08X",
+                    static_cast<unsigned>(i + 1),
+                    e.scriptName,
+                    e.opcode & 0x7FFFu,
+                    e.result,
+                    e.offset
+                );
+            }
+        }
+
+        m_opcodeHistoryMutex.unlock();
+    }
 
     output += "\r\n[END]\r\n";
     output += "============================================================\r\n";
@@ -1310,21 +1392,15 @@ LONG WINAPI DebugUtils::VectoredExceptionHandler(PEXCEPTION_POINTERS info)
     // VEH runs before stack unwinding and is therefore first-chance territory.
     // It records only a fixed-size exception snapshot. No STL, file I/O,
     // CrashInfo parsing, DbgHelp or GUI work is allowed here.
-    // The authoritative full report is generated only by the unhandled filter.
-    struct FirstChance
-    {
-        DWORD code;
-        DWORD address;
-        DWORD threadId;
-    };
-
-    static volatile FirstChance snapshot{};
-    snapshot.code = info->ExceptionRecord->ExceptionCode;
-    snapshot.address =
+    // The authoritative full report is generated only by the unhandled filter,
+    // which also reports this snapshot so a handled first-chance fault that
+    // preceded the fatal one is not silently lost.
+    g_firstChance.code = info->ExceptionRecord->ExceptionCode;
+    g_firstChance.address =
         static_cast<DWORD>(
             reinterpret_cast<uintptr_t>(
                 info->ExceptionRecord->ExceptionAddress));
-    snapshot.threadId = GetCurrentThreadId();
+    g_firstChance.threadId = GetCurrentThreadId();
     MemoryBarrier();
 
     return EXCEPTION_CONTINUE_SEARCH;

@@ -884,18 +884,23 @@ const DebugUtils::CrashInfoEntry* DebugUtils::FindCrashInfo(
                     backtraceModules.push_back(ModuleNameForAddress(bt));
             }
 
+            // Module matches are counted separately from address matches:
+            // reusing backtraceMatches would make the module threshold depend
+            // on how many address frames already matched.
+            int moduleMatches = 0;
+
             for (const auto& expected : entry.backtraceModules)
             {
                 if (!ContainsModule(backtraceModules, expected))
                     continue;
 
-                ++backtraceMatches;
+                ++moduleMatches;
             }
 
             const int requiredModules =
                 static_cast<int>(entry.backtraceModules.size());
 
-            if (backtraceMatches < requiredModules)
+            if (moduleMatches < requiredModules)
                 continue;
 
             score += requiredModules * 60;

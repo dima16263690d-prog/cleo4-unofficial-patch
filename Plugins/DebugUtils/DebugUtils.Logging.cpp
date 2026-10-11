@@ -742,13 +742,17 @@ void DebugUtils::WriteCoreMemorySummary()
     {
         ++queueCount;
 
-        if (thread->baseIp != nullptr)
+        // Only genuine CCustomScript threads own the extended layout that the
+        // CodeSize field belongs to. Native SCM threads also carry a non-null
+        // baseIp, so classify by the custom-flag byte instead.
+        if (IsCustomScriptThread(thread))
         {
             ++customCount;
             const auto* custom = GetDebugCustomScript(thread);
             customObjectBytes += sizeof(DebugCustomScriptLayout);
 
-            if (!thread->missionFlag && countedCodeBases.insert(thread->baseIp).second)
+            if (!thread->missionFlag && thread->baseIp != nullptr &&
+                countedCodeBases.insert(thread->baseIp).second)
                 customCodeBytes += custom->CodeSize;
         }
         else
