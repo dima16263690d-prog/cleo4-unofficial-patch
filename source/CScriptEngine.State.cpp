@@ -140,7 +140,7 @@ template<typename T>
         }
     }
 
-    SCRIPT_VAR CScriptEngine::CleoVariables[0x400];
+
 
     template<typename T>
     void inline ReadBinary(std::istream& s, T& buf)
