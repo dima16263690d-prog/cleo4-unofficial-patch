@@ -26,8 +26,6 @@
     <ClCompile Include="source\CCustomOpcodeSystem.Text.cpp" />
     <ClCompile Include="source\CCustomOpcodeSystem.World.cpp" />
     <ClCompile Include="source\CCustomOpcodeSystem.Misc.cpp" />
-    <ClCompile Include="source\CFastOpcodeExecutor.cpp" />
-    <ClCompile Include="source\CFastScriptExecutor.cpp" />
     <ClCompile Include="source\CCustomScript.cpp" />
     <ClCompile Include="source\ScmFunction.cpp" />
     <ClCompile Include="source\CDmaFix.cpp" />
@@ -59,8 +57,6 @@
     <ClInclude Include="source\CHookSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.Internal.h" />
-    <ClInclude Include="source\CFastOpcodeExecutor.h" />
-    <ClInclude Include="source\CFastScriptExecutor.h" />
     <ClInclude Include="source\CCustomScript.h" />
     <ClInclude Include="source\CCleoScriptState.h" />
     <ClInclude Include="source\CScriptResources.h" />

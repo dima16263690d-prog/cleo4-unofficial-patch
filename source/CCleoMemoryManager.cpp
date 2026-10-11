@@ -36,7 +36,7 @@ namespace CLEO
             m_peakBytes = m_totalBytes;
     }
 
-    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address, bool freeMemory)
+    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address)
     {
         auto it = m_allocations.find(address);
         if (it == m_allocations.end())
@@ -44,10 +44,7 @@ namespace CLEO
 
         const Allocation allocation = it->second;
 
-        if (freeMemory)
-        {
-            std::free(address);
-        }
+        std::free(address);
 
         auto scriptIt = m_scriptAllocations.find(allocation.owner);
         if (scriptIt != m_scriptAllocations.end())
@@ -180,30 +177,7 @@ namespace CLEO
             return false;
         }
 
-        return UnregisterMemoryAllocationLocked(address, true);
-    }
-
-    bool CCleoMemoryManager::Forget(CRunningScript* owner, void* address)
-    {
-        if (!address)
-            return true;
-
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        const auto it = m_allocations.find(address);
-        if (it == m_allocations.end())
-        {
-            MEMORY_TRACE(
-                "FORGET_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
-                owner ? owner->GetName() : "unknown",
-                reinterpret_cast<unsigned>(address)
-            );
-            return false;
-        }
-
-        // Deliberately do not free() the memory. This is the CLEO5
-        // distinction between forget_memory and free_memory.
-        return UnregisterMemoryAllocationLocked(address, false);
+        return UnregisterMemoryAllocationLocked(address);
     }
 
     size_t CCleoMemoryManager::ReleaseOwner(CRunningScript* owner)

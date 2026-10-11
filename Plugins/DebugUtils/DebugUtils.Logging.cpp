@@ -811,8 +811,9 @@ void DebugUtils::WriteCoreMemorySummary()
                 "========================= memory summary ========================="
             );
             WriteMemory(
-                "%-8s %10s %10s | %6s %7s %7s | %9s %9s",
-                "uptime", "private", "delta", "queue", "native", "custom", "cleo_img", "known"
+                "%-8s %10s %10s | %6s %7s %7s | %9s %9s %13s",
+                "uptime", "private", "delta", "queue", "native", "custom",
+                "cleo_img", "known", "private_bytes"
             );
             m_memorySummaryHeaderWritten = true;
         }
@@ -823,7 +824,7 @@ void DebugUtils::WriteCoreMemorySummary()
             (GetTickCount() - m_memorySessionStartTick) / 1000;
 
         WriteMemory(
-            "%-8u %10s %10s | %6u %7u %7u | %9s %9s",
+            "%-8u %10s %10s | %6u %7u %7u | %9s %9s %13llu",
             static_cast<unsigned>(uptimeSeconds),
             MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
             privateDeltaText.c_str(),
@@ -831,7 +832,8 @@ void DebugUtils::WriteCoreMemorySummary()
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
             MemoryBytes(cleoImage + debugUtilsImage).c_str(),
-            MemoryBytes(cleoKnownBytes).c_str()
+            MemoryBytes(cleoKnownBytes).c_str(),
+            static_cast<unsigned long long>(pmc.PrivateUsage)
         );
 
         // PagefileUsage equals PrivateUsage on Windows, so printing both would
@@ -874,8 +876,20 @@ void DebugUtils::WriteCoreMemorySummary()
         // 32-bit GTA with the standard 2 GB user address space: near the limit
         // fragmentation is expected, so flag the transition into the last 20%.
         const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
-        const bool rotateActive =
-            static_cast<uint64_t>(pmc.PrivateUsage) >= (kAddressSpaceBytes * 80ull / 100ull);
+        const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+        const uint64_t headroomBytes =
+            privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
+        const bool rotateActive = privateUsage >= (kAddressSpaceBytes * 80ull / 100ull);
+
+        // Absolute headroom is easier to reason about than a percentage when a
+        // leak is suspected, so print it every interval.
+        WriteMemory(
+            "         limit=%s used=%.1f%% headroom=%s",
+            MemoryBytes(kAddressSpaceBytes).c_str(),
+            static_cast<double>(privateUsage) * 100.0 /
+                static_cast<double>(kAddressSpaceBytes),
+            MemoryBytes(headroomBytes).c_str()
+        );
 
         if (rotateActive && !m_memoryRotateActive)
         {

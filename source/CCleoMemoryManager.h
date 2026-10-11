@@ -36,7 +36,6 @@ namespace CLEO
         // Memory is tracked globally and additionally attributed to its script.
         void* Allocate(CRunningScript* owner, size_t size);
         bool Free(CRunningScript* owner, void* address);
-        bool Forget(CRunningScript* owner, void* address);
 
         // Release every tracked allocation belonging to one script.
         size_t ReleaseOwner(CRunningScript* owner);
@@ -64,7 +63,7 @@ namespace CLEO
         int m_configLimitAllocationSize = 16 * 1024 * 1024;
 
         void RegisterMemoryAllocationLocked(CRunningScript* owner, void* address, size_t size);
-        bool UnregisterMemoryAllocationLocked(void* address, bool freeMemory);
+        bool UnregisterMemoryAllocationLocked(void* address);
         void LogScriptWarningLocked(CRunningScript* owner, const char* reason) const;
         void LogRemainingLocked() const;
 

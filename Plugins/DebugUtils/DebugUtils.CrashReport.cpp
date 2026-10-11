@@ -996,27 +996,27 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 sizeof(pmc)))
         {
             appendf(
-                "working_set=%I64u (%s)\r\n"
-                "peak_working_set=%I64u (%s)\r\n"
-                "private=%I64u (%s)\r\n"
-                "pagefile=%I64u (%s)",
-                static_cast<unsigned __int64>(pmc.WorkingSetSize),
+                "working_set=%s\r\n"
+                "peak_working_set=%s\r\n"
+                "private=%s",
                 MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
-                static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
                 MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
-                static_cast<unsigned __int64>(pmc.PrivateUsage),
-                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
-                static_cast<unsigned __int64>(pmc.PagefileUsage),
-                MemoryBytes(static_cast<uint64_t>(pmc.PagefileUsage)).c_str()
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
             );
 
             // 32-bit GTA: private usage near 2 GB means the address space is
             // nearly exhausted, which is itself a plausible crash cause.
             const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+            const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+            const uint64_t headroomBytes =
+                privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
             appendf(
+                "address_space_limit=%s\r\n"
+                "address_space_headroom=%s\r\n"
                 "address_space_nearly_exhausted=%d",
-                static_cast<uint64_t>(pmc.PrivateUsage) >=
-                    (kAddressSpaceBytes * 80ull / 100ull) ? 1 : 0
+                MemoryBytes(kAddressSpaceBytes).c_str(),
+                MemoryBytes(headroomBytes).c_str(),
+                privateUsage >= (kAddressSpaceBytes * 80ull / 100ull) ? 1 : 0
             );
 
             MEMORYSTATUSEX systemMemory{};

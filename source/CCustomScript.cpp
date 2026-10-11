@@ -352,6 +352,7 @@ memcpy(Name, parent->Name, sizeof(Name));
     {
         ScmFunction::ReleaseForScript(this);
         GetSmartMemoryEngine().Memory().ReleaseOwner(this);
+        GetInstance().TextManager.ReleaseOwner(this);
 
         if (parentThread)
         {

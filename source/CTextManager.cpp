@@ -147,7 +147,7 @@ namespace CLEO
         return CText__Get(gameTexts, 0, key);
     }
 
-    bool CTextManager::AddFxt(const char *key, const char *value, bool dynamic)
+    bool CTextManager::AddFxt(const char *key, const char *value, bool dynamic, CRunningScript *owner)
     {
         // TODO: replace this part with in-place construction of FxtEntry,
         // when it will be implemented in libstdc++
@@ -164,12 +164,14 @@ namespace CLEO
             }
 
             fxt->second->text = value;
+            // The new definition supersedes the previous dynamic owner.
+            fxt->second->owner = owner;
         }
         else
         {
             std::string str = key;
             std::transform(str.begin(), str.end(), str.begin(), ::toupper);
-            fxts[str.c_str()] = new FxtEntry(value, !dynamic);
+            fxts[str.c_str()] = new FxtEntry(value, !dynamic, dynamic ? owner : nullptr);
 
             TRACE("Added FXT[%s]", str.c_str());
         }
@@ -192,6 +194,26 @@ namespace CLEO
         delete found->second;
         fxts.erase(found);
         return true;
+    }
+
+    void CTextManager::ReleaseOwner(CRunningScript *owner)
+    {
+        if (owner == nullptr)
+            return;
+
+        for (auto it = fxts.begin(); it != fxts.end();)
+        {
+            FxtEntry *entry = it->second;
+            if (entry != nullptr && !entry->is_static && entry->owner == owner)
+            {
+                delete entry;
+                fxts.erase(it++);
+            }
+            else
+            {
+                ++it;
+            }
+        }
     }
 
     const char *CTextManager::LocateFxt(const char *key)
@@ -255,7 +277,8 @@ namespace CLEO
         );
     }
 
-    CTextManager::FxtEntry::FxtEntry(const char *_text, bool _static) : text(_text), is_static(_static)
+    CTextManager::FxtEntry::FxtEntry(const char *_text, bool _static, CRunningScript *_owner)
+        : text(_text), is_static(_static), owner(_owner)
     {
     }
 
