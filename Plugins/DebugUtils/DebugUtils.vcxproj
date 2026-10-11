@@ -74,6 +74,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DebugUtils.cpp" />
+    <ClCompile Include="DebugUtils.Logging.cpp" />
+    <ClCompile Include="DebugUtils.CrashInfo.cpp" />
+    <ClCompile Include="DebugUtils.StackWalk.cpp" />
+    <ClCompile Include="DebugUtils.CrashReport.cpp" />
+    <ClCompile Include="DebugUtils.Callbacks.cpp" />
+    <ClCompile Include="DebugUtils.Opcodes.cpp" />
     <ResourceCompile Include="DebugUtils.rc" />
   </ItemGroup>
   <ItemGroup>
@@ -93,6 +99,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h" />
+    <ClInclude Include="DebugUtils.Internal.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h" />
