@@ -29,6 +29,8 @@
     <ClCompile Include="source\cleo.cpp" />
     <ClCompile Include="source\crc32.cpp" />
     <ClCompile Include="source\CScriptEngine.cpp" />
+    <ClCompile Include="source\CScriptEngine.State.cpp" />
+    <ClCompile Include="source\CScriptEngine.Lifecycle.cpp" />
     <ClCompile Include="source\CScriptEngine.Registry.cpp" />
     <ClCompile Include="source\CSoundSystem.cpp" />
     <ClCompile Include="source\CAudioPluginAPI.cpp" />
@@ -63,6 +65,7 @@
     <ClInclude Include="source\crc32.h" />
     <ClInclude Include="source\CScriptEngine.h" />
     <ClInclude Include="source\CScriptEngine.Internal.h" />
+    <ClInclude Include="source\CScriptEngine.State.h" />
     <ClInclude Include="source\CSoundSystem.h" />
     <ClInclude Include="source\CTextManager.h" />
     <ClInclude Include="source\CTheScripts.h" />
