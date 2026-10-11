@@ -1,5 +1,8 @@
-# CLEO 4.4.4 Unofficial Patch — development main
+<p align="center">
+  <img src="assets/cleo-4-nefpath.svg" alt="CLEO 4 NEFPATH — Unofficial Patch" width="100%">
+</p>
 
+<p align="center"><strong>Unofficial CLEO 4.4.4 development patch for GTA San Andreas</strong></p>
 ## Базовая тестовая точка v1.0 TEST
 
 **Baseline:** `151936070c594fe801ffec48b11bf17527b4b00d`
