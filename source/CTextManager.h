@@ -5,10 +5,10 @@
 #include <string>
 #include <unordered_map>
 
+class CRunningScript;
+
 namespace CLEO
 {
-    class CRunningScript;
-
     class CTextManager : VInjectible
     {
         class FxtEntry
