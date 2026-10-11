@@ -123,6 +123,7 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_breakpoints.clear();
     s_instance->m_keysReleased = true;
     s_instance->m_lastMemoryLogTick = GetTickCount();
+    s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_lastPrivateUsage = 0;
     s_instance->m_lastMemoryQueueCount = 0;
     s_instance->m_lastMemoryCustomCount = 0;

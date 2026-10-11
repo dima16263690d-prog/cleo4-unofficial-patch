@@ -811,15 +811,20 @@ void DebugUtils::WriteCoreMemorySummary()
                 "========================= memory summary ========================="
             );
             WriteMemory(
-                "%-10s %10s %10s | %6s %7s %7s | %9s %9s",
-                "time", "private", "delta", "queue", "native", "custom", "cleo_img", "known"
+                "%-8s %10s %10s | %6s %7s %7s | %9s %9s",
+                "uptime", "private", "delta", "queue", "native", "custom", "cleo_img", "known"
             );
             m_memorySummaryHeaderWritten = true;
         }
 
+        // "uptime" is seconds since the session started, not GetTickCount()
+        // (which is OS uptime in seconds and is huge and meaningless here).
+        const DWORD uptimeSeconds =
+            (GetTickCount() - m_memorySessionStartTick) / 1000;
+
         WriteMemory(
-            "%-10u %10s %10s | %6u %7u %7u | %9s %9s",
-            static_cast<unsigned>(GetTickCount() / 1000),
+            "%-8u %10s %10s | %6u %7u %7u | %9s %9s",
+            static_cast<unsigned>(uptimeSeconds),
             MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
             privateDeltaText.c_str(),
             static_cast<unsigned>(queueCount),
@@ -829,13 +834,14 @@ void DebugUtils::WriteCoreMemorySummary()
             MemoryBytes(cleoKnownBytes).c_str()
         );
 
+        // PagefileUsage equals PrivateUsage on Windows, so printing both would
+        // be a duplicate; keep private once above and show the working set here.
         WriteMemory(
-            "           working_set=%s peak_working_set=%s pagefile=%s "
-            "peak_private=%s | custom_objects=%s custom_code=%s",
+            "         private=%s working_set=%s peak_working_set=%s "
+            "custom_objects=%s custom_code=%s",
+            MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
             MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
             MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
-            MemoryBytes(static_cast<uint64_t>(pmc.PagefileUsage)).c_str(),
-            MemoryBytes(m_peakPrivateUsage).c_str(),
             MemoryBytes(customObjectBytes).c_str(),
             MemoryBytes(customCodeBytes).c_str()
         );
