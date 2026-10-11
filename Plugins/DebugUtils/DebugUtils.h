@@ -103,6 +103,8 @@ private:
     size_t m_lastMemoryCleoImage = 0;
     size_t m_lastMemoryDebugImage = 0;
     size_t m_lastMemoryKnownBytes = 0;
+    unsigned long long m_lastMemoryScriptBlocks = 0;
+    unsigned long long m_lastMemoryScriptBytes = 0;
     bool m_memorySummaryHeaderWritten = false;
     size_t m_scriptBytes = 0;
     size_t m_scriptCommands = 0;

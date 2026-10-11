@@ -780,14 +780,25 @@ void DebugUtils::WriteCoreMemorySummary()
         if (debugUtilsImage == 0)
             debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.dll"));
 
+        // Script allocations made through allocate_memory (0AC8). CLEO tracks
+        // and reclaims these per script, so surface them separately from the
+        // process-wide private usage.
+        CLEO_MemoryStats scriptStats{};
+        const bool haveScriptStats = CLEO_DebugGetMemoryStats(&scriptStats) != FALSE;
+
         // Known CLEO footprint only: loaded images plus active custom-script
-        // object storage and unique custom code buffers. GTA-owned allocations
-        // outside these measured categories are intentionally not claimed here.
+        // object storage, unique custom code buffers, and tracked script
+        // allocations. GTA-owned allocations outside these categories are
+        // intentionally not claimed here.
         const size_t cleoKnownBytes =
             cleoImage +
             debugUtilsImage +
             customObjectBytes +
-            customCodeBytes;
+            customCodeBytes +
+            (haveScriptStats ? static_cast<size_t>(scriptStats.totalBytes) : 0);
+
+        m_lastMemoryScriptBlocks = haveScriptStats ? scriptStats.totalBlocks : 0;
+        m_lastMemoryScriptBytes = haveScriptStats ? scriptStats.totalBytes : 0;
 
         if (static_cast<uint64_t>(pmc.PrivateUsage) > m_peakPrivateUsage)
             m_peakPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
@@ -890,6 +901,19 @@ void DebugUtils::WriteCoreMemorySummary()
                 static_cast<double>(kAddressSpaceBytes),
             MemoryBytes(headroomBytes).c_str()
         );
+
+        // Tracked script allocations (allocate_memory / free_allocated_memory),
+        // with the per-script budget that CLEO now enforces.
+        if (haveScriptStats)
+        {
+            WriteMemory(
+                "         script_blocks=%llu script_mem=%s per_script_limit=%s/%d blocks",
+                m_lastMemoryScriptBlocks,
+                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.perScriptSizeLimit)).c_str(),
+                scriptStats.perScriptBlockLimit
+            );
+        }
 
         if (rotateActive && !m_memoryRotateActive)
         {
