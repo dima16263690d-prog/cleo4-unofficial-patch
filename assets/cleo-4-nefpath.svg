@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260" role="img" aria-labelledby="title desc">
+  <title id="title">CLEO 4 NEFPATH</title>
+  <desc id="desc">Modern dark banner with bold white CLEO 4 lettering and green NEFPATH accent.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101a18"/><stop offset="1" stop-color="#080d0c"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a3ffbf"/><stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="260" rx="22" fill="url(#bg)"/>
+  <path d="M0 218 H1200" stroke="#1d3528" stroke-width="1"/>
+  <path d="M58 48 V212" stroke="#35e879" stroke-width="5" stroke-linecap="round"/>
+  <path d="M82 62 H1142" stroke="#244331" stroke-width="1"/>
+  <text x="84" y="151" font-family="Arial, Helvetica, sans-serif" font-size="84" font-weight="800" letter-spacing="1.5" fill="#f4f7f5">CLEO <tspan fill="#a6f5bd">4</tspan></text>
+  <text x="495" y="149" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="700" font-style="italic" letter-spacing="5" fill="#35e879">NEFPATH</text>
+  <rect x="86" y="177" width="420" height="4" rx="2" fill="url(#green)"/>
+  <circle cx="1092" cy="180" r="8" fill="#35e879" opacity=".18" filter="url(#glow)"/>
+  <circle cx="1092" cy="180" r="5" fill="#35e879"/>
+  <text x="86" y="205" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="600" letter-spacing="4" fill="#8ca99a">UNOFFICIAL PATCH • GTA SAN ANDREAS</text>
+</svg>
