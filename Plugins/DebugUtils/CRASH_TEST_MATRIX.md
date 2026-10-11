@@ -38,6 +38,9 @@ Expected:
    handled first-chance fault that preceded the fatal one is not lost.
 9. `[OPCODE HISTORY]` is present only when `OpcodeHistory=1`, and is dumped with
    `try_lock` so it can never deadlock the crash path.
+10. `last_opcode` is followed by `last_opcode_name`; opcode history lines carry a
+    `name=` field. Names come from `DebugUtils.OpcodeNames.h` (scrlog keywords +
+    CLEO+ 0Dxx/0Exx). Unknown opcodes print `unknown`.
 
 ## CrashInfo "By commands" / "By scripts" parsing
 

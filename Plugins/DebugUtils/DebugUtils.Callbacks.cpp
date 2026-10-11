@@ -315,10 +315,11 @@ int __stdcall DebugUtils::OnScriptOpcodeBefore(CScriptThread* thread, DWORD opco
         s_instance->m_debugScripts.find(reinterpret_cast<uintptr_t>(thread)) != s_instance->m_debugScripts.end())
     {
         s_instance->WriteScript(
-            "[opcode_before] script='%.8s' ptr=%p opcode=0x%04X group=%u not=%d ip=%p off=0x%zX",
+            "[opcode_before] script='%.8s' ptr=%p opcode=0x%04X name=%s group=%u not=%d ip=%p off=0x%zX",
             thread->threadName,
             thread,
             normalized,
+            OpcodeName(normalized) ? OpcodeName(normalized) : "unknown",
             static_cast<unsigned>(normalized / 100),
             notFlag ? 1 : 0,
             thread->ip,

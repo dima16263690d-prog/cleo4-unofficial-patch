@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DebugUtils.h"
+#include "DebugUtils.OpcodeNames.h"
 #include <windows.h>
 #include <psapi.h>
 #include <algorithm>
@@ -20,6 +21,32 @@ namespace
     // DebugUtils.cleo can be distinguished from stale copies.
     static constexpr char kDebugUtilsBuildId[] =
         "test-xx02-stackwalk-esp-scan-2026-10-06";
+
+    // Resolve a 15-bit opcode to its canonical SCRLog/Sanny Builder name.
+    // The table is sorted by opcode, so a binary search keeps this cheap even
+    // when called for every entry of the crash opcode ring buffer.
+    static const char* OpcodeName(DWORD opcode)
+    {
+        using namespace DebugUtilsOpcodeNames;
+
+        const unsigned short key = static_cast<unsigned short>(opcode & 0x7FFFu);
+        unsigned lo = 0;
+        unsigned hi = kCount;
+
+        while (lo < hi)
+        {
+            const unsigned mid = lo + (hi - lo) / 2;
+            if (kNames[mid].opcode < key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+
+        if (lo < kCount && kNames[lo].opcode == key)
+            return kNames[lo].name;
+
+        return nullptr;
+    }
 }
 
 namespace

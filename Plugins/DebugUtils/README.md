@@ -152,6 +152,14 @@ only be added later for a specifically reproduced function-level investigation.
 
 DebugUtils is an observer. In normal gameplay it does not parse the CrashInfo database, load DbgHelp, walk memory, write crash reports, or perform forensic stack analysis. The CLEO crash snapshot is thread-local. DebugUtils opcode callbacks used for tracing or guards are not registered unless those modes are explicitly enabled.
 
+Opcode numbers are resolved to their canonical SCRLog/Sanny Builder name for the
+crash report, the crash dialog and the live opcode trace. The name table
+(`DebugUtils.OpcodeNames.h`) is generated from scrlog `keywords.txt` (LINK/2012,
+MIT) plus the CLEO+ `opcodes.txt` names for the 0Dxx/0Exx opcodes the vanilla list
+does not cover. Regenerate it with `python tools/Generate-OpcodeNames.py`; it is a
+sorted static array resolved by binary search, so it adds no startup cost and no
+runtime file I/O.
+
 The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
 
 The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.

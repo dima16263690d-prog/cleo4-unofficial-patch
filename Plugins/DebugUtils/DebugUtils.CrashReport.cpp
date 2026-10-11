@@ -469,36 +469,43 @@ void DebugUtils::ShowCrashDialog(
     const char* labelLastOpcode = russian ? "\xD0\x9F\xD0\xBE\xD1\x81\xD0\xBB\xD0\xB5\xD0\xB4\xD0\xBD\xD0\xB8\xD0\xB9\x20\x6F\x70\x63\x6F\x64\x65" : "Last opcode";
 
     char text[8192] = {};
-    sprintf_s(
-        text, sizeof(text),
-        "%s\r\n\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%08X (%s)\r\n"
-        "%s: 0x%08X\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%08X\r\n"
-        "%s: %s\r\n\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%04X\r\n",
-        intro,
-        labelCrash,
-        crashName ? crashName : (russian ? "\xD0\x9D\xD0\xB5\xD0\xB8\xD0\xB7\xD0\xB2\xD0\xB5\xD1\x81\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9" : "Unknown"),
-        labelException,
-        exceptionCode,
-        exceptionType ? exceptionType : "UNKNOWN",
-        labelAddress,
-        faultAddress,
-        labelModule,
-        faultModule.c_str(),
-        labelRva,
-        faultRva,
-        labelCrashInfo,
-        confidence ? confidence : "none",
-        labelLastScript,
-        lastScript.c_str(),
-        labelLastOpcode,
-        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
-    );
+    {
+        const DWORD dialogOpcode =
+            lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF);
+        const char* dialogOpcodeName = OpcodeName(dialogOpcode);
+
+        sprintf_s(
+            text, sizeof(text),
+            "%s\r\n\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%08X (%s)\r\n"
+            "%s: 0x%08X\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%08X\r\n"
+            "%s: %s\r\n\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%04X (%s)\r\n",
+            intro,
+            labelCrash,
+            crashName ? crashName : (russian ? "\xD0\x9D\xD0\xB5\xD0\xB8\xD0\xB7\xD0\xB2\xD0\xB5\xD1\x81\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9" : "Unknown"),
+            labelException,
+            exceptionCode,
+            exceptionType ? exceptionType : "UNKNOWN",
+            labelAddress,
+            faultAddress,
+            labelModule,
+            faultModule.c_str(),
+            labelRva,
+            faultRva,
+            labelCrashInfo,
+            confidence ? confidence : "none",
+            labelLastScript,
+            lastScript.c_str(),
+            labelLastOpcode,
+            dialogOpcode,
+            dialogOpcodeName ? dialogOpcodeName : "unknown"
+        );
+    }
 
     std::string details(text);
     if (!issue.empty())
@@ -1094,22 +1101,30 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
 
     output += "\r\n[CLEO CONTEXT]\r\n";
-    appendf(
-        "snapshot_valid=%d\r\n"
-        "script=%.8s\r\n"
-        "script_ptr=%p\r\n"
-        "last_opcode=0x%04X\r\n"
-        "opcode_offset=0x%08X\r\n"
-        "opcode_result=%d\r\n"
-        "game_tick=%u",
-        crashSnapshotValid ? 1 : 0,
-        lastScript.c_str(),
-        reinterpret_cast<void*>(lastScriptPtr),
-        lastOpcode == 0xFFFFFFFFu ? 0xFFFFu : lastOpcode & 0x7FFFu,
-        lastOpcodeOffset,
-        static_cast<int>(lastOpcodeResult),
-        crashSnapshotValid ? crashSnapshot.gameTick : 0
-    );
+    {
+        const DWORD normalizedOpcode =
+            lastOpcode == 0xFFFFFFFFu ? 0xFFFFu : lastOpcode & 0x7FFFu;
+        const char* opcodeName = OpcodeName(normalizedOpcode);
+
+        appendf(
+            "snapshot_valid=%d\r\n"
+            "script=%.8s\r\n"
+            "script_ptr=%p\r\n"
+            "last_opcode=0x%04X\r\n"
+            "last_opcode_name=%s\r\n"
+            "opcode_offset=0x%08X\r\n"
+            "opcode_result=%d\r\n"
+            "game_tick=%u",
+            crashSnapshotValid ? 1 : 0,
+            lastScript.c_str(),
+            reinterpret_cast<void*>(lastScriptPtr),
+            normalizedOpcode,
+            opcodeName ? opcodeName : "unknown",
+            lastOpcodeOffset,
+            static_cast<int>(lastOpcodeResult),
+            crashSnapshotValid ? crashSnapshot.gameTick : 0
+        );
+    }
 
     output += "\r\n[FIRST CHANCE]\r\n";
     {
@@ -1248,11 +1263,15 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 const OpcodeHistoryEntry& e =
                     m_opcodeHistory[(start + i) % kOpcodeHistorySize];
 
+                const DWORD entryOpcode = e.opcode & 0x7FFFu;
+                const char* entryName = OpcodeName(entryOpcode);
+
                 appendf(
-                    "#%03u script=%.8s opcode=0x%04X result=%u off=0x%08X",
+                    "#%03u script=%.8s opcode=0x%04X name=%s result=%u off=0x%08X",
                     static_cast<unsigned>(i + 1),
                     e.scriptName,
-                    e.opcode & 0x7FFFu,
+                    entryOpcode,
+                    entryName ? entryName : "unknown",
                     e.result,
                     e.offset
                 );

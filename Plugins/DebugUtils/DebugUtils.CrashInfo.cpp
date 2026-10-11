@@ -589,6 +589,21 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
+        // "Stack: 0x4CDCDE > Error" maps a stack address to the entry, the same
+        // way the CrashInfo web tool matches the SCRLog stack. Treat it as a
+        // backtrace address so the matcher can use it.
+        if (line.rfind("Stack:", 0) == 0)
+        {
+            ExtractHexAddresses(line, 6, current->backtraceAddresses);
+            current->hasMatcher =
+                !current->errorAddresses.empty() ||
+                !current->errorModules.empty() ||
+                current->wildcardError ||
+                !current->backtraceAddresses.empty() ||
+                !current->backtraceModules.empty();
+            continue;
+        }
+
         if (!line.empty() && line[0] == '#')
             continue;
 
