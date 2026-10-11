@@ -8,8 +8,6 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
-#include "CFastOpcodeExecutor.h"
-#include "CFastScriptExecutor.h"
 #include "CCustomOpcodeSystem.Internal.h"
 
 namespace CLEO {
@@ -173,15 +171,6 @@ namespace CLEO {
 
 	// Optional low opcode callbacks are owned by optional plugins.
 	CustomOpcodeHandler lowOpcodeHandlers[0x0AF0] = {};
-
-	// DebugUtils observes every opcode through this thin dispatch layer.
-	// The legacy GTA/CLEO opcode handlers remain the actual implementations.
-	_OpcodeHandler debugOriginalOpcodeTable[329];
-
-	OpcodeResult __fastcall debugOpcodeDispatch(CRunningScript *thread, int, unsigned short opcode)
-	{
-		return CFastOpcodeExecutor::Dispatch(thread, opcode);
-	}
 	CustomOpcodeHandler extraOpcodeHandlers[100][300];
 
 	CBuildingPool		**buildingPool = nullptr;			// add for future CLEO releases

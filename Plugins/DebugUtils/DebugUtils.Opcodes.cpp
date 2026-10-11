@@ -70,8 +70,11 @@ int __stdcall DebugUtils::Opcode_Breakpoint(CScriptThread* thread)
             message = buffer;
     }
 
+    char scriptName[9];
+    SafeThreadName(thread, scriptName);
+
     s_instance->m_breakpoints.emplace_back(
-        BreakpointInfo{ scriptPtr, thread->threadName, message, blocking }
+        BreakpointInfo{ scriptPtr, scriptName, message, blocking }
     );
 
     s_instance->WriteCore(

@@ -11,11 +11,7 @@ namespace CLEO
 {
     CCleoMemoryManager::CCleoMemoryManager()
     {
-        MEMORY_TRACE(
-            "INIT limits blocks=%d size=%d MB",
-            m_configLimitAllocationCount,
-            m_configLimitAllocationSize / (1024 * 1024)
-        );
+        MEMORY_TRACE("INIT per-script tracking enabled (no fixed budget)");
     }
 
     void CCleoMemoryManager::RegisterMemoryAllocationLocked(
@@ -36,7 +32,7 @@ namespace CLEO
             m_peakBytes = m_totalBytes;
     }
 
-    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address, bool freeMemory)
+    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address)
     {
         auto it = m_allocations.find(address);
         if (it == m_allocations.end())
@@ -44,10 +40,7 @@ namespace CLEO
 
         const Allocation allocation = it->second;
 
-        if (freeMemory)
-        {
-            std::free(address);
-        }
+        std::free(address);
 
         auto scriptIt = m_scriptAllocations.find(allocation.owner);
         if (scriptIt != m_scriptAllocations.end())
@@ -70,26 +63,6 @@ namespace CLEO
 
         m_allocations.erase(it);
         return true;
-    }
-
-    void CCleoMemoryManager::LogScriptWarningLocked(
-        CRunningScript* owner,
-        const char* reason
-    ) const
-    {
-        const auto it = m_scriptAllocations.find(owner);
-        if (it == m_scriptAllocations.end())
-            return;
-
-        const char* scriptName = owner ? owner->GetName() : "unknown";
-
-        MEMORY_TRACE(
-            "WARNING %s script='%.8s' blocks=%d size=%llu KB",
-            reason,
-            scriptName,
-            it->second.count,
-            static_cast<unsigned long long>(it->second.size / 1024)
-        );
     }
 
     void CCleoMemoryManager::LogRemainingLocked() const
@@ -128,7 +101,7 @@ namespace CLEO
             return nullptr;
         }
 
-        void* memory = std::calloc(size ? size : 1, 1);
+        void* memory = std::calloc(size, 1);
         if (!memory)
         {
             MEMORY_TRACE(
@@ -140,25 +113,12 @@ namespace CLEO
         }
 
         std::lock_guard<std::mutex> lock(m_mutex);
-
         RegisterMemoryAllocationLocked(owner, memory, size);
 
-        auto it = m_scriptAllocations.find(owner);
-        if (it != m_scriptAllocations.end())
-        {
-            if (m_configLimitAllocationSize > 0 &&
-                it->second.size > static_cast<size_t>(m_configLimitAllocationSize))
-            {
-                LogScriptWarningLocked(owner, "size_limit_exceeded");
-            }
-            else if (
-                m_configLimitAllocationCount > 0 &&
-                it->second.count > m_configLimitAllocationCount)
-            {
-                LogScriptWarningLocked(owner, "block_limit_exceeded");
-            }
-        }
-
+        // No fixed budget: a script that genuinely needs more than the CLEO5
+        // default (16 MB) still receives it. Tracking is per script, and
+        // ReleaseOwner() reclaims anything the script leaves behind when it
+        // stops, so an unbounded script does not leak into the next session.
         return memory;
     }
 
@@ -180,30 +140,7 @@ namespace CLEO
             return false;
         }
 
-        return UnregisterMemoryAllocationLocked(address, true);
-    }
-
-    bool CCleoMemoryManager::Forget(CRunningScript* owner, void* address)
-    {
-        if (!address)
-            return true;
-
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        const auto it = m_allocations.find(address);
-        if (it == m_allocations.end())
-        {
-            MEMORY_TRACE(
-                "FORGET_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
-                owner ? owner->GetName() : "unknown",
-                reinterpret_cast<unsigned>(address)
-            );
-            return false;
-        }
-
-        // Deliberately do not free() the memory. This is the CLEO5
-        // distinction between forget_memory and free_memory.
-        return UnregisterMemoryAllocationLocked(address, false);
+        return UnregisterMemoryAllocationLocked(address);
     }
 
     size_t CCleoMemoryManager::ReleaseOwner(CRunningScript* owner)
@@ -296,8 +233,6 @@ namespace CLEO
         result.totalBlocks = m_allocations.size();
         result.totalBytes = m_totalBytes;
         result.peakBytes = m_peakBytes;
-        result.configuredBlockLimit = m_configLimitAllocationCount;
-        result.configuredSizeLimit = m_configLimitAllocationSize;
         return result;
     }
 

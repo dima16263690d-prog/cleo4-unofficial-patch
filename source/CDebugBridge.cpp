@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "CDebugBridge.h"
+#include "CCleoMemoryManager.h"
 
 #include <windows.h>
 #include <cstdarg>
@@ -79,6 +80,19 @@ extern "C" BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled)
         &CLEO::g_crashSnapshotEnabled,
         enabled ? 1 : 0
     );
+    return TRUE;
+}
+
+extern "C" BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats)
+{
+    if (stats == nullptr)
+        return FALSE;
+
+    const auto snapshot = CLEO::GetSmartMemoryEngine().Memory().GetStats();
+
+    stats->totalBlocks = snapshot.totalBlocks;
+    stats->totalBytes = snapshot.totalBytes;
+    stats->peakBytes = snapshot.peakBytes;
     return TRUE;
 }
 

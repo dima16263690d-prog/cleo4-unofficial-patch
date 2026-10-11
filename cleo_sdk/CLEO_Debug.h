@@ -48,6 +48,15 @@ typedef struct CLEO_CrashSnapshot
     char scriptName[9];
 } CLEO_CrashSnapshot;
 
+// Aggregate view of memory currently tracked for scripts via the
+// allocate_memory / free_allocated_memory opcodes.
+typedef struct CLEO_MemoryStats
+{
+    unsigned long long totalBlocks;
+    unsigned long long totalBytes;
+    unsigned long long peakBytes;
+} CLEO_MemoryStats;
+
 typedef BOOL (__stdcall *CLEO_ScriptProcessBeforeCallback)(void* thread);
 typedef void (__stdcall *CLEO_ScriptProcessAfterCallback)(void* thread);
 typedef int (__stdcall *CLEO_ScriptOpcodeProcessBeforeCallback)(void* thread, DWORD opcode);
@@ -61,6 +70,7 @@ BOOL WINAPI CLEO_DebugSetLogCallback(CLEO_DebugLogCallback callback);
 void __cdecl CLEO_DebugLog(int level, const char* format, ...);
 
 BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled);
+BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats);
 void WINAPI CLEO_DebugRecordCrashOpcode(
     uintptr_t scriptPtr,
     const char* scriptName,

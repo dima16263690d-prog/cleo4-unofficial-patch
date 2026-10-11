@@ -8,8 +8,6 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
-#include "CFastOpcodeExecutor.h"
-#include "CFastScriptExecutor.h"
 #include "CCustomOpcodeSystem.Internal.h"
 
 namespace CLEO
@@ -171,7 +169,7 @@ namespace CLEO
 
 		char *text = readString(thread);
 
-		GetInstance().TextManager.AddFxt(gxtLabel, text);
+		GetInstance().TextManager.AddFxt(gxtLabel, text, true, thread);
 		return OR_CONTINUE;
 	}
 

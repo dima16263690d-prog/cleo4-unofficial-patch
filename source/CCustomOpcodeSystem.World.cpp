@@ -8,8 +8,6 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
-#include "CFastOpcodeExecutor.h"
-#include "CFastScriptExecutor.h"
 #include "CCustomOpcodeSystem.Internal.h"
 
 namespace CLEO

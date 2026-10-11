@@ -1,7 +1,9 @@
 # CLEO DebugUtils Crash Database
 # DebugUtils-Database-Version: 2
-# Baseline: GTA San Andreas 1.0 US CrashInfo list (local copy)
+# Baseline: GTA-SA-10US CrashInfo list (local copy)
 # Source: JuniorDjjr/CrashInfo — EN-CrashList.txt
+# Upstream: https://raw.githubusercontent.com/JuniorDjjr/CrashInfo/main/Lists/GTA-SA-10US/EN-CrashList.txt
+# Updated: 2026-10-11
 # Runtime AUTO-DISCOVERED observations are written by DebugUtils to the installed
 # local database and are not part of this repository source until verified.
 # ============================================================================
@@ -1591,7 +1593,6 @@ Error: Message "Runtime Error!" "This application has requested the Runtime to t
 About: It could be caused by an error in some .asi mod. The "modloader.log" or other crash dump can give a hint of what the mod was (even if not 100% correct).
 During gameplay: In addition to .asi, it may have been caused by high memory usage if you configured the game to use 2GB of stream memory without using largeaddress.
 When trying to start the game: In addition to .asi, it may be ModLoader's cache problem. Go to the folder "C:\Users\JuniorDjjr\AppData\Local\modloader" where "JuniorDjjr" is your username, and delete all content. Next time your game will take a while to open, but it will work.
-
 
 # ============================================================================
 # CLEO DebugUtils LOCAL NOTES

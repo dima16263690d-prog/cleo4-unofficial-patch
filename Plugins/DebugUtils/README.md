@@ -104,7 +104,7 @@ DebugUtils uses its own local crash database:
 
 cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt
 
-The verified database is bundled inside DebugUtils.cleo and is loaded only when a real unhandled crash is analysed. There is no runtime network download or manual synchronization.
+The verified database is bundled inside DebugUtils.cleo and is loaded only when a real unhandled crash is analysed. There is no runtime network download.
 
 The matching engine supports:
 
@@ -113,9 +113,33 @@ The matching engine supports:
 - Backtrace address/module rules;
 - last-command and script-context rules.
 
-When a crash has no specific verified match, DebugUtils automatically appends an
-UNVERIFIED candidate to the separate local auto database. AUTO candidates are
+The parser understands the numbered CrashInfo schema: `Problem N:` / `Solution N:`
+pairs, `Issue N:` / `About N:`, `Type:`, and the scenario-qualified
+`During gameplay:` / `When trying to start the game:` lines. Plain-text entries
+under `Other problems:` (a bare `Error:` description with no address) keep their
+wording as the issue text instead of being discarded.
+
+### Updating the database
+
+Refresh the bundled list from the upstream JuniorDjjr/CrashInfo project:
+
+```bash
+python tools/Update-CrashInfo.py            # GTA SA 1.0 US English baseline
+python tools/Update-CrashInfo.py --dry-run  # report only
+python tools/Update-CrashInfo.py --source EN-CrashList.txt   # offline refresh
+python tools/Update-CrashInfo.py --with-satellites           # + other languages
+```
+
+The script downloads `Lists/GTA-SA-10US/EN-CrashList.txt`, regenerates the
+DebugUtils header (version marker, source URL, update date) and preserves the
+local-notes footer verbatim. `--with-satellites` additionally mirrors the other
+languages/versions under `CrashInfo/upstream/` for localization or diffing.
+
+When a crash has no specific verified match, DebugUtils automatically records an
+UNVERIFIED candidate in the separate local auto database. AUTO candidates are
 never loaded as verified matches, so one observed crash cannot promote itself.
+Each auto entry now tracks a hit count and first/last-seen timestamps, so a
+recurring fingerprint is counted rather than silently ignored.
 
 
 ## Crash diagnostics bridge
@@ -151,6 +175,14 @@ only be added later for a specifically reproduced function-level investigation.
 ## Diagnostic performance contract
 
 DebugUtils is an observer. In normal gameplay it does not parse the CrashInfo database, load DbgHelp, walk memory, write crash reports, or perform forensic stack analysis. The CLEO crash snapshot is thread-local. DebugUtils opcode callbacks used for tracing or guards are not registered unless those modes are explicitly enabled.
+
+Opcode numbers are resolved to their canonical SCRLog/Sanny Builder name for the
+crash report, the crash dialog and the live opcode trace. The name table
+(`DebugUtils.OpcodeNames.h`) is generated from scrlog `keywords.txt` (LINK/2012,
+MIT) plus the CLEO+ `opcodes.txt` names for the 0Dxx/0Exx opcodes the vanilla list
+does not cover. Regenerate it with `python tools/Generate-OpcodeNames.py`; it is a
+sorted static array resolved by binary search, so it adds no startup cost and no
+runtime file I/O.
 
 The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
 

@@ -742,13 +742,17 @@ void DebugUtils::WriteCoreMemorySummary()
     {
         ++queueCount;
 
-        if (thread->baseIp != nullptr)
+        // Only genuine CCustomScript threads own the extended layout that the
+        // CodeSize field belongs to. Native SCM threads also carry a non-null
+        // baseIp, so classify by the custom-flag byte instead.
+        if (IsCustomScriptThread(thread))
         {
             ++customCount;
             const auto* custom = GetDebugCustomScript(thread);
             customObjectBytes += sizeof(DebugCustomScriptLayout);
 
-            if (!thread->missionFlag && countedCodeBases.insert(thread->baseIp).second)
+            if (!thread->missionFlag && thread->baseIp != nullptr &&
+                countedCodeBases.insert(thread->baseIp).second)
                 customCodeBytes += custom->CodeSize;
         }
         else
@@ -776,36 +780,156 @@ void DebugUtils::WriteCoreMemorySummary()
         if (debugUtilsImage == 0)
             debugUtilsImage = GetModuleImageSize(GetModuleHandleA("DebugUtils.dll"));
 
+        // Script allocations made through allocate_memory (0AC8). CLEO tracks
+        // and reclaims these per script, so surface them separately from the
+        // process-wide private usage.
+        CLEO_MemoryStats scriptStats{};
+        const bool haveScriptStats = CLEO_DebugGetMemoryStats(&scriptStats) != FALSE;
+
         // Known CLEO footprint only: loaded images plus active custom-script
-        // object storage and unique custom code buffers. GTA-owned allocations
-        // outside these measured categories are intentionally not claimed here.
+        // object storage, unique custom code buffers, and tracked script
+        // allocations. GTA-owned allocations outside these categories are
+        // intentionally not claimed here.
         const size_t cleoKnownBytes =
             cleoImage +
             debugUtilsImage +
             customObjectBytes +
-            customCodeBytes;
+            customCodeBytes +
+            (haveScriptStats ? static_cast<size_t>(scriptStats.totalBytes) : 0);
+
+        m_lastMemoryScriptBlocks = haveScriptStats ? scriptStats.totalBlocks : 0;
+        m_lastMemoryScriptBytes = haveScriptStats ? scriptStats.totalBytes : 0;
+
+        if (static_cast<uint64_t>(pmc.PrivateUsage) > m_peakPrivateUsage)
+            m_peakPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+
+        std::string privateDeltaText;
+        if (m_memoryBaselineReady)
+        {
+            privateDeltaText =
+                (privateDelta < 0 ? "-" : "+") +
+                MemoryBytes(
+                    static_cast<uint64_t>(privateDelta < 0 ? -privateDelta : privateDelta));
+        }
+        else
+        {
+            privateDeltaText = "-";
+        }
+
+        if (!m_memorySummaryHeaderWritten)
+        {
+            WriteMemory(
+                "========================= memory summary ========================="
+            );
+            WriteMemory(
+                "%-8s %10s %10s | %6s %7s %7s | %9s %9s %13s",
+                "uptime", "private", "delta", "queue", "native", "custom",
+                "cleo_img", "known", "private_bytes"
+            );
+            m_memorySummaryHeaderWritten = true;
+        }
+
+        // "uptime" is seconds since the session started, not GetTickCount()
+        // (which is OS uptime in seconds and is huge and meaningless here).
+        const DWORD uptimeSeconds =
+            (GetTickCount() - m_memorySessionStartTick) / 1000;
 
         WriteMemory(
-            "[memory] process_private=%I64u delta=%I64d working_set=%I64u peak_working_set=%I64u pagefile=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
-            static_cast<unsigned __int64>(pmc.PrivateUsage),
-            privateDelta,
-            static_cast<unsigned __int64>(pmc.WorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PagefileUsage),
+            "%-8u %10s %10s | %6u %7u %7u | %9s %9s %13llu",
+            static_cast<unsigned>(uptimeSeconds),
+            MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+            privateDeltaText.c_str(),
             static_cast<unsigned>(queueCount),
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
-            m_memoryBaselineReady
-                ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
-                : 0,
-            static_cast<unsigned>(cleoImage),
-            static_cast<unsigned>(debugUtilsImage),
-            static_cast<unsigned>(customObjectBytes),
-            static_cast<unsigned>(customCodeBytes),
-            static_cast<unsigned>(cleoKnownBytes)
+            MemoryBytes(cleoImage + debugUtilsImage).c_str(),
+            MemoryBytes(cleoKnownBytes).c_str(),
+            static_cast<unsigned long long>(pmc.PrivateUsage)
         );
 
+        // PagefileUsage equals PrivateUsage on Windows, so printing both would
+        // be a duplicate; keep private once above and show the working set here.
+        WriteMemory(
+            "         private=%s working_set=%s peak_working_set=%s "
+            "custom_objects=%s custom_code=%s",
+            MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+            MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
+            MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
+            MemoryBytes(customObjectBytes).c_str(),
+            MemoryBytes(customCodeBytes).c_str()
+        );
+
+        // Warn once when private bytes first cross the configured threshold and
+        // once again if they fall back below it, so a warning is never spammed.
+        if (m_memoryWarnMegabytes != 0)
+        {
+            const uint64_t warnBytes =
+                static_cast<uint64_t>(m_memoryWarnMegabytes) * 1024ull * 1024ull;
+
+            if (static_cast<uint64_t>(pmc.PrivateUsage) >= warnBytes)
+            {
+                if (!m_memoryWarnIssued)
+                {
+                    m_memoryWarnIssued = true;
+                    WriteMemory(
+                        "[memory][warn] private usage %s reached the %u MB threshold",
+                        MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+                        m_memoryWarnMegabytes
+                    );
+                }
+            }
+            else
+            {
+                m_memoryWarnIssued = false;
+            }
+        }
+
+        // 32-bit GTA with the standard 2 GB user address space: near the limit
+        // fragmentation is expected, so flag the transition into the last 20%.
+        const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+        const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+        const uint64_t headroomBytes =
+            privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
+        const bool rotateActive = privateUsage >= (kAddressSpaceBytes * 80ull / 100ull);
+
+        // Absolute headroom is easier to reason about than a percentage when a
+        // leak is suspected, so print it every interval.
+        WriteMemory(
+            "         limit=%s used=%.1f%% headroom=%s",
+            MemoryBytes(kAddressSpaceBytes).c_str(),
+            static_cast<double>(privateUsage) * 100.0 /
+                static_cast<double>(kAddressSpaceBytes),
+            MemoryBytes(headroomBytes).c_str()
+        );
+
+        // Tracked script allocations (allocate_memory / free_allocated_memory).
+        // Every request is honored at full size; this is the running total held
+        // by live scripts.
+        if (haveScriptStats)
+        {
+            WriteMemory(
+                "         script_blocks=%llu script_mem=%s",
+                m_lastMemoryScriptBlocks,
+                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str()
+            );
+        }
+
+        if (rotateActive && !m_memoryRotateActive)
+        {
+            WriteMemory(
+                "[memory][warn] private usage %s is above 80%% of the 2 GB address space",
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
+            );
+        }
+        m_memoryRotateActive = rotateActive;
+
         m_lastPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+        m_lastMemoryNativeCount = nativeCount;
+        m_lastMemoryCustomObjectBytes = customObjectBytes;
+        m_lastMemoryCustomCodeBytes = customCodeBytes;
+        m_lastMemoryCleoImage = cleoImage;
+        m_lastMemoryDebugImage = debugUtilsImage;
+        m_lastMemoryKnownBytes = cleoKnownBytes;
     }
 
     MEMORYSTATUSEX memory{};
@@ -813,12 +937,12 @@ void DebugUtils::WriteCoreMemorySummary()
     if (GlobalMemoryStatusEx(&memory))
     {
         WriteMemory(
-            "[memory] system_load=%u%% physical=%llu/%llu virtual=%llu/%llu",
+            "           system_load=%u%% physical=%s/%s virtual=%s/%s",
             memory.dwMemoryLoad,
-            static_cast<unsigned long long>(memory.ullAvailPhys),
-            static_cast<unsigned long long>(memory.ullTotalPhys),
-            static_cast<unsigned long long>(memory.ullAvailVirtual),
-            static_cast<unsigned long long>(memory.ullTotalVirtual)
+            MemoryBytes(memory.ullAvailPhys).c_str(),
+            MemoryBytes(memory.ullTotalPhys).c_str(),
+            MemoryBytes(memory.ullAvailVirtual).c_str(),
+            MemoryBytes(memory.ullTotalVirtual).c_str()
         );
     }
 

@@ -21,6 +21,19 @@
 
 namespace
 {
+    // The vectored handler runs in first-chance territory, before stack
+    // unwinding, where no STL, file I/O or GUI work is permitted. It records
+    // only this fixed-size snapshot. The unhandled filter later reports it so
+    // that a crash preceded by a handled first-chance fault still shows both.
+    struct FirstChanceSnapshot
+    {
+        DWORD code;
+        DWORD address;
+        DWORD threadId;
+    };
+
+    static volatile FirstChanceSnapshot g_firstChance{};
+
     struct CrashDialogData
     {
         std::wstring title;
@@ -432,6 +445,7 @@ void DebugUtils::ShowCrashDialog(
     const std::string& issue,
     const std::string& about,
     const std::string& solution,
+    const std::vector<std::string>& notes,
     const std::string& lastScript,
     DWORD lastOpcode,
     const std::vector<DWORD>& backtrace
@@ -456,36 +470,43 @@ void DebugUtils::ShowCrashDialog(
     const char* labelLastOpcode = russian ? "\xD0\x9F\xD0\xBE\xD1\x81\xD0\xBB\xD0\xB5\xD0\xB4\xD0\xBD\xD0\xB8\xD0\xB9\x20\x6F\x70\x63\x6F\x64\x65" : "Last opcode";
 
     char text[8192] = {};
-    sprintf_s(
-        text, sizeof(text),
-        "%s\r\n\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%08X (%s)\r\n"
-        "%s: 0x%08X\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%08X\r\n"
-        "%s: %s\r\n\r\n"
-        "%s: %s\r\n"
-        "%s: 0x%04X\r\n",
-        intro,
-        labelCrash,
-        crashName ? crashName : (russian ? "\xD0\x9D\xD0\xB5\xD0\xB8\xD0\xB7\xD0\xB2\xD0\xB5\xD1\x81\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9" : "Unknown"),
-        labelException,
-        exceptionCode,
-        exceptionType ? exceptionType : "UNKNOWN",
-        labelAddress,
-        faultAddress,
-        labelModule,
-        faultModule.c_str(),
-        labelRva,
-        faultRva,
-        labelCrashInfo,
-        confidence ? confidence : "none",
-        labelLastScript,
-        lastScript.c_str(),
-        labelLastOpcode,
-        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
-    );
+    {
+        const DWORD dialogOpcode =
+            lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF);
+        const char* dialogOpcodeName = OpcodeName(dialogOpcode);
+
+        sprintf_s(
+            text, sizeof(text),
+            "%s\r\n\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%08X (%s)\r\n"
+            "%s: 0x%08X\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%08X\r\n"
+            "%s: %s\r\n\r\n"
+            "%s: %s\r\n"
+            "%s: 0x%04X (%s)\r\n",
+            intro,
+            labelCrash,
+            crashName ? crashName : (russian ? "\xD0\x9D\xD0\xB5\xD0\xB8\xD0\xB7\xD0\xB2\xD0\xB5\xD1\x81\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9" : "Unknown"),
+            labelException,
+            exceptionCode,
+            exceptionType ? exceptionType : "UNKNOWN",
+            labelAddress,
+            faultAddress,
+            labelModule,
+            faultModule.c_str(),
+            labelRva,
+            faultRva,
+            labelCrashInfo,
+            confidence ? confidence : "none",
+            labelLastScript,
+            lastScript.c_str(),
+            labelLastOpcode,
+            dialogOpcode,
+            dialogOpcodeName ? dialogOpcodeName : "unknown"
+        );
+    }
 
     std::string details(text);
     if (!issue.empty())
@@ -497,6 +518,9 @@ void DebugUtils::ShowCrashDialog(
     if (!solution.empty())
         details += std::string("\r\n") +
             (russian ? "\xD0\xA0\xD0\xB5\xD1\x88\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "Solution: ") + solution;
+    for (const auto& note : notes)
+        details += std::string("\r\n") +
+            (russian ? "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD1\x87\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "Note: ") + note;
 
     details += std::string("\r\n\r\n") +
         (russian ? "\xD0\xA1\xD1\x82\xD0\xB5\xD0\xBA\x20\xD0\xB2\xD1\x8B\xD0\xB7\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB2\x3A" : "Backtrace:");
@@ -797,7 +821,6 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         crashDisplayName = "Unknown / Unclassified Crash";
     }
 
-    char report[8192] = {};
     SYSTEMTIME t{};
     GetLocalTime(&t);
 
@@ -848,12 +871,12 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         faultRva
     );
 
-    if (record->NumberParameters >= 2)
+    if (exceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        record->NumberParameters >= 2)
     {
         appendf(
-            "access=%s (%d)\r\ntarget=0x%08X",
+            "access=%s\r\ntarget=0x%08X",
             accessName.c_str(),
-            accessType,
             static_cast<DWORD>(targetAddress)
         );
     }
@@ -973,15 +996,42 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 sizeof(pmc)))
         {
             appendf(
-                "working_set=%I64u\r\n"
-                "peak_working_set=%I64u\r\n"
-                "private=%I64u\r\n"
-                "pagefile=%I64u",
-                static_cast<unsigned __int64>(pmc.WorkingSetSize),
-                static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
-                static_cast<unsigned __int64>(pmc.PrivateUsage),
-                static_cast<unsigned __int64>(pmc.PagefileUsage)
+                "working_set=%s\r\n"
+                "peak_working_set=%s\r\n"
+                "private=%s",
+                MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
             );
+
+            // 32-bit GTA: private usage near 2 GB means the address space is
+            // nearly exhausted, which is itself a plausible crash cause.
+            const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+            const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+            const uint64_t headroomBytes =
+                privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
+            appendf(
+                "address_space_limit=%s\r\n"
+                "address_space_headroom=%s\r\n"
+                "address_space_nearly_exhausted=%d",
+                MemoryBytes(kAddressSpaceBytes).c_str(),
+                MemoryBytes(headroomBytes).c_str(),
+                privateUsage >= (kAddressSpaceBytes * 80ull / 100ull) ? 1 : 0
+            );
+
+            MEMORYSTATUSEX systemMemory{};
+            systemMemory.dwLength = sizeof(systemMemory);
+            if (GlobalMemoryStatusEx(&systemMemory))
+            {
+                appendf(
+                    "system_load=%u%%\r\n"
+                    "system_physical_available=%s\r\n"
+                    "system_virtual_available=%s",
+                    systemMemory.dwMemoryLoad,
+                    MemoryBytes(systemMemory.ullAvailPhys).c_str(),
+                    MemoryBytes(systemMemory.ullAvailVirtual).c_str()
+                );
+            }
         }
         else
         {
@@ -1082,22 +1132,59 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
     }
 
     output += "\r\n[CLEO CONTEXT]\r\n";
-    appendf(
-        "snapshot_valid=%d\r\n"
-        "script=%.8s\r\n"
-        "script_ptr=%p\r\n"
-        "last_opcode=0x%04X\r\n"
-        "opcode_offset=0x%08X\r\n"
-        "opcode_result=%d\r\n"
-        "game_tick=%u",
-        crashSnapshotValid ? 1 : 0,
-        lastScript.c_str(),
-        reinterpret_cast<void*>(lastScriptPtr),
-        lastOpcode == 0xFFFFFFFFu ? 0xFFFFu : lastOpcode & 0x7FFFu,
-        lastOpcodeOffset,
-        static_cast<int>(lastOpcodeResult),
-        crashSnapshotValid ? crashSnapshot.gameTick : 0
-    );
+    {
+        const DWORD normalizedOpcode =
+            lastOpcode == 0xFFFFFFFFu ? 0xFFFFu : lastOpcode & 0x7FFFu;
+        const char* opcodeName = OpcodeName(normalizedOpcode);
+
+        appendf(
+            "snapshot_valid=%d\r\n"
+            "script=%.8s\r\n"
+            "script_ptr=%p\r\n"
+            "last_opcode=0x%04X\r\n"
+            "last_opcode_name=%s\r\n"
+            "opcode_offset=0x%08X\r\n"
+            "opcode_result=%d\r\n"
+            "game_tick=%u",
+            crashSnapshotValid ? 1 : 0,
+            lastScript.c_str(),
+            reinterpret_cast<void*>(lastScriptPtr),
+            normalizedOpcode,
+            opcodeName ? opcodeName : "unknown",
+            lastOpcodeOffset,
+            static_cast<int>(lastOpcodeResult),
+            crashSnapshotValid ? crashSnapshot.gameTick : 0
+        );
+    }
+
+    output += "\r\n[FIRST CHANCE]\r\n";
+    {
+        MemoryBarrier();
+        const DWORD firstChanceCode = g_firstChance.code;
+
+        if (firstChanceCode == 0)
+        {
+            output += "captured=0\r\n";
+        }
+        else
+        {
+            const DWORD firstChanceAddress = g_firstChance.address;
+            const DWORD firstChanceThread = g_firstChance.threadId;
+
+            appendf(
+                "captured=1\r\n"
+                "code=0x%08X (%s)\r\n"
+                "address=0x%08X\r\n"
+                "module=%s\r\n"
+                "thread_id=%u",
+                firstChanceCode,
+                ExceptionName(firstChanceCode),
+                firstChanceAddress,
+                ModuleNameForAddress(firstChanceAddress).c_str(),
+                firstChanceThread
+            );
+        }
+    }
 
     output += "\r\n[CRASH MATCHER]\r\n";
     if (match != nullptr)
@@ -1126,6 +1213,12 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             appendf("about=%s", match->about.c_str());
         if (!match->solution.empty())
             appendf("solution=%s", match->solution.c_str());
+        if (!match->type.empty())
+            appendf("type=%s", match->type.c_str());
+        if (!match->description.empty())
+            appendf("description=%s", match->description.c_str());
+        for (const auto& note : match->notes)
+            appendf("note=%s", note.c_str());
     }
     else
     {
@@ -1180,6 +1273,51 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
         output +=
             "auto_database=UNVERIFIED candidate written to CLEO-CrashAuto.txt\r\n";
 
+    // The opcode ring buffer is filled only when OpcodeHistory is enabled. It
+    // is dumped here (not during opcode execution) so the crash path owns the
+    // only formatting cost. try_lock keeps this safe inside the exception
+    // handler: if another thread held the lock during the fault, we skip the
+    // dump instead of deadlocking the crash report.
+    if (m_crashOpcodeHistory &&
+        m_opcodeHistoryMutex.try_lock())
+    {
+        output += "\r\n[OPCODE HISTORY]\r\n";
+
+        const size_t count = m_opcodeHistoryCount;
+        const size_t next = m_opcodeHistoryNext;
+
+        if (count == 0)
+        {
+            output += "count=0\r\n";
+        }
+        else
+        {
+            appendf("count=%u", static_cast<unsigned>(count));
+
+            const size_t start = (count == kOpcodeHistorySize) ? next : 0;
+            for (size_t i = 0; i < count; ++i)
+            {
+                const OpcodeHistoryEntry& e =
+                    m_opcodeHistory[(start + i) % kOpcodeHistorySize];
+
+                const DWORD entryOpcode = e.opcode & 0x7FFFu;
+                const char* entryName = OpcodeName(entryOpcode);
+
+                appendf(
+                    "#%03u script=%.8s opcode=0x%04X name=%s result=%u off=0x%08X",
+                    static_cast<unsigned>(i + 1),
+                    e.scriptName,
+                    entryOpcode,
+                    entryName ? entryName : "unknown",
+                    e.result,
+                    e.offset
+                );
+            }
+        }
+
+        m_opcodeHistoryMutex.unlock();
+    }
+
     output += "\r\n[END]\r\n";
     output += "============================================================\r\n";
 
@@ -1198,6 +1336,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             match != nullptr ? match->issue : std::string(),
             match != nullptr ? match->about : std::string(),
             match != nullptr ? match->solution : std::string(),
+            match != nullptr ? match->notes : std::vector<std::string>(),
             lastScript,
             lastOpcode,
             backtraceAddresses
@@ -1310,21 +1449,15 @@ LONG WINAPI DebugUtils::VectoredExceptionHandler(PEXCEPTION_POINTERS info)
     // VEH runs before stack unwinding and is therefore first-chance territory.
     // It records only a fixed-size exception snapshot. No STL, file I/O,
     // CrashInfo parsing, DbgHelp or GUI work is allowed here.
-    // The authoritative full report is generated only by the unhandled filter.
-    struct FirstChance
-    {
-        DWORD code;
-        DWORD address;
-        DWORD threadId;
-    };
-
-    static volatile FirstChance snapshot{};
-    snapshot.code = info->ExceptionRecord->ExceptionCode;
-    snapshot.address =
+    // The authoritative full report is generated only by the unhandled filter,
+    // which also reports this snapshot so a handled first-chance fault that
+    // preceded the fatal one is not silently lost.
+    g_firstChance.code = info->ExceptionRecord->ExceptionCode;
+    g_firstChance.address =
         static_cast<DWORD>(
             reinterpret_cast<uintptr_t>(
                 info->ExceptionRecord->ExceptionAddress));
-    snapshot.threadId = GetCurrentThreadId();
+    g_firstChance.threadId = GetCurrentThreadId();
     MemoryBarrier();
 
     return EXCEPTION_CONTINUE_SEARCH;

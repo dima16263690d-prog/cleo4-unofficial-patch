@@ -31,9 +31,34 @@ Expected:
 3. StackWalk64 runs only in the crash path.
 4. One structured gta_crashinfo.log is written.
 5. Report sections are ordered:
-   EXCEPTION -> FAULT -> CPU -> INSTRUCTION -> MEMORY -> PROCESS MEMORY -> STACK WALK -> CLEO CONTEXT -> CRASH MATCHER -> DIAGNOSIS.
+   EXCEPTION -> FAULT -> CPU -> INSTRUCTION -> MEMORY -> PROCESS MEMORY -> STACK WALK -> CLEO CONTEXT -> FIRST CHANCE -> CRASH MATCHER -> DIAGNOSIS -> OPCODE HISTORY.
 6. Last CLEO opcode/script are reported as context, not automatically blamed.
 7. CLEO involvement stays NOT_PROVEN unless evidence supports a stronger statement.
+8. `[FIRST CHANCE]` reports the fixed VEH snapshot (code/address/module/thread) so a
+   handled first-chance fault that preceded the fatal one is not lost.
+9. `[OPCODE HISTORY]` is present only when `OpcodeHistory=1`, and is dumped with
+   `try_lock` so it can never deadlock the crash path.
+10. `last_opcode` is followed by `last_opcode_name`; opcode history lines carry a
+    `name=` field. Names come from `DebugUtils.OpcodeNames.h` (scrlog keywords +
+    CLEO+ 0Dxx/0Exx). Unknown opcodes print `unknown`.
+
+## CrashInfo "By commands" / "By scripts" parsing
+
+The bundled database (JuniorDjjr/CrashInfo, GTA-SA-10US) contains two SCRLog
+sections that must be parsed:
+
+- "By commands" entries begin with `Last command:` / `Last Command:` and list
+  opcodes as `[0001]`, `[0B10]`, sometimes with stray spaces like `[ 0D0B]` or
+  `[0D62 ]`, joined by `or`/`|`.
+- "By scripts" entries begin with a bare `script <name>` line and carry `Mod:`,
+  `About:` and `Solution:` fields.
+
+Expected:
+- Bracketed opcodes are extracted (plain `0x` scanning alone misses them all).
+- A single-opcode command keeps the `Last command [0x....]` name; a multi-opcode
+  group relies on the `lastCommands` list and matches by opcode membership.
+- `script <name>` entries match on the recorded last script name.
+- `Mod:` text is folded into the entry description and shown in the dialog.
 
 ## Unknown crash
 
