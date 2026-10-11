@@ -179,7 +179,19 @@ namespace CLEO
     bool CTextManager::RemoveFxt(const char *key)
     {
         TRACE("Deleting FXT[%s]", key);
-        return fxts.erase(key) != 0;
+
+        // The map owns heap-allocated FxtEntry objects. Erasing the map node
+        // alone leaks the entry (only a raw pointer is stored), so the entry
+        // must be freed explicitly before it is removed.
+        std::string str = key;
+        std::transform(str.begin(), str.end(), str.begin(), ::toupper);
+        auto found = fxts.find(str);
+        if (found == fxts.end())
+            return false;
+
+        delete found->second;
+        fxts.erase(found);
+        return true;
     }
 
     const char *CTextManager::LocateFxt(const char *key)
