@@ -16,6 +16,14 @@
 
 namespace
 {
+    // Visible in both the startup log and crash report so the installed
+    // DebugUtils.cleo can be distinguished from stale copies.
+    static constexpr char kDebugUtilsBuildId[] =
+        "test-xx02-stackwalk-esp-scan-2026-10-06";
+}
+
+namespace
+{
     // DebugUtils uses the public SDK CScriptThread definition. Do not include
     // source/CCustomScript.h here because it declares a second incompatible
     // SCRIPT_VAR type. This local mirror is read-only and exists only so the

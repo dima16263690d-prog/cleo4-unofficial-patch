@@ -26,13 +26,7 @@ bool& CTimer::m_CodePause = *(bool*)0xB7CB48;
 
 DebugUtils* DebugUtils::s_instance = nullptr;
 
-namespace
-{
-    // Visible in both the startup log and crash report so the installed
-    // DebugUtils.cleo can be distinguished from stale copies.
-    static constexpr char kDebugUtilsBuildId[] =
-        "test-xx02-stackwalk-esp-scan-2026-10-06";
-}
+
 
 DebugUtils::DebugUtils()
 {
