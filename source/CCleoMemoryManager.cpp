@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <malloc.h>
+#include <vector>
 
 namespace CLEO
 {
@@ -174,7 +175,7 @@ namespace CLEO
             MEMORY_TRACE(
                 "FREE_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
                 owner ? owner->GetName() : "unknown",
-                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address))
+                reinterpret_cast<unsigned>(address)
             );
             return false;
         }
@@ -195,7 +196,7 @@ namespace CLEO
             MEMORY_TRACE(
                 "FORGET_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
                 owner ? owner->GetName() : "unknown",
-                static_cast<unsigned int>(reinterpret_cast<uintptr_t>(address))
+                reinterpret_cast<unsigned>(address)
             );
             return false;
         }
@@ -252,20 +253,39 @@ namespace CLEO
 
     void CCleoMemoryManager::OnGameEnd()
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        // Fast session reset:
+        // 1) snapshot pointers under the lock
+        // 2) free outside the hot path of map iteration
+        // 3) drop both maps with swap() so bucket memory returns to the CRT
+        // 4) reset counters for the next session
+        std::vector<void*> toFree;
+        size_t peakSnapshot = 0;
+        size_t blockCount = 0;
 
-        LogRemainingLocked();
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
 
-        for (const auto& entry : m_allocations)
-            std::free(entry.first);
+            LogRemainingLocked();
 
-        // swap() also releases the hash tables' bucket arrays, clear() keeps them.
-        std::unordered_map<void*, Allocation>().swap(m_allocations);
-        std::unordered_map<CRunningScript*, AllocationInfo>().swap(m_scriptAllocations);
-        m_totalBytes = 0;
+            blockCount = m_allocations.size();
+            toFree.reserve(blockCount);
+            for (const auto& entry : m_allocations)
+                toFree.push_back(entry.first);
 
-        MEMORY_TRACE("GAME_END cleanup_complete peak=%llu KB",
-            static_cast<unsigned long long>(m_peakBytes / 1024));
+            std::unordered_map<void*, Allocation>().swap(m_allocations);
+            std::unordered_map<CRunningScript*, AllocationInfo>().swap(m_scriptAllocations);
+            peakSnapshot = m_peakBytes;
+            m_totalBytes = 0;
+            m_peakBytes = 0;
+        }
+
+        for (void* address : toFree)
+            std::free(address);
+
+        MEMORY_TRACE(
+            "GAME_END cleanup_complete blocks=%llu peak=%llu KB",
+            static_cast<unsigned long long>(blockCount),
+            static_cast<unsigned long long>(peakSnapshot / 1024));
     }
 
     CCleoMemoryManager::Stats CCleoMemoryManager::GetStats() const
@@ -299,14 +319,14 @@ namespace CLEO
 
     void ConfigureProcessMemory()
     {
-        MEMORY_TRACE("PROCESS large_address_aware=%d", IsGameLargeAddressAware() ? 1 : 0);
+        const bool laa = IsGameLargeAddressAware();
+        MEMORY_TRACE("PROCESS large_address_aware=%d", laa ? 1 : 0);
 
-        // Windows starts every process with a ~200 KB minimum working set and
-        // trims game pages under memory pressure, which shows up as stutter
-        // when they are paged back in. Raise the soft limits; the *_DISABLE
-        // flags keep them as hints, so Windows can still trim if RAM runs out.
-        const SIZE_T desiredMin = 256u * 1024 * 1024;
-        const SIZE_T desiredMax = 1024u * 1024 * 1024;
+        // Soft working-set hints. Windows still may trim under real RAM pressure,
+        // but a higher minimum reduces page-in stutter after alt-tab / low memory.
+        // LAA builds can hold more resident data safely in a 4 GB address space.
+        const SIZE_T desiredMin = (laa ? 384u : 256u) * 1024 * 1024;
+        const SIZE_T desiredMax = (laa ? 1536u : 1024u) * 1024 * 1024;
 
         HANDLE process = GetCurrentProcess();
         SIZE_T currentMin = 0, currentMax = 0;
@@ -314,34 +334,62 @@ namespace CLEO
         if (!GetProcessWorkingSetSizeEx(process, &currentMin, &currentMax, &flags))
             return;
 
-        if (currentMin >= desiredMin)
-            return;
-
+        const SIZE_T newMin = currentMin > desiredMin ? currentMin : desiredMin;
         const SIZE_T newMax = currentMax > desiredMax ? currentMax : desiredMax;
-        const BOOL ok = SetProcessWorkingSetSizeEx(
-            process,
-            desiredMin,
-            newMax,
-            QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
 
-        MEMORY_TRACE(
-            "PROCESS working_set min=%u->%u KB max=%u->%u KB result=%d error=%u",
-            static_cast<unsigned>(currentMin / 1024),
-            static_cast<unsigned>(desiredMin / 1024),
-            static_cast<unsigned>(currentMax / 1024),
-            static_cast<unsigned>(newMax / 1024),
-            ok ? 1 : 0,
-            ok ? 0u : static_cast<unsigned>(GetLastError()));
+        if (newMin != currentMin || newMax != currentMax)
+        {
+            const BOOL ok = SetProcessWorkingSetSizeEx(
+                process,
+                newMin,
+                newMax,
+                QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
+
+            MEMORY_TRACE(
+                "PROCESS working_set min=%u->%u KB max=%u->%u KB result=%d error=%u",
+                static_cast<unsigned>(currentMin / 1024),
+                static_cast<unsigned>(newMin / 1024),
+                static_cast<unsigned>(currentMax / 1024),
+                static_cast<unsigned>(newMax / 1024),
+                ok ? 1 : 0,
+                ok ? 0u : static_cast<unsigned>(GetLastError()));
+        }
+
+        // Prefer keeping game pages over background processes when the system
+        // trims the working set (Win8+). Failure is non-fatal on older OS.
+        using SetProcessInformationFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, PVOID, DWORD);
+        static const auto pSetProcessInformation = reinterpret_cast<SetProcessInformationFn>(
+            GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+        if (pSetProcessInformation)
+        {
+            // MEMORY_PRIORITY_NORMAL = 5
+            struct { ULONG MemoryPriority; } priorityInfo{};
+            priorityInfo.MemoryPriority = 5;
+            // ProcessMemoryPriority == 40 on Windows 8+
+            if (pSetProcessInformation(
+                    process,
+                    static_cast<PROCESS_INFORMATION_CLASS>(40),
+                    &priorityInfo,
+                    sizeof(priorityInfo)))
+            {
+                MEMORY_TRACE("PROCESS memory_priority=NORMAL");
+            }
+        }
     }
 
     void CompactProcessHeaps()
     {
+        // After a full session teardown, return free pages to the OS so the
+        // next load starts from a cleaner heap (less fragmentation / paging).
         HANDLE processHeap = GetProcessHeap();
         HANDLE crtHeap = reinterpret_cast<HANDLE>(_get_heap_handle());
 
         const SIZE_T largestFree = HeapCompact(processHeap, 0);
         if (crtHeap && crtHeap != processHeap)
             HeapCompact(crtHeap, 0);
+
+        // CRT malloc arena: release empty pages when possible.
+        _heapmin();
 
         MEMORY_TRACE("HEAP_COMPACT largest_free_block=%u KB",
             static_cast<unsigned>(largestFree / 1024));
