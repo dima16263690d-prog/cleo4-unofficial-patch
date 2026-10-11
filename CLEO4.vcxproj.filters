@@ -19,6 +19,14 @@
       <Filter>source</Filter>
     </ClCompile>
     <ClCompile Include="source\CCustomOpcodeSystem.cpp">
+    <ClCompile Include="source\CCustomOpcodeSystem.Memory.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Script.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Files.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Native.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Audio.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Text.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.World.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="source\CCustomOpcodeSystem.Misc.cpp"><Filter>source</Filter></ClCompile>
       <Filter>source</Filter>
     </ClCompile>
     <ClCompile Include="source\CDebugCallbackSystem.cpp">
@@ -110,6 +118,7 @@
     <ClInclude Include="source\CFastScriptExecutor.h">
       <Filter>source</Filter>
     </ClInclude>
+    <ClInclude Include="source\CCustomOpcodeSystem.Internal.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="source\CCustomOpcodeSystem.h">
       <Filter>source</Filter>
     </ClInclude>
