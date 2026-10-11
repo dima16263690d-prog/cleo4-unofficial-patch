@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cctype>
+#include <cstdlib>
 #include <chrono>
 #include <cstddef>
 #include <fstream>
@@ -234,18 +235,98 @@ void DebugUtils::AppendAutomaticCrashInfo(
     const std::string dir = DebugDir() + "CrashInfo\\";
     CreateDirectoryA(dir.c_str(), nullptr);
 
-    // AUTO entries are deliberately isolated from the verified database.
-    // A crash observed once can never promote itself to VERIFIED.
+    const std::string marker = "Fingerprint: " + fingerprint;
+
+    // The auto database is an observation log, not a lookup table. A repeated
+    // crash must be counted, not silently discarded: the hit count and the
+    // first/last seen timestamps are what let a human decide whether a
+    // candidate is worth promoting to the verified list.
     {
         std::ifstream existing(path);
         if (existing.is_open())
         {
             std::string line;
-            const std::string marker = "Fingerprint: " + fingerprint;
+            std::vector<std::string> lines;
+            size_t matchIndex = std::string::npos;
+
             while (std::getline(existing, line))
             {
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+
                 if (line == marker)
+                    matchIndex = lines.size();
+
+                lines.push_back(line);
+            }
+
+            if (matchIndex != std::string::npos)
+            {
+                SYSTEMTIME t{};
+                GetLocalTime(&t);
+
+                char timestamp[32] = {};
+                sprintf_s(
+                    timestamp, sizeof(timestamp),
+                    "%04u-%02u-%02u %02u:%02u:%02u",
+                    t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+                );
+
+                auto readCounter = [&lines](size_t index) -> unsigned long long
+                {
+                    for (size_t i = index; i < lines.size(); ++i)
+                    {
+                        const std::string prefix = "Hits: ";
+                        if (lines[i].rfind(prefix, 0) == 0)
+                            return strtoull(lines[i].c_str() + prefix.size(), nullptr, 10);
+                        if (lines[i].rfind("Fingerprint: ", 0) == 0 && i != index)
+                            break;
+                        if (lines[i].rfind("# ---", 0) == 0 && i != index)
+                            break;
+                    }
+                    return 0;
+                };
+
+                const unsigned long long hits = readCounter(matchIndex) + 1;
+
+                bool updated = false;
+                for (size_t i = matchIndex; i < lines.size(); ++i)
+                {
+                    if (lines[i].rfind("Hits: ", 0) == 0)
+                    {
+                        char buffer[64] = {};
+                        sprintf_s(buffer, sizeof(buffer), "Hits: %llu", hits);
+                        lines[i] = buffer;
+                        updated = true;
+                    }
+                    else if (lines[i].rfind("Last seen: ", 0) == 0)
+                    {
+                        lines[i] = std::string("Last seen: ") + timestamp;
+                    }
+                }
+
+                // Migrate entries written before hit tracking existed.
+                if (!updated)
+                {
+                    lines.insert(lines.begin() + matchIndex + 1, "Hits: 1");
+                    lines.insert(
+                        lines.begin() + matchIndex + 2,
+                        std::string("Last seen: ") + timestamp);
+                }
+
+                std::ofstream rewrite(path, std::ios::out | std::ios::trunc);
+                if (!rewrite.is_open())
                     return;
+
+                for (size_t i = 0; i < lines.size(); ++i)
+                    rewrite << lines[i] << "\r\n";
+
+                WriteCore(
+                    "[crashinfo] auto candidate updated fingerprint=%s hits=%llu",
+                    fingerprint.c_str(),
+                    hits
+                );
+                return;
             }
         }
     }
@@ -269,8 +350,23 @@ void DebugUtils::AppendAutomaticCrashInfo(
     {
         record += "# CLEO DebugUtils Auto Crash Database\r\n";
         record += "# Status: UNVERIFIED observations only.\r\n";
-        record += "# These entries are never used as VERIFIED matches.\r\n\r\n";
+        record += "# These entries are never used as VERIFIED matches.\r\n";
+        record += "# Hits and First/Last seen track how often a fingerprint recurred.\r\n\r\n";
     }
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    char timestamp[32] = {};
+    sprintf_s(
+        timestamp, sizeof(timestamp),
+        "%04u-%02u-%02u %02u:%02u:%02u",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+    );
+
+    const DWORD normalizedOpcode =
+        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF);
+    const char* opcodeName = OpcodeName(normalizedOpcode);
 
     char line[1024] = {};
     sprintf_s(
@@ -278,13 +374,18 @@ void DebugUtils::AppendAutomaticCrashInfo(
         "# --------------------------------------------------------------------\r\n"
         "Status: UNVERIFIED\r\n"
         "Fingerprint: %s\r\n"
+        "Hits: 1\r\n"
+        "First seen: %s\r\n"
+        "Last seen: %s\r\n"
         "Exception: 0x%08X (%s)\r\n"
         "Fault: %s + 0x%08X\r\n"
         "Access: %s\r\n"
         "Target: 0x%08X\r\n"
         "Last script: %.8s\r\n"
-        "Last opcode: 0x%04X\r\n",
+        "Last opcode: 0x%04X (%s)\r\n",
         fingerprint.c_str(),
+        timestamp,
+        timestamp,
         exceptionCode,
         exceptionType ? exceptionType : "UNKNOWN",
         faultModule.empty() ? "<unknown>" : faultModule.c_str(),
@@ -292,7 +393,8 @@ void DebugUtils::AppendAutomaticCrashInfo(
         AccessTypeName(accessType).c_str(),
         static_cast<DWORD>(targetAddress),
         lastScript.empty() ? "none" : lastScript.c_str(),
-        lastOpcode == 0xFFFFFFFF ? 0xFFFF : (lastOpcode & 0x7FFF)
+        normalizedOpcode,
+        opcodeName ? opcodeName : "unknown"
     );
     record += line;
 
@@ -302,8 +404,9 @@ void DebugUtils::AppendAutomaticCrashInfo(
         const size_t count = std::min<size_t>(backtrace.size(), 12);
         for (size_t i = 0; i < count; ++i)
         {
-            char bt[32] = {};
-            sprintf_s(bt, sizeof(bt), " 0x%08X", backtrace[i]);
+            char bt[64] = {};
+            const std::string module = ModuleNameForAddress(backtrace[i]);
+            sprintf_s(bt, sizeof(bt), " %s+0x%08X", module.c_str(), backtrace[i]);
             record += bt;
         }
         record += "\r\n";
@@ -380,6 +483,16 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
+        // "Other problems:" opens the plain-text (non-address) entry group.
+        // Reset the current entry so the following "Error:" lines start fresh
+        // instead of being appended to the last address entry.
+        if (line.rfind("Other problems:", 0) == 0)
+        {
+            scriptSection = false;
+            current = nullptr;
+            continue;
+        }
+
         if (line.rfind("Error: ", 0) == 0)
         {
             scriptSection = false;
@@ -415,6 +528,20 @@ void DebugUtils::LoadCrashInfoList()
                 current->wildcardError ||
                 !current->backtraceAddresses.empty() ||
                 !current->backtraceModules.empty();
+
+            // A non-address "Error:" line (e.g. "Error: Freeze (usually flying
+            // with Hydra)") describes the problem in words. Keep that text so the
+            // report can show it instead of an empty issue.
+            if (!current->hasMatcher && current->issue.empty())
+            {
+                std::string text = matcherText;
+                while (!text.empty() &&
+                       (text.back() == ' ' || text.back() == '\t'))
+                    text.pop_back();
+
+                if (!text.empty())
+                    current->issue = text;
+            }
 
             continue;
         }
@@ -541,11 +668,41 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
+        // "Problem 1:", "Problem 2:" ... enumerate distinct causes for one
+        // signature. The numbered "Solution N:" lines below are their answers.
         if (line.rfind("Problem ", 0) == 0)
         {
             if (!current->issue.empty())
                 current->issue += " | ";
             current->issue += line;
+            continue;
+        }
+
+        if (line.rfind("Issue ", 0) == 0 &&
+            line.size() > 6 && isdigit(static_cast<unsigned char>(line[6])))
+        {
+            if (!current->issue.empty())
+                current->issue += " | ";
+            current->issue += line;
+            continue;
+        }
+
+        if (line.rfind("About ", 0) == 0 &&
+            line.size() > 6 && isdigit(static_cast<unsigned char>(line[6])))
+        {
+            if (!current->about.empty())
+                current->about += " | ";
+            current->about += line.substr(6);
+            continue;
+        }
+
+        // "Type:" classifies the fault (e.g. "Type: CLEO"). Keep it separate
+        // so the diagnosis can surface it without polluting the issue text.
+        if (line.rfind("Type: ", 0) == 0)
+        {
+            if (!current->type.empty())
+                current->type += " | ";
+            current->type += line.substr(6);
             continue;
         }
 
@@ -576,6 +733,18 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
+        // Numbered solutions answer the numbered problems above; the plain
+        // "Solution: " branch never sees them, so they used to fall through to
+        // the free-text description and the fix advice was lost.
+        if (line.rfind("Solution ", 0) == 0 &&
+            line.size() > 9 && isdigit(static_cast<unsigned char>(line[9])))
+        {
+            if (!current->solution.empty())
+                current->solution += " | ";
+            current->solution += line;
+            continue;
+        }
+
         if (line.rfind("Backtrace:", 0) == 0)
         {
             ExtractHexAddresses(line, 10, current->backtraceAddresses);
@@ -601,6 +770,21 @@ void DebugUtils::LoadCrashInfoList()
                 current->wildcardError ||
                 !current->backtraceAddresses.empty() ||
                 !current->backtraceModules.empty();
+            continue;
+        }
+
+        // Scenario-qualified advice: "During gameplay: ..." / "When trying to
+        // start the game: ...". These qualify the entry rather than name a
+        // fault address, so keep them as notes and out of the description.
+        if (line.rfind("During gameplay: ", 0) == 0)
+        {
+            current->notes.push_back(line.substr(17));
+            continue;
+        }
+
+        if (line.rfind("When trying to start the game: ", 0) == 0)
+        {
+            current->notes.push_back(line.substr(31));
             continue;
         }
 
@@ -699,6 +883,18 @@ void DebugUtils::LoadCrashInfoList()
     }
 
     LoadCrashInfoLocalization();
+
+    // Plain-text entries (the "Other problems:" group) carry no "Problem:" line,
+    // so their issue text lives in the description. Surface it as the issue and
+    // drop it from the description to avoid printing it twice.
+    for (auto& entry : m_crashInfo)
+    {
+        if (entry.issue.empty() && !entry.description.empty())
+        {
+            entry.issue = entry.description;
+            entry.description.clear();
+        }
+    }
 
     WriteCore(
         "[crashinfo] loaded verified entries=%u unique=%u path=%s",

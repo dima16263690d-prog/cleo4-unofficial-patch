@@ -104,7 +104,7 @@ DebugUtils uses its own local crash database:
 
 cleo\\cleo_plugins\\CrashInfo\\CLEO-CrashList.txt
 
-The verified database is bundled inside DebugUtils.cleo and is loaded only when a real unhandled crash is analysed. There is no runtime network download or manual synchronization.
+The verified database is bundled inside DebugUtils.cleo and is loaded only when a real unhandled crash is analysed. There is no runtime network download.
 
 The matching engine supports:
 
@@ -113,9 +113,33 @@ The matching engine supports:
 - Backtrace address/module rules;
 - last-command and script-context rules.
 
-When a crash has no specific verified match, DebugUtils automatically appends an
-UNVERIFIED candidate to the separate local auto database. AUTO candidates are
+The parser understands the numbered CrashInfo schema: `Problem N:` / `Solution N:`
+pairs, `Issue N:` / `About N:`, `Type:`, and the scenario-qualified
+`During gameplay:` / `When trying to start the game:` lines. Plain-text entries
+under `Other problems:` (a bare `Error:` description with no address) keep their
+wording as the issue text instead of being discarded.
+
+### Updating the database
+
+Refresh the bundled list from the upstream JuniorDjjr/CrashInfo project:
+
+```bash
+python tools/Update-CrashInfo.py            # GTA SA 1.0 US English baseline
+python tools/Update-CrashInfo.py --dry-run  # report only
+python tools/Update-CrashInfo.py --source EN-CrashList.txt   # offline refresh
+python tools/Update-CrashInfo.py --with-satellites           # + other languages
+```
+
+The script downloads `Lists/GTA-SA-10US/EN-CrashList.txt`, regenerates the
+DebugUtils header (version marker, source URL, update date) and preserves the
+local-notes footer verbatim. `--with-satellites` additionally mirrors the other
+languages/versions under `CrashInfo/upstream/` for localization or diffing.
+
+When a crash has no specific verified match, DebugUtils automatically records an
+UNVERIFIED candidate in the separate local auto database. AUTO candidates are
 never loaded as verified matches, so one observed crash cannot promote itself.
+Each auto entry now tracks a hit count and first/last-seen timestamps, so a
+recurring fingerprint is counted rather than silently ignored.
 
 
 ## Crash diagnostics bridge

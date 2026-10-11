@@ -789,27 +789,104 @@ void DebugUtils::WriteCoreMemorySummary()
             customObjectBytes +
             customCodeBytes;
 
+        if (static_cast<uint64_t>(pmc.PrivateUsage) > m_peakPrivateUsage)
+            m_peakPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+
+        std::string privateDeltaText;
+        if (m_memoryBaselineReady)
+        {
+            privateDeltaText =
+                (privateDelta < 0 ? "-" : "+") +
+                MemoryBytes(
+                    static_cast<uint64_t>(privateDelta < 0 ? -privateDelta : privateDelta));
+        }
+        else
+        {
+            privateDeltaText = "-";
+        }
+
+        if (!m_memorySummaryHeaderWritten)
+        {
+            WriteMemory(
+                "========================= memory summary ========================="
+            );
+            WriteMemory(
+                "%-10s %10s %10s | %6s %7s %7s | %9s %9s",
+                "time", "private", "delta", "queue", "native", "custom", "cleo_img", "known"
+            );
+            m_memorySummaryHeaderWritten = true;
+        }
+
         WriteMemory(
-            "[memory] process_private=%I64u delta=%I64d working_set=%I64u peak_working_set=%I64u pagefile=%I64u | queue=%u native=%u custom=%u custom_delta=%I64d | cleo_image=%u debugutils_image=%u custom_objects=%u custom_code=%u cleo_known=%u",
-            static_cast<unsigned __int64>(pmc.PrivateUsage),
-            privateDelta,
-            static_cast<unsigned __int64>(pmc.WorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
-            static_cast<unsigned __int64>(pmc.PagefileUsage),
+            "%-10u %10s %10s | %6u %7u %7u | %9s %9s",
+            static_cast<unsigned>(GetTickCount() / 1000),
+            MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+            privateDeltaText.c_str(),
             static_cast<unsigned>(queueCount),
             static_cast<unsigned>(nativeCount),
             static_cast<unsigned>(customCount),
-            m_memoryBaselineReady
-                ? static_cast<long long>(customCount) - static_cast<long long>(m_lastMemoryCustomCount)
-                : 0,
-            static_cast<unsigned>(cleoImage),
-            static_cast<unsigned>(debugUtilsImage),
-            static_cast<unsigned>(customObjectBytes),
-            static_cast<unsigned>(customCodeBytes),
-            static_cast<unsigned>(cleoKnownBytes)
+            MemoryBytes(cleoImage + debugUtilsImage).c_str(),
+            MemoryBytes(cleoKnownBytes).c_str()
         );
 
+        WriteMemory(
+            "           working_set=%s peak_working_set=%s pagefile=%s "
+            "peak_private=%s | custom_objects=%s custom_code=%s",
+            MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
+            MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
+            MemoryBytes(static_cast<uint64_t>(pmc.PagefileUsage)).c_str(),
+            MemoryBytes(m_peakPrivateUsage).c_str(),
+            MemoryBytes(customObjectBytes).c_str(),
+            MemoryBytes(customCodeBytes).c_str()
+        );
+
+        // Warn once when private bytes first cross the configured threshold and
+        // once again if they fall back below it, so a warning is never spammed.
+        if (m_memoryWarnMegabytes != 0)
+        {
+            const uint64_t warnBytes =
+                static_cast<uint64_t>(m_memoryWarnMegabytes) * 1024ull * 1024ull;
+
+            if (static_cast<uint64_t>(pmc.PrivateUsage) >= warnBytes)
+            {
+                if (!m_memoryWarnIssued)
+                {
+                    m_memoryWarnIssued = true;
+                    WriteMemory(
+                        "[memory][warn] private usage %s reached the %u MB threshold",
+                        MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+                        m_memoryWarnMegabytes
+                    );
+                }
+            }
+            else
+            {
+                m_memoryWarnIssued = false;
+            }
+        }
+
+        // 32-bit GTA with the standard 2 GB user address space: near the limit
+        // fragmentation is expected, so flag the transition into the last 20%.
+        const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+        const bool rotateActive =
+            static_cast<uint64_t>(pmc.PrivateUsage) >= (kAddressSpaceBytes * 80ull / 100ull);
+
+        if (rotateActive && !m_memoryRotateActive)
+        {
+            WriteMemory(
+                "[memory][warn] private usage %s is above 80%% of the 2 GB address space",
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
+            );
+        }
+        m_memoryRotateActive = rotateActive;
+
         m_lastPrivateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
+        m_lastMemoryNativeCount = nativeCount;
+        m_lastMemoryCustomObjectBytes = customObjectBytes;
+        m_lastMemoryCustomCodeBytes = customCodeBytes;
+        m_lastMemoryCleoImage = cleoImage;
+        m_lastMemoryDebugImage = debugUtilsImage;
+        m_lastMemoryKnownBytes = cleoKnownBytes;
     }
 
     MEMORYSTATUSEX memory{};
@@ -817,12 +894,12 @@ void DebugUtils::WriteCoreMemorySummary()
     if (GlobalMemoryStatusEx(&memory))
     {
         WriteMemory(
-            "[memory] system_load=%u%% physical=%llu/%llu virtual=%llu/%llu",
+            "           system_load=%u%% physical=%s/%s virtual=%s/%s",
             memory.dwMemoryLoad,
-            static_cast<unsigned long long>(memory.ullAvailPhys),
-            static_cast<unsigned long long>(memory.ullTotalPhys),
-            static_cast<unsigned long long>(memory.ullAvailVirtual),
-            static_cast<unsigned long long>(memory.ullTotalVirtual)
+            MemoryBytes(memory.ullAvailPhys).c_str(),
+            MemoryBytes(memory.ullTotalPhys).c_str(),
+            MemoryBytes(memory.ullAvailVirtual).c_str(),
+            MemoryBytes(memory.ullTotalVirtual).c_str()
         );
     }
 

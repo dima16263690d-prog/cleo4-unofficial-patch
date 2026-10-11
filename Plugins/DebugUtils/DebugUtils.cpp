@@ -253,6 +253,8 @@ void DebugUtils::LoadConfig()
             config << "[DebugUtils.Logs]\r\n";
             config << "Memory=1\r\n";
             config << "MemoryTrace=0\r\n";
+            config << "; Warn when private bytes cross this many MB (0 = off).\r\n";
+            config << "MemoryWarnMB=1500\r\n";
             config << "Diagnostic=0\r\n\r\n";
 
             config << "[DebugUtils.Crash]\r\n";
@@ -322,6 +324,15 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    // Warn when private bytes cross this many megabytes (0 disables the warning).
+    m_memoryWarnMegabytes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "MemoryWarnMB",
+            1500,
+            path.c_str()
+        )
+    );
 
     m_diagnosticLogEnabled =
         GetPrivateProfileIntA(

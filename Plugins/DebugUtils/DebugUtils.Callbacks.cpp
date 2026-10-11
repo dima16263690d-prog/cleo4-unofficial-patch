@@ -127,6 +127,10 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastMemoryQueueCount = 0;
     s_instance->m_lastMemoryCustomCount = 0;
     s_instance->m_memoryBaselineReady = false;
+    s_instance->m_peakPrivateUsage = 0;
+    s_instance->m_memoryWarnIssued = false;
+    s_instance->m_memoryRotateActive = false;
+    s_instance->m_memorySummaryHeaderWritten = false;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();

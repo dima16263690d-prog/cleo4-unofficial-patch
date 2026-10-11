@@ -42,6 +42,8 @@ private:
         std::string about;
         std::string solution;
         std::string description;
+        std::string type;
+        std::vector<std::string> notes;
     };
 
     static DebugUtils* s_instance;
@@ -90,6 +92,17 @@ private:
     size_t m_lastMemoryQueueCount = 0;
     size_t m_lastMemoryCustomCount = 0;
     bool m_memoryBaselineReady = false;
+    DWORD m_memoryWarnMegabytes = 0;
+    uint64_t m_peakPrivateUsage = 0;
+    bool m_memoryWarnIssued = false;
+    bool m_memoryRotateActive = false;
+    size_t m_lastMemoryNativeCount = 0;
+    size_t m_lastMemoryCustomObjectBytes = 0;
+    size_t m_lastMemoryCustomCodeBytes = 0;
+    size_t m_lastMemoryCleoImage = 0;
+    size_t m_lastMemoryDebugImage = 0;
+    size_t m_lastMemoryKnownBytes = 0;
+    bool m_memorySummaryHeaderWritten = false;
     size_t m_scriptBytes = 0;
     size_t m_scriptCommands = 0;
     bool m_crashHandlerInstalled = false;
@@ -244,6 +257,7 @@ private:
         const std::string& issue,
         const std::string& about,
         const std::string& solution,
+        const std::vector<std::string>& notes,
         const std::string& lastScript,
         DWORD lastOpcode,
         const std::vector<DWORD>& backtrace

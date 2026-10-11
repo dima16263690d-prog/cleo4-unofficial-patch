@@ -47,6 +47,29 @@ namespace
 
         return nullptr;
     }
+
+    // Render a byte count as a short human readable value (e.g. "23.4 MB").
+    // Used by the periodic memory summary so the log stays readable.
+    static std::string MemoryBytes(uint64_t bytes)
+    {
+        char buffer[32] = {};
+
+        constexpr double kKiB = 1024.0;
+        constexpr double kMiB = kKiB * 1024.0;
+        constexpr double kGiB = kMiB * 1024.0;
+
+        const double value = static_cast<double>(bytes);
+        if (value >= kGiB)
+            sprintf_s(buffer, sizeof(buffer), "%.2f GB", value / kGiB);
+        else if (value >= kMiB)
+            sprintf_s(buffer, sizeof(buffer), "%.1f MB", value / kMiB);
+        else if (value >= kKiB)
+            sprintf_s(buffer, sizeof(buffer), "%.1f KB", value / kKiB);
+        else
+            sprintf_s(buffer, sizeof(buffer), "%llu B", static_cast<unsigned long long>(bytes));
+
+        return buffer;
+    }
 }
 
 namespace

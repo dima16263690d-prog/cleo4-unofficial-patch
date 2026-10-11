@@ -445,6 +445,7 @@ void DebugUtils::ShowCrashDialog(
     const std::string& issue,
     const std::string& about,
     const std::string& solution,
+    const std::vector<std::string>& notes,
     const std::string& lastScript,
     DWORD lastOpcode,
     const std::vector<DWORD>& backtrace
@@ -517,6 +518,9 @@ void DebugUtils::ShowCrashDialog(
     if (!solution.empty())
         details += std::string("\r\n") +
             (russian ? "\xD0\xA0\xD0\xB5\xD1\x88\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "Solution: ") + solution;
+    for (const auto& note : notes)
+        details += std::string("\r\n") +
+            (russian ? "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD1\x87\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5\x3A\x20" : "Note: ") + note;
 
     details += std::string("\r\n\r\n") +
         (russian ? "\xD0\xA1\xD1\x82\xD0\xB5\xD0\xBA\x20\xD0\xB2\xD1\x8B\xD0\xB7\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB2\x3A" : "Backtrace:");
@@ -992,15 +996,42 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 sizeof(pmc)))
         {
             appendf(
-                "working_set=%I64u\r\n"
-                "peak_working_set=%I64u\r\n"
-                "private=%I64u\r\n"
-                "pagefile=%I64u",
+                "working_set=%I64u (%s)\r\n"
+                "peak_working_set=%I64u (%s)\r\n"
+                "private=%I64u (%s)\r\n"
+                "pagefile=%I64u (%s)",
                 static_cast<unsigned __int64>(pmc.WorkingSetSize),
+                MemoryBytes(static_cast<uint64_t>(pmc.WorkingSetSize)).c_str(),
                 static_cast<unsigned __int64>(pmc.PeakWorkingSetSize),
+                MemoryBytes(static_cast<uint64_t>(pmc.PeakWorkingSetSize)).c_str(),
                 static_cast<unsigned __int64>(pmc.PrivateUsage),
-                static_cast<unsigned __int64>(pmc.PagefileUsage)
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+                static_cast<unsigned __int64>(pmc.PagefileUsage),
+                MemoryBytes(static_cast<uint64_t>(pmc.PagefileUsage)).c_str()
             );
+
+            // 32-bit GTA: private usage near 2 GB means the address space is
+            // nearly exhausted, which is itself a plausible crash cause.
+            const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+            appendf(
+                "address_space_nearly_exhausted=%d",
+                static_cast<uint64_t>(pmc.PrivateUsage) >=
+                    (kAddressSpaceBytes * 80ull / 100ull) ? 1 : 0
+            );
+
+            MEMORYSTATUSEX systemMemory{};
+            systemMemory.dwLength = sizeof(systemMemory);
+            if (GlobalMemoryStatusEx(&systemMemory))
+            {
+                appendf(
+                    "system_load=%u%%\r\n"
+                    "system_physical_available=%s\r\n"
+                    "system_virtual_available=%s",
+                    systemMemory.dwMemoryLoad,
+                    MemoryBytes(systemMemory.ullAvailPhys).c_str(),
+                    MemoryBytes(systemMemory.ullAvailVirtual).c_str()
+                );
+            }
         }
         else
         {
@@ -1182,6 +1213,12 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             appendf("about=%s", match->about.c_str());
         if (!match->solution.empty())
             appendf("solution=%s", match->solution.c_str());
+        if (!match->type.empty())
+            appendf("type=%s", match->type.c_str());
+        if (!match->description.empty())
+            appendf("description=%s", match->description.c_str());
+        for (const auto& note : match->notes)
+            appendf("note=%s", note.c_str());
     }
     else
     {
@@ -1299,6 +1336,7 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
             match != nullptr ? match->issue : std::string(),
             match != nullptr ? match->about : std::string(),
             match != nullptr ? match->solution : std::string(),
+            match != nullptr ? match->notes : std::vector<std::string>(),
             lastScript,
             lastOpcode,
             backtraceAddresses
