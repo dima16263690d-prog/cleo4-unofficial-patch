@@ -1,0 +1,289 @@
+#pragma once
+
+#include "DebugUtils.h"
+#include <windows.h>
+#include <psapi.h>
+#include <algorithm>
+#include <cctype>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <list>
+#include <regex>
+#include <string>
+#include <vector>
+
+namespace
+{
+    // Visible in both the startup log and crash report so the installed
+    // DebugUtils.cleo can be distinguished from stale copies.
+    static constexpr char kDebugUtilsBuildId[] =
+        "test-xx02-stackwalk-esp-scan-2026-10-06";
+}
+
+namespace
+{
+    // DebugUtils uses the public SDK CScriptThread definition. Do not include
+    // source/CCustomScript.h here because it declares a second incompatible
+    // SCRIPT_VAR type. This local mirror is read-only and exists only so the
+    // diagnostics can measure CCustomScript storage without changing the class.
+    struct DebugCustomScriptLayout
+    {
+        CScriptThread base;
+
+        // CCleoScriptState
+        DWORD dwChecksum;
+        BYTE* ownedBuffer;
+        bool bSaveEnabled;
+        bool bOK;
+        DWORD LastSearchPed;
+        DWORD LastSearchCar;
+        DWORD LastSearchObj;
+        uint32_t CompatVer;
+        size_t CodeSize;
+        std::string ScriptFileDir;
+        std::string ScriptFileName;
+        DWORD savedNodeId;
+
+        // CCustomScript relation state
+        DebugCustomScriptLayout* parentThread;
+        int childLabel;
+        std::list<DebugCustomScriptLayout*> childThreads;
+
+        // CScriptResources
+        BYTE UseTextCommands;
+        int NumDraws;
+        int NumTexts;
+        std::list<void*> script_textures;
+        std::vector<BYTE> script_draws;
+        std::vector<BYTE> script_texts;
+    };
+
+    static_assert(sizeof(size_t) == 4, "CLEO4 DebugUtils is Win32; size_t must be 32-bit");
+    static_assert(sizeof(CScriptThread) == 0xE0, "Unexpected CScriptThread layout");
+    static_assert(offsetof(DebugCustomScriptLayout, CodeSize) == 0xFC, "Unexpected CCustomScript CodeSize offset");
+    static_assert(offsetof(DebugCustomScriptLayout, savedNodeId) == 0x138, "Unexpected CCustomScript savedNodeId offset");
+
+    static const DebugCustomScriptLayout* GetDebugCustomScript(const CScriptThread* thread)
+    {
+        return reinterpret_cast<const DebugCustomScriptLayout*>(thread);
+    }
+
+    constexpr DWORD kGtaSa10ActiveScripts = 0x00A8B42C;
+
+    static const char* ExceptionName(DWORD code)
+    {
+        switch (code)
+        {
+        case EXCEPTION_ACCESS_VIOLATION: return "ACCESS_VIOLATION";
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "ARRAY_BOUNDS_EXCEEDED";
+        case EXCEPTION_DATATYPE_MISALIGNMENT: return "DATATYPE_MISALIGNMENT";
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO: return "FLT_DIVIDE_BY_ZERO";
+        case EXCEPTION_ILLEGAL_INSTRUCTION: return "ILLEGAL_INSTRUCTION";
+        case EXCEPTION_IN_PAGE_ERROR: return "IN_PAGE_ERROR";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO: return "INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_INT_OVERFLOW: return "INT_OVERFLOW";
+        case EXCEPTION_PRIV_INSTRUCTION: return "PRIV_INSTRUCTION";
+        case EXCEPTION_STACK_OVERFLOW: return "STACK_OVERFLOW";
+        case 0xE06D7363: return "CXX_EXCEPTION";
+        default: return "UNKNOWN";
+        }
+    }
+
+    static size_t GetModuleImageSize(HMODULE module)
+    {
+        if (module == nullptr)
+            return 0;
+
+        MODULEINFO info{};
+        if (!GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)))
+            return 0;
+
+        return static_cast<size_t>(info.SizeOfImage);
+    }
+
+    constexpr size_t kScriptLogMaxBytes = 128u * 1024u * 1024u;
+
+    bool IsFatalException(DWORD code)
+    {
+        switch (code)
+        {
+        case EXCEPTION_ACCESS_VIOLATION:
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+        case EXCEPTION_DATATYPE_MISALIGNMENT:
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+        case EXCEPTION_ILLEGAL_INSTRUCTION:
+        case EXCEPTION_IN_PAGE_ERROR:
+        case EXCEPTION_INT_DIVIDE_BY_ZERO:
+        case EXCEPTION_INT_OVERFLOW:
+        case EXCEPTION_PRIV_INSTRUCTION:
+        case EXCEPTION_STACK_OVERFLOW:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    void SafeFormat(char* buffer, size_t size, const char* format, va_list args)
+    {
+        if (size == 0) return;
+        _vsnprintf_s(buffer, size, _TRUNCATE, format, args);
+    }
+
+    void WinAppendLine(const std::string& path, const char* text)
+    {
+        HANDLE file = CreateFileA(
+            path.c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+
+        DWORD written = 0;
+        WriteFile(file, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
+        WriteFile(file, "\r\n", 2, &written, nullptr);
+        CloseHandle(file);
+    }
+
+    void WinWriteTextFile(const std::string& path, const std::string& text)
+    {
+        if (path.empty() || text.empty())
+            return;
+
+        CreateDirectoryA("cleo", nullptr);
+        CreateDirectoryA("cleo\\debug", nullptr);
+
+        HANDLE file = CreateFileA(
+            path.c_str(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+
+        DWORD written = 0;
+        const DWORD bytes = static_cast<DWORD>(
+            std::min<size_t>(text.size(), 0x7FFFFFFFu)
+        );
+
+        const BOOL ok = WriteFile(
+            file,
+            text.data(),
+            bytes,
+            &written,
+            nullptr
+        );
+
+        if (ok && written == bytes)
+            FlushFileBuffers(file);
+
+        CloseHandle(file);
+    }
+
+    void SkipUnusedVarArgs(CScriptThread* thread)
+    {
+        if (!thread)
+            return;
+
+        while (*thread->ip != 0)
+            CLEO_SkipOpcodeParams(thread, 1);
+
+        thread->ip++;
+    }
+
+    void ExtractHexAddresses(const std::string& line, size_t start, std::vector<DWORD>& out)
+    {
+        size_t pos = start;
+        while ((pos = line.find("0x", pos)) != std::string::npos)
+        {
+            const size_t valueStart = pos + 2;
+            if (valueStart < line.size() && line[valueStart] == '*')
+            {
+                pos = valueStart + 1;
+                continue;
+            }
+
+            char* end = nullptr;
+            const unsigned long value = strtoul(line.c_str() + valueStart, &end, 16);
+            if (end != line.c_str() + valueStart)
+            {
+                out.push_back(static_cast<DWORD>(value));
+                pos = static_cast<size_t>(end - line.c_str());
+            }
+            else
+            {
+                pos = valueStart + 1;
+            }
+        }
+    }
+
+    void ExtractModuleNames(const std::string& line, std::vector<std::string>& out)
+    {
+        static const std::regex moduleRegex(
+            R"(([A-Za-z0-9_~+.-]+\.(?:asi|cleo|dll)))",
+            std::regex_constants::icase
+        );
+
+        for (std::sregex_iterator it(line.begin(), line.end(), moduleRegex), end; it != end; ++it)
+            out.push_back((*it)[1].str());
+    }
+
+    bool ContainsAddress(const std::vector<DWORD>& values, DWORD address)
+    {
+        return std::find(values.begin(), values.end(), address) != values.end();
+    }
+
+    bool ContainsModule(const std::vector<std::string>& values, const std::string& module)
+    {
+        for (const auto& value : values)
+        {
+            if (value.size() == module.size())
+            {
+                bool same = true;
+                for (size_t i = 0; i < value.size(); ++i)
+                {
+                    if (tolower(static_cast<unsigned char>(value[i])) !=
+                        tolower(static_cast<unsigned char>(module[i])))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+
+                if (same)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    const char* CallbackName(int id)
+    {
+        switch (id)
+        {
+        case CLEO_CB_GAME_BEGIN: return "GameBegin";
+        case CLEO_CB_GAME_END: return "GameEnd";
+        case CLEO_CB_GAME_PROCESS_BEFORE: return "GameProcessBefore";
+        case CLEO_CB_GAME_PROCESS_AFTER: return "GameProcessAfter";
+        case CLEO_CB_SCRIPT_PROCESS_BEFORE: return "ScriptProcessBefore";
+        case CLEO_CB_SCRIPT_PROCESS_AFTER: return "ScriptProcessAfter";
+        case CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE: return "ScriptOpcodeProcessBefore";
+        case CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER: return "ScriptOpcodeProcessAfter";
+        case CLEO_CB_SCRIPT_DELETED: return "ScriptDeleted";
+        default: return "Unknown";
+        }
+    }
+}

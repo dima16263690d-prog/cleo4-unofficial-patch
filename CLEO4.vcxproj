@@ -18,6 +18,14 @@
     <ClCompile Include="source\CCleoMemoryManager.cpp" />
     <ClCompile Include="source\CHookSystem.cpp" />
     <ClCompile Include="source\CCustomOpcodeSystem.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Memory.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Script.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Files.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Native.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Audio.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Text.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.World.cpp" />
+    <ClCompile Include="source\CCustomOpcodeSystem.Misc.cpp" />
     <ClCompile Include="source\CFastOpcodeExecutor.cpp" />
     <ClCompile Include="source\CFastScriptExecutor.cpp" />
     <ClCompile Include="source\CCustomScript.cpp" />
@@ -29,7 +37,9 @@
     <ClCompile Include="source\cleo.cpp" />
     <ClCompile Include="source\crc32.cpp" />
     <ClCompile Include="source\CScriptEngine.cpp" />
-    <ClCompile Include="source\CScriptRuntime.cpp" />
+    <ClCompile Include="source\CScriptEngine.State.cpp" />
+    <ClCompile Include="source\CScriptEngine.Lifecycle.cpp" />
+    <ClCompile Include="source\CScriptEngine.Registry.cpp" />
     <ClCompile Include="source\CSoundSystem.cpp" />
     <ClCompile Include="source\CAudioPluginAPI.cpp" />
     <ClCompile Include="source\CTextManager.cpp" />
@@ -48,6 +58,7 @@
     <ClInclude Include="source\CCleoMemoryManager.h" />
     <ClInclude Include="source\CHookSystem.h" />
     <ClInclude Include="source\CCustomOpcodeSystem.h" />
+    <ClInclude Include="source\CCustomOpcodeSystem.Internal.h" />
     <ClInclude Include="source\CFastOpcodeExecutor.h" />
     <ClInclude Include="source\CFastScriptExecutor.h" />
     <ClInclude Include="source\CCustomScript.h" />
@@ -62,7 +73,8 @@
     <ClInclude Include="source\CPluginSystem.h" />
     <ClInclude Include="source\crc32.h" />
     <ClInclude Include="source\CScriptEngine.h" />
-    <ClInclude Include="source\CScriptRuntime.h" />
+    <ClInclude Include="source\CScriptEngine.Internal.h" />
+    <ClInclude Include="source\CScriptEngine.State.h" />
     <ClInclude Include="source\CSoundSystem.h" />
     <ClInclude Include="source\CTextManager.h" />
     <ClInclude Include="source\CTheScripts.h" />

@@ -2,7 +2,11 @@
 #include "CCodeInjector.h"
 #include "CCustomOpcodeSystem.h"
 #include "CCustomScript.h"
-#include "CScriptRuntime.h"
+#include <list>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace CLEO
 {
@@ -15,16 +19,24 @@ namespace CLEO
     {
         friend class CCustomScript;
         std::list<CCustomScript *> CustomScripts;
+        std::list<CCustomScript *> m_drawableScripts;
         std::list<CCustomScript *> ScriptsWaitingForDelete;
         std::set<unsigned long> InactiveScriptHashes;
 
-        // Central runtime lifecycle state. This is the preparation layer for
-        // the future scheduler/worker architecture; execution remains on the
-        // GTA game thread in this stage.
+        // O(1) indexes for CLEO-specific lookups. The GTA active/inactive
+        // queues remain authoritative for native GTA script pointers.
+        std::unordered_set<const CRunningScript*> m_customScriptRegistry;
+        std::unordered_set<const CRunningScript*> m_activeCustomScriptRegistry;
+        std::unordered_set<const CRunningScript*> m_pendingDeleteRegistry;
+        std::unordered_map<std::string, std::vector<CCustomScript*>> m_customScriptsByName;
+
+        // Lifecycle state for the existing single-threaded CLEO engine.
+        // GTA's active queue remains the authoritative execution order.
         bool scriptsLoaded;
         CCustomScript *CustomMission;
 
         CCustomScript			*	LoadScript(const char *szFilePath);
+        void UpdateDrawableScript(CCustomScript* script, bool drawable);
 
     public:
         static SCRIPT_VAR			CleoVariables[0x400];
@@ -51,7 +63,6 @@ namespace CLEO
         void							RestorePendingScmFunctions(CCustomScript *script);
         void							RestorePendingChildTree(CCustomScript *parent);
 
-        CScriptRuntime               Runtime;
         inline size_t				WorkingScriptsCount() { return CustomScripts.size(); }
         virtual void					Inject(CCodeInjector&);
 

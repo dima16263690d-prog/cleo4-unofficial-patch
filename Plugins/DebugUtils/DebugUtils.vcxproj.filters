@@ -10,9 +10,16 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DebugUtils.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Logging.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.CrashInfo.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.StackWalk.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.CrashReport.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Callbacks.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Opcodes.cpp"><Filter>source</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h"><Filter>source</Filter></ClInclude>
+    <ClInclude Include="DebugUtils.Internal.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h"><Filter>sdk</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h"><Filter>sdk</Filter></ClInclude>
   </ItemGroup>
