@@ -902,16 +902,15 @@ void DebugUtils::WriteCoreMemorySummary()
             MemoryBytes(headroomBytes).c_str()
         );
 
-        // Tracked script allocations (allocate_memory / free_allocated_memory),
-        // with the per-script budget that CLEO now enforces.
+        // Tracked script allocations (allocate_memory / free_allocated_memory).
+        // Every request is honored at full size; this is the running total held
+        // by live scripts.
         if (haveScriptStats)
         {
             WriteMemory(
-                "         script_blocks=%llu script_mem=%s per_script_limit=%s/%d blocks",
+                "         script_blocks=%llu script_mem=%s",
                 m_lastMemoryScriptBlocks,
-                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str(),
-                MemoryBytes(static_cast<uint64_t>(scriptStats.perScriptSizeLimit)).c_str(),
-                scriptStats.perScriptBlockLimit
+                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str()
             );
         }
 

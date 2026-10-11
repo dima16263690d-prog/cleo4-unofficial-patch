@@ -17,10 +17,6 @@ namespace CLEO
             int count = 0;
             size_t size = 0;
             std::unordered_set<void*> blocks;
-            // One-shot warnings, so an offending script is reported once per
-            // reason instead of on every denied allocation.
-            bool warnedSize = false;
-            bool warnedBlocks = false;
         };
 
         struct Stats
@@ -28,8 +24,6 @@ namespace CLEO
             size_t totalBlocks = 0;
             size_t totalBytes = 0;
             size_t peakBytes = 0;
-            int configuredBlockLimit = 2000;
-            int configuredSizeLimit = 16 * 1024 * 1024;
         };
 
         CCleoMemoryManager();
@@ -37,9 +31,9 @@ namespace CLEO
         CCleoMemoryManager& operator=(const CCleoMemoryManager&) = delete;
 
         // CLEO5-style memory operations.
-        // Memory is tracked globally and additionally attributed to its script,
-        // and a per-script budget (defaults 2000 blocks / 16 MB) is watched so
-        // a leaking script is reported instead of silently exhausting memory.
+        // Every request is honored at its full size (a script that needs more
+        // than any fixed budget simply gets it); memory is tracked per script so
+        // a script that stops without freeing is reclaimed automatically.
         void* Allocate(CRunningScript* owner, size_t size);
         bool Free(CRunningScript* owner, void* address);
 
@@ -66,12 +60,8 @@ namespace CLEO
         size_t m_totalBytes = 0;
         size_t m_peakBytes = 0;
 
-        int m_limitAllocationCount = 2000;
-        size_t m_limitAllocationSize = 16 * 1024 * 1024;
-
         void RegisterMemoryAllocationLocked(CRunningScript* owner, void* address, size_t size);
         bool UnregisterMemoryAllocationLocked(void* address);
-        void LogScriptWarningLocked(CRunningScript* owner, const char* reason) const;
         void LogRemainingLocked() const;
 
     };

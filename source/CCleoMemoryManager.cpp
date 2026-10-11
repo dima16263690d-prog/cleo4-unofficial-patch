@@ -11,11 +11,7 @@ namespace CLEO
 {
     CCleoMemoryManager::CCleoMemoryManager()
     {
-        MEMORY_TRACE(
-            "INIT limits blocks=%d size=%llu MB",
-            m_limitAllocationCount,
-            static_cast<unsigned long long>(m_limitAllocationSize / (1024 * 1024))
-        );
+        MEMORY_TRACE("INIT per-script tracking enabled (no fixed budget)");
     }
 
     void CCleoMemoryManager::RegisterMemoryAllocationLocked(
@@ -69,26 +65,6 @@ namespace CLEO
         return true;
     }
 
-    void CCleoMemoryManager::LogScriptWarningLocked(
-        CRunningScript* owner,
-        const char* reason
-    ) const
-    {
-        const auto it = m_scriptAllocations.find(owner);
-        if (it == m_scriptAllocations.end())
-            return;
-
-        const char* scriptName = owner ? owner->GetName() : "unknown";
-
-        MEMORY_TRACE(
-            "WARNING %s script='%.8s' blocks=%d size=%llu KB",
-            reason,
-            scriptName,
-            it->second.count,
-            static_cast<unsigned long long>(it->second.size / 1024)
-        );
-    }
-
     void CCleoMemoryManager::LogRemainingLocked() const
     {
         MEMORY_TRACE(
@@ -139,28 +115,10 @@ namespace CLEO
         std::lock_guard<std::mutex> lock(m_mutex);
         RegisterMemoryAllocationLocked(owner, memory, size);
 
-        // Budget check is advisory, matching CLEO5: exceeding the per-script
-        // limit (defaults 2000 blocks / 16 MB) logs a one-shot warning but the
-        // allocation still succeeds, so a legitimate script is never broken.
-        // The tracker (and the address space) stay protected by ReleaseOwner()
-        // reclaiming every block a script leaves behind when it stops.
-        const auto it = m_scriptAllocations.find(owner);
-        if (it != m_scriptAllocations.end())
-        {
-            if (!it->second.warnedSize && m_limitAllocationSize > 0 &&
-                it->second.size > m_limitAllocationSize)
-            {
-                it->second.warnedSize = true;
-                LogScriptWarningLocked(owner, "size_limit_exceeded");
-            }
-            else if (!it->second.warnedBlocks && m_limitAllocationCount > 0 &&
-                it->second.count > m_limitAllocationCount)
-            {
-                it->second.warnedBlocks = true;
-                LogScriptWarningLocked(owner, "block_limit_exceeded");
-            }
-        }
-
+        // No fixed budget: a script that genuinely needs more than the CLEO5
+        // default (16 MB) still receives it. Tracking is per script, and
+        // ReleaseOwner() reclaims anything the script leaves behind when it
+        // stops, so an unbounded script does not leak into the next session.
         return memory;
     }
 
@@ -275,8 +233,6 @@ namespace CLEO
         result.totalBlocks = m_allocations.size();
         result.totalBytes = m_totalBytes;
         result.peakBytes = m_peakBytes;
-        result.configuredBlockLimit = m_limitAllocationCount;
-        result.configuredSizeLimit = static_cast<int>(m_limitAllocationSize);
         return result;
     }
 

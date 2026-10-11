@@ -55,8 +55,6 @@ typedef struct CLEO_MemoryStats
     unsigned long long totalBlocks;
     unsigned long long totalBytes;
     unsigned long long peakBytes;
-    int perScriptBlockLimit;
-    unsigned long long perScriptSizeLimit;
 } CLEO_MemoryStats;
 
 typedef BOOL (__stdcall *CLEO_ScriptProcessBeforeCallback)(void* thread);
