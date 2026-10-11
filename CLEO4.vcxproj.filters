@@ -60,6 +60,12 @@
     <ClCompile Include="source\CScriptEngine.cpp">
       <Filter>source</Filter>
     </ClCompile>
+    <ClCompile Include="source\CScriptEngine.State.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="source\CScriptEngine.Lifecycle.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
     <ClCompile Include="source\CScriptEngine.Registry.cpp">
       <Filter>source</Filter>
     </ClCompile>
@@ -138,6 +144,9 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CScriptEngine.Internal.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CScriptEngine.State.h">
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CSoundSystem.h">
