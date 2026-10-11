@@ -419,7 +419,8 @@ void DebugUtils::LoadCrashInfoList()
             continue;
         }
 
-        if (line.rfind("Last command:", 0) == 0)
+        if (line.rfind("Last command:", 0) == 0 ||
+            line.rfind("Last Command:", 0) == 0)
         {
             scriptSection = false;
 
@@ -427,17 +428,27 @@ void DebugUtils::LoadCrashInfoList()
                 break;
 
             current->lastCommands.clear();
+            // SCRLog commands are written as [0001] or [0B10]; the plain
+            // "0x" hex scan alone would miss every one of them.
             ExtractHexAddresses(line, 0, current->lastCommands);
+            ExtractBracketedOpcodes(line, 0, current->lastCommands);
+
             if (!current->lastCommands.empty())
             {
-                current->lastOpcode = current->lastCommands.front();
-                char name[64] = {};
-                sprintf_s(
-                    name, sizeof(name),
-                    "Last command [0x%04X]",
-                    current->lastOpcode & 0x7FFF
-                );
-                current->name = name;
+                // Keep the "Last command [0x....]" label only when the entry
+                // matches a single opcode. Multi-opcode command groups get a
+                // generic name and rely on the lastCommands list for matching.
+                if (current->lastCommands.size() == 1)
+                {
+                    current->lastOpcode = current->lastCommands.front();
+                    char name[64] = {};
+                    sprintf_s(
+                        name, sizeof(name),
+                        "Last command [0x%04X]",
+                        current->lastOpcode & 0x7FFF
+                    );
+                    current->name = name;
+                }
                 current->hasMatcher = true;
             }
             continue;
@@ -543,6 +554,17 @@ void DebugUtils::LoadCrashInfoList()
             if (!current->about.empty())
                 current->about += " | ";
             current->about += line.substr(7);
+            continue;
+        }
+
+        // "Mod:" names the mod a script-related entry belongs to. It is folded
+        // into the description so the crash dialog can show it; the issue text
+        // stays authoritative for the diagnosis.
+        if (line.rfind("Mod: ", 0) == 0)
+        {
+            if (!current->description.empty())
+                current->description += " | ";
+            current->description += line;
             continue;
         }
 

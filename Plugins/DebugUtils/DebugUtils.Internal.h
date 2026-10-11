@@ -259,6 +259,64 @@ namespace
         }
     }
 
+    // SCRLog writes opcodes as [0001], [0B10] or with stray spaces like
+    // [ 0D0B]. The CrashInfo database uses that notation for "Last command"
+    // groups, so scan it in addition to plain 0x addresses.
+    void ExtractBracketedOpcodes(
+        const std::string& line,
+        size_t start,
+        std::vector<DWORD>& out
+    )
+    {
+        size_t pos = start;
+
+        while ((pos = line.find('[', pos)) != std::string::npos)
+        {
+            size_t cursor = pos + 1;
+            while (cursor < line.size() &&
+                   (line[cursor] == ' ' || line[cursor] == '\t'))
+            {
+                ++cursor;
+            }
+
+            const size_t hexStart = cursor;
+            while (cursor < line.size() &&
+                   isxdigit(static_cast<unsigned char>(line[cursor])))
+            {
+                ++cursor;
+            }
+
+            if (cursor == hexStart)
+            {
+                pos = cursor;
+                continue;
+            }
+
+            // The closing bracket may be separated from the digits by spaces.
+            size_t after = cursor;
+            while (after < line.size() &&
+                   (line[after] == ' ' || line[after] == '\t'))
+            {
+                ++after;
+            }
+
+            if (after >= line.size() || line[after] != ']')
+            {
+                pos = cursor;
+                continue;
+            }
+
+            const std::string token = line.substr(hexStart, cursor - hexStart);
+            if (!token.empty() && token.size() <= 8)
+            {
+                const unsigned long value = strtoul(token.c_str(), nullptr, 16);
+                out.push_back(static_cast<DWORD>(value & 0x7FFFu));
+            }
+
+            pos = after + 1;
+        }
+    }
+
     void ExtractModuleNames(const std::string& line, std::vector<std::string>& out)
     {
         static const std::regex moduleRegex(
