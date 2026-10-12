@@ -1075,9 +1075,13 @@ void DebugUtils::WriteCoreMemorySummary()
         if (haveScriptStats)
         {
             WriteMemory(
-                "         script_blocks=%llu script_mem=%s",
+                "         script_blocks=%llu script_mem=%s"
+                " fast_reserved=%s fast_committed=%s fast_recyclable=%s",
                 m_lastMemoryScriptBlocks,
-                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str()
+                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.reservedBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.committedBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.recyclableBytes)).c_str()
             );
         }
 

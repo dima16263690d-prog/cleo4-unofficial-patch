@@ -5,92 +5,138 @@
 
 #include <cstdlib>
 #include <malloc.h>
+#include <cstring>
 #include <vector>
 
 namespace CLEO
 {
     CCleoMemoryManager::CCleoMemoryManager()
     {
-        MEMORY_TRACE("INIT per-script tracking enabled (no fixed budget)");
+        MEMORY_TRACE("INIT fast memory enabled (VirtualAlloc arenas, per-script tracking)");
     }
 
-    void CCleoMemoryManager::RegisterMemoryAllocation(
-        CRunningScript* owner,
-        void* address,
-        size_t size
-    )
+    CCleoMemoryManager::~CCleoMemoryManager()
     {
-        AllocationInfo& info = m_scriptAllocations[owner];
-        ++info.count;
-        info.size += size;
-        info.blocks.insert(address);
-
-        // Cache the owner entry so a later Free() updates it in O(1).
-        m_allocations[address] = Allocation{ size, owner, &info };
-
-        m_totalBytes += size;
-        if (m_totalBytes > m_peakBytes)
-            m_peakBytes = m_totalBytes;
+        ReleaseAllChunks();
     }
 
-    bool CCleoMemoryManager::UnregisterMemoryAllocation(void* address)
+    size_t CCleoMemoryManager::RoundUp(size_t value, size_t alignment)
     {
-        auto it = m_allocations.find(address);
-        if (it == m_allocations.end())
-            return false;
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
 
-        const size_t size = it->second.size;
-        AllocationInfo* info = it->second.ownerInfo;
-        CRunningScript* owner = it->second.owner;
+    CCleoMemoryManager::SizeClass& CCleoMemoryManager::ClassFor(size_t blockSize, bool large)
+    {
+        if (!large)
+            return m_classes[blockSize / kSmallStep - 1];
+        return m_largeClasses[blockSize];
+    }
 
-        std::free(address);
+    void CCleoMemoryManager::Claim(Chunk* chunk, size_t needed)
+    {
+        if (needed > chunk->reserved)
+            needed = chunk->reserved;
 
-        if (info != nullptr)
+        // Commit in 64 KB granules so the first request maps whole granules and
+        // later growth in the same chunk is extended in place.
+        const size_t end = RoundUp(chunk->cursor + needed, kCommitGranularity);
+        const size_t target = end < chunk->reserved ? end : chunk->reserved;
+
+        if (target <= chunk->committed)
+            return;
+
+        const size_t toCommit = target - chunk->committed;
+        if (VirtualAlloc(
+                chunk->base + chunk->committed,
+                toCommit,
+                MEM_COMMIT,
+                PAGE_READWRITE) != nullptr)
         {
-            if (info->count > 0)
-                --info->count;
-            info->blocks.erase(address);
-            if (info->size >= size)
-                info->size -= size;
-            else
-                info->size = 0;
-
-            if (info->count <= 0 && owner != nullptr)
-                m_scriptAllocations.erase(owner);
+            chunk->committed = target;
+            m_committedBytes += toCommit;
         }
-
-        if (m_totalBytes >= size)
-            m_totalBytes -= size;
-        else
-            m_totalBytes = 0;
-
-        m_allocations.erase(it);
-        return true;
     }
 
-    void CCleoMemoryManager::LogRemaining() const
+    void* CCleoMemoryManager::TakeFree(size_t blockSize, bool large)
     {
-        MEMORY_TRACE(
-            "GAME_END remaining_blocks=%llu remaining_bytes=%llu KB",
-            static_cast<unsigned long long>(m_allocations.size()),
-            static_cast<unsigned long long>(m_totalBytes / 1024)
-        );
+        SizeClass& cls = ClassFor(blockSize, large);
+        void* block = cls.freeList;
+        if (block == nullptr)
+            return nullptr;
 
-        for (const auto& entry : m_scriptAllocations)
+        cls.freeList = *reinterpret_cast<void**>(block);
+        m_recyclableBytes -= blockSize;
+        return block;
+    }
+
+    void* CCleoMemoryManager::Bump(size_t blockSize, bool large)
+    {
+        // Fast path: a chunk that back-fills this exact class with room left.
+        for (auto it = m_chunks.rbegin(); it != m_chunks.rend(); ++it)
         {
-            CRunningScript* owner = entry.first;
-            const AllocationInfo& info = entry.second;
-
-            if (info.count <= 0)
+            Chunk* chunk = *it;
+            if (chunk->group != (large ? kAnyGroup : blockSize))
+                continue;
+            if (chunk->cursor + blockSize > chunk->reserved)
                 continue;
 
-            MEMORY_TRACE(
-                "LEAK script='%.8s' blocks=%d size=%llu KB",
-                owner ? owner->GetName() : "unknown",
-                info.count,
-                static_cast<unsigned long long>(info.size / 1024)
-            );
+            Claim(chunk, blockSize);
+            if (chunk->cursor + blockSize > chunk->committed)
+                break; // out of commit room in this chunk
+
+            void* block = chunk->base + chunk->cursor;
+            chunk->cursor += blockSize;
+            return block;
         }
+
+        // Otherwise allocate a fresh chunk. Small classes reserve enough for
+        // ~256 blocks up front so subsequent same-class requests bump within it.
+        // Large classes reserve a whole chunk (or the block size, if bigger) so
+        // a request larger than a chunk still has somewhere to go.
+        size_t reserve = kChunkSize;
+        if (!large)
+        {
+            const size_t perClass = blockSize * 256;
+            if (perClass < reserve)
+                reserve = perClass;
+        }
+        else if (blockSize > reserve)
+        {
+            reserve = blockSize;
+        }
+        reserve = RoundUp(reserve, kCommitGranularity);
+        if (reserve < blockSize)
+            return nullptr; // reservation overflow (request is absurdly large)
+
+        BYTE* base = reinterpret_cast<BYTE*>(VirtualAlloc(
+            nullptr, reserve, MEM_RESERVE, PAGE_READWRITE));
+        if (base == nullptr)
+            return nullptr;
+
+        Chunk* chunk = new Chunk();
+        chunk->base = base;
+        chunk->reserved = reserve;
+        chunk->committed = 0;
+        chunk->cursor = 0;
+        chunk->group = large ? kAnyGroup : blockSize;
+
+        m_chunks.push_back(chunk);
+        m_reservedBytes += reserve;
+
+        Claim(chunk, blockSize);
+        if (chunk->committed < blockSize)
+        {
+            // Could not commit even the first block: drop the chunk.
+            VirtualFree(base, 0, MEM_RELEASE);
+            m_reservedBytes -= reserve;
+            m_chunks.pop_back();
+            delete chunk;
+            return nullptr;
+        }
+
+        void* block = base;
+        chunk->cursor = blockSize;
+        return block;
     }
 
     void* CCleoMemoryManager::Allocate(CRunningScript* owner, size_t size)
@@ -98,14 +144,22 @@ namespace CLEO
         if (size == 0)
         {
             // CLEO5 explicitly removed the prohibition on zero-sized blocks.
-            // calloc(0, 1) is implementation-defined, so return nullptr here
-            // while keeping the tracker consistent.
+            // Keep the tracker consistent and return nullptr.
             MEMORY_TRACE("ALLOC size=0 -> null");
             return nullptr;
         }
 
-        void* memory = std::calloc(size, 1);
-        if (!memory)
+        const bool large = size > kSmallMax;
+        const size_t blockSize = large ? RoundUp(size, 64) : RoundUp(size, kSmallStep);
+
+        // Reuse a freed block of the same size if one is available, otherwise
+        // carve one from a chunk. Reuse is what keeps the arenas bounded when
+        // scripts allocate and free repeatedly.
+        void* payload = TakeFree(blockSize, large);
+        if (payload == nullptr)
+            payload = Bump(blockSize, large);
+
+        if (payload == nullptr)
         {
             MEMORY_TRACE(
                 "ALLOC_FAIL script='%.8s' size=%llu bytes",
@@ -115,22 +169,46 @@ namespace CLEO
             return nullptr;
         }
 
-        RegisterMemoryAllocation(owner, memory, size);
+        // Zero like calloc: scripts expect freshly allocated memory to be clear.
+        memset(payload, 0, size);
 
-        // No fixed budget: a script that genuinely needs more than the CLEO5
-        // default (16 MB) still receives it. Tracking is per script, and
-        // ReleaseOwner() reclaims anything the script leaves behind when it
-        // stops, so an unbounded script does not leak into the next session.
-        return memory;
+        Block block;
+        block.owner = owner;
+        block.blockSize = static_cast<uint32_t>(blockSize);
+        block.claimed = static_cast<uint32_t>(size);
+        block.large = large;
+        m_blocks[payload] = block;
+
+        if (owner != nullptr)
+        {
+            OwnerInfo& info = m_owners[owner];
+            ++info.blockCount;
+            info.size += size;
+            info.blocks[payload] = block;
+        }
+
+        m_totalBytes += size;
+        if (m_totalBytes > m_peakBytes)
+            m_peakBytes = m_totalBytes;
+
+        return payload;
+    }
+
+    void CCleoMemoryManager::Recycle(void* payload, size_t blockSize, bool large)
+    {
+        SizeClass& cls = ClassFor(blockSize, large);
+        *reinterpret_cast<void**>(payload) = cls.freeList;
+        cls.freeList = payload;
+        m_recyclableBytes += blockSize;
     }
 
     bool CCleoMemoryManager::Free(CRunningScript* owner, void* address)
     {
-        if (!address)
+        if (address == nullptr)
             return true;
 
-        const auto it = m_allocations.find(address);
-        if (it == m_allocations.end())
+        auto it = m_blocks.find(address);
+        if (it == m_blocks.end())
         {
             MEMORY_TRACE(
                 "FREE_REJECT script='%.8s' address=0x%08X reason=unknown_or_already_freed",
@@ -140,40 +218,65 @@ namespace CLEO
             return false;
         }
 
-        return UnregisterMemoryAllocation(address);
+        const Block block = it->second;
+        m_blocks.erase(it);
+
+        // Accounting uses the claimed bytes; reuse uses the arena block size.
+        if (block.owner != nullptr)
+        {
+            auto ownerIt = m_owners.find(block.owner);
+            if (ownerIt != m_owners.end())
+            {
+                OwnerInfo& info = ownerIt->second;
+                if (info.blockCount > 0)
+                    --info.blockCount;
+                info.size = info.size >= block.claimed ? info.size - block.claimed : 0;
+                info.blocks.erase(address);
+                if (info.blockCount == 0)
+                    m_owners.erase(ownerIt);
+            }
+        }
+
+        if (m_totalBytes >= block.claimed)
+            m_totalBytes -= block.claimed;
+        else
+            m_totalBytes = 0;
+
+        Recycle(address, block.blockSize, block.large);
+        return true;
     }
 
     size_t CCleoMemoryManager::ReleaseOwner(CRunningScript* owner)
     {
-        if (!owner)
+        if (owner == nullptr)
+            return 0;
+
+        auto ownerIt = m_owners.find(owner);
+        if (ownerIt == m_owners.end())
             return 0;
 
         size_t released = 0;
 
-        // Walk only this script's blocks instead of every tracked allocation,
-        // so tearing down many scripts on reset stays linear.
-        auto ownerIt = m_scriptAllocations.find(owner);
-        if (ownerIt == m_scriptAllocations.end())
-            return 0;
-
-        for (void* address : ownerIt->second.blocks)
+        // Walk only this script's blocks; each returns to its size-class free
+        // list for reuse. No VirtualFree here, so resetting scripts on a mode
+        // change stays cheap.
+        for (const auto& entry : ownerIt->second.blocks)
         {
-            auto it = m_allocations.find(address);
-            if (it == m_allocations.end())
-                continue;
+            void* payload = entry.first;
+            const Block& block = entry.second;
 
-            std::free(address);
+            m_blocks.erase(payload);
 
-            if (m_totalBytes >= it->second.size)
-                m_totalBytes -= it->second.size;
+            if (m_totalBytes >= block.claimed)
+                m_totalBytes -= block.claimed;
             else
                 m_totalBytes = 0;
 
+            Recycle(payload, block.blockSize, block.large);
             ++released;
-            m_allocations.erase(it);
         }
 
-        m_scriptAllocations.erase(ownerIt);
+        m_owners.erase(ownerIt);
 
         if (released)
         {
@@ -187,47 +290,58 @@ namespace CLEO
         return released;
     }
 
+    void CCleoMemoryManager::ReleaseAllChunks()
+    {
+        m_blocks.clear();
+        m_owners.clear();
+
+        for (Chunk* chunk : m_chunks)
+        {
+            if (chunk == nullptr)
+                continue;
+            if (chunk->base != nullptr)
+                VirtualFree(chunk->base, 0, MEM_RELEASE);
+            delete chunk;
+        }
+        m_chunks.clear();
+
+        for (size_t i = 0; i < kClassCount; ++i)
+            m_classes[i].freeList = nullptr;
+        m_largeClasses.clear();
+
+        m_reservedBytes = 0;
+        m_committedBytes = 0;
+        m_recyclableBytes = 0;
+        m_totalBytes = 0;
+        m_peakBytes = 0;
+    }
+
     void CCleoMemoryManager::OnGameEnd()
     {
-        // Fast session reset:
-        // 1) snapshot pointers under the lock
-        // 2) free outside the hot path of map iteration
-        // 3) drop both maps with swap() so bucket memory returns to the CRT
-        // 4) reset counters for the next session
-        std::vector<void*> toFree;
-        size_t peakSnapshot = 0;
-        size_t blockCount = 0;
-
-        {
-            LogRemaining();
-
-            blockCount = m_allocations.size();
-            toFree.reserve(blockCount);
-            for (const auto& entry : m_allocations)
-                toFree.push_back(entry.first);
-
-            std::unordered_map<void*, Allocation>().swap(m_allocations);
-            std::unordered_map<CRunningScript*, AllocationInfo>().swap(m_scriptAllocations);
-            peakSnapshot = m_peakBytes;
-            m_totalBytes = 0;
-            m_peakBytes = 0;
-        }
-
-        for (void* address : toFree)
-            std::free(address);
-
         MEMORY_TRACE(
-            "GAME_END cleanup_complete blocks=%llu peak=%llu KB",
-            static_cast<unsigned long long>(blockCount),
-            static_cast<unsigned long long>(peakSnapshot / 1024));
+            "GAME_END reset live_blocks=%llu bytes=%llu KB reserved=%llu KB",
+            static_cast<unsigned long long>(m_blocks.size()),
+            static_cast<unsigned long long>(m_totalBytes / 1024),
+            static_cast<unsigned long long>(m_reservedBytes / 1024)
+        );
+
+        // Per-script cleanup already ran for every destroyed script, so a full
+        // arena teardown here both reclaims anything left and returns the whole
+        // fast-memory reservation to Windows for the next session.
+        ReleaseAllChunks();
+
+        MEMORY_TRACE("GAME_END cleanup_complete");
     }
 
     CCleoMemoryManager::Stats CCleoMemoryManager::GetStats() const
     {
         Stats result;
-        result.totalBlocks = m_allocations.size();
+        result.totalBlocks = m_blocks.size();
         result.totalBytes = m_totalBytes;
         result.peakBytes = m_peakBytes;
+        result.reservedBytes = m_reservedBytes;
+        result.committedBytes = m_committedBytes;
+        result.recyclableBytes = m_recyclableBytes;
         return result;
     }
 

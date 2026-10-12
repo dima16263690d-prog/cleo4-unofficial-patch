@@ -113,6 +113,11 @@ typedef struct CLEO_MemoryStats
     unsigned long long totalBlocks;
     unsigned long long totalBytes;
     unsigned long long peakBytes;
+    // Fast-memory (VirtualAlloc arenas) detail. Additive: older consumers that
+    // only read the first three fields keep working.
+    unsigned long long reservedBytes;
+    unsigned long long committedBytes;
+    unsigned long long recyclableBytes;
 } CLEO_MemoryStats;
 
 typedef BOOL (__stdcall *CLEO_ScriptProcessBeforeCallback)(void* thread);

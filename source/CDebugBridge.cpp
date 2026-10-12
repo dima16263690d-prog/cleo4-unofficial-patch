@@ -97,6 +97,9 @@ extern "C" BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats)
     stats->totalBlocks = snapshot.totalBlocks;
     stats->totalBytes = snapshot.totalBytes;
     stats->peakBytes = snapshot.peakBytes;
+    stats->reservedBytes = snapshot.reservedBytes;
+    stats->committedBytes = snapshot.committedBytes;
+    stats->recyclableBytes = snapshot.recyclableBytes;
     return TRUE;
 }
 
