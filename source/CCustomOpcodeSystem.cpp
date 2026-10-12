@@ -203,11 +203,23 @@ namespace CLEO {
 		if (g_scriptProfilerEnabled != 0)
 			CScriptProfiler::Get().OnOpcode(thread, base);
 
-		const bool debugActive =
-			g_crashSnapshotEnabled != 0 || ScriptOpcodeCallbacksActive();
+		// No plugin observer registered: nothing can HANDLED/INTERRUPT the
+		// opcode, so skip the callback dispatch entirely. When only the crash
+		// snapshot is active, record the last opcode directly; that path is
+		// mutex-free and much cheaper than the generic notifiers.
+		if (!ScriptOpcodeCallbacksActive())
+		{
+			const bool crashSnapshot = g_crashSnapshotEnabled != 0;
+			if (crashSnapshot)
+				RecordCrashOpcodeBefore(thread, base);
 
-		if (!debugActive)
-			return g_originalHandlers[base / 100](thread, base);
+			OpcodeResult result = g_originalHandlers[base / 100](thread, base);
+
+			if (crashSnapshot)
+				RecordCrashOpcodeResult(static_cast<LONG>(result));
+
+			return result;
+		}
 
 		const int action = NotifyScriptOpcodeProcessBefore(thread, base);
 

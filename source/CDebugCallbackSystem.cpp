@@ -190,25 +190,38 @@ namespace CLEO
             reinterpret_cast<ScriptProcessAfterCallback>(callback)(script);
     }
 
+    void RecordCrashOpcodeBefore(CRunningScript* script, DWORD opcode)
+    {
+        if (g_crashSnapshotEnabled == 0 || script == nullptr)
+            return;
+
+        DWORD offset = 0;
+        if (script->GetBytePointer() != nullptr && script->GetBasePointer() != nullptr &&
+            script->GetBytePointer() >= script->GetBasePointer() + 2)
+        {
+            offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
+        }
+
+        CLEO_DebugRecordCrashOpcode(
+            reinterpret_cast<uintptr_t>(script),
+            script->GetName(),
+            opcode,
+            offset,
+            -1
+        );
+    }
+
+    void RecordCrashOpcodeResult(LONG result)
+    {
+        if (g_crashSnapshotEnabled == 0)
+            return;
+
+        CLEO_DebugRecordCrashOpcodeResult(result);
+    }
+
     int NotifyScriptOpcodeProcessBefore(CRunningScript* script, DWORD opcode)
     {
-        if (g_crashSnapshotEnabled != 0 && script != nullptr)
-        {
-            DWORD offset = 0;
-            if (script->GetBytePointer() != nullptr && script->GetBasePointer() != nullptr &&
-                script->GetBytePointer() >= script->GetBasePointer() + 2)
-            {
-                offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
-            }
-
-            CLEO_DebugRecordCrashOpcode(
-                reinterpret_cast<uintptr_t>(script),
-                script->GetName(),
-                opcode,
-                offset,
-                -1
-            );
-        }
+        RecordCrashOpcodeBefore(script, opcode);
 
         std::vector<uintptr_t> subscribers;
         CollectCallbacks(CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE, subscribers);
@@ -228,17 +241,7 @@ namespace CLEO
 
     OpcodeResult NotifyScriptOpcodeProcessAfter(CRunningScript* script, DWORD opcode, OpcodeResult result)
     {
-        if (g_crashSnapshotEnabled != 0 && script != nullptr)
-        {
-            DWORD offset = 0;
-            if (script->GetBytePointer() != nullptr && script->GetBasePointer() != nullptr &&
-                script->GetBytePointer() >= script->GetBasePointer() + 2)
-            {
-                offset = static_cast<DWORD>(script->GetBytePointer() - script->GetBasePointer() - 2);
-            }
-
-            CLEO_DebugRecordCrashOpcodeResult(static_cast<LONG>(result));
-        }
+        RecordCrashOpcodeResult(static_cast<LONG>(result));
 
         std::vector<uintptr_t> subscribers;
         CollectCallbacks(CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER, subscribers);

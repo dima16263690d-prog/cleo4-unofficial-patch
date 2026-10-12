@@ -39,6 +39,13 @@ namespace CLEO
     OpcodeResult NotifyScriptOpcodeProcessAfter(CRunningScript* script, DWORD opcode, OpcodeResult result);
     void NotifyScriptDeleted(CRunningScript* script);
 
+    // Minimal crash-snapshot recording, separate from the plugin dispatch. The
+    // hot opcode path uses these directly when only the crash snapshot (and not
+    // a plugin observer) is active, so it avoids the callback mutex/subscriber
+    // rounds on every opcode. Both are no-ops while crash snapshot is disabled.
+    void RecordCrashOpcodeBefore(CRunningScript* script, DWORD opcode);
+    void RecordCrashOpcodeResult(LONG result);
+
     // Plugin SDK 2.0: announce a newly registered opcode to interested plugins.
     void NotifyScriptOpcodeRegistered(WORD opcode);
     void NotifyScriptCreated(CRunningScript* script);
