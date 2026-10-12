@@ -138,6 +138,10 @@ BOOL WINAPI CLEO_DebugSetLogCallback(CLEO_DebugLogCallback callback);
 void __cdecl CLEO_DebugLog(int level, const char* format, ...);
 
 BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled);
+
+// Reads CLEO's script-memory counters. THREAD AFFINITY: game/script thread only
+// (the same thread that runs opcodes). The counters are not locked, so calling
+// this from a plugin worker thread would race the allocator.
 BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats);
 void WINAPI CLEO_DebugRecordCrashOpcode(
     uintptr_t scriptPtr,

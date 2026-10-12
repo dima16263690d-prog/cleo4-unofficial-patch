@@ -244,6 +244,9 @@ namespace CLEO {
 
 		// Snapshot the real handlers from the active table (newOpcodeHandlerTable;
 		// MA_OPCODE_HANDLER_REF points at it) and point every slot at the wrapper.
+		// Every slot is non-null here: Inject() copies groups 0..27 from GTA's
+		// table and fills 28..328 with extraOpcodeHandler before this runs, so
+		// the wrapper never chains into a null handler.
 		for (size_t group = 0; group < kOpcodeGroupCount; ++group)
 		{
 			g_originalHandlers[group] = newOpcodeHandlerTable[group];
