@@ -75,6 +75,12 @@
     <ClCompile Include="source\CScriptEngine.Registry.cpp">
       <Filter>source</Filter>
     </ClCompile>
+    <ClCompile Include="source\CScriptProfiler.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="source\CScriptPluginSdk.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
     <ClCompile Include="source\CSoundSystem.cpp">
       <Filter>source</Filter>
     </ClCompile>
@@ -152,6 +158,12 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CScriptEngine.State.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CScriptProfiler.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CScriptPluginSdk.h">
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CSoundSystem.h">

@@ -15,9 +15,15 @@ namespace CLEO
     typedef int (__stdcall *ScriptOpcodeProcessAfterCallback)(CRunningScript*, DWORD, int);
     typedef void (__stdcall *GameCallback)();
     typedef void (__stdcall *ScriptDeletedCallback)(CRunningScript*);
+    typedef void (__stdcall *ScriptOpcodeRegisteredCallback)(WORD opcode);
+    typedef void (__stdcall *ScriptCreatedCallback)(CRunningScript*);
 
     BOOL RegisterCallback(eCallbackId id, uintptr_t callback);
     BOOL UnregisterCallback(eCallbackId id, uintptr_t callback);
+
+    // True when any plugin has registered a per-opcode observer. Used to keep
+    // the hot opcode loop free of callback work when nobody is listening.
+    bool ScriptOpcodeCallbacksActive();
 
     void NotifyGameBegin();
     void NotifyGameEnd();
@@ -28,4 +34,8 @@ namespace CLEO
     int NotifyScriptOpcodeProcessBefore(CRunningScript* script, DWORD opcode);
     OpcodeResult NotifyScriptOpcodeProcessAfter(CRunningScript* script, DWORD opcode, OpcodeResult result);
     void NotifyScriptDeleted(CRunningScript* script);
+
+    // Plugin SDK 2.0: announce a newly registered opcode to interested plugins.
+    void NotifyScriptOpcodeRegistered(WORD opcode);
+    void NotifyScriptCreated(CRunningScript* script);
 }

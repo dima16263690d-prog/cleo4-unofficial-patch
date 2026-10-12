@@ -18,8 +18,53 @@ typedef enum CLEO_CallbackId
     CLEO_CB_SCRIPT_PROCESS_AFTER = 5,
     CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE = 6,
     CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER = 7,
-    CLEO_CB_SCRIPT_DELETED = 8
+    CLEO_CB_SCRIPT_DELETED = 8,
+    // Plugin SDK 2.0 additions. Object lifetime notifications let plugins
+    // attach and release per-script state without walking the GTA queue.
+    CLEO_CB_SCRIPT_CREATED = 9,
+    CLEO_CB_SCRIPT_OPCODE_REGISTERED = 10
 } CLEO_CallbackId;
+
+// ---------------------------------------------------------------------------
+// Plugin SDK 2.0 shared types.
+// These live in the debug/SDK header (included by CLEO.h) so the core can use
+// them without pulling in the public SCRIPT_VAR union, which differs from the
+// engine's internal one.
+// ---------------------------------------------------------------------------
+
+typedef enum CLEO_OpcodeParamKind
+{
+    CLEO_OPARAM_ANY = 0,
+    CLEO_OPARAM_INT = 1,
+    CLEO_OPARAM_FLOAT = 2,
+    CLEO_OPARAM_STRING = 3,
+    CLEO_OPARAM_VAR = 4
+} CLEO_OpcodeParamKind;
+
+typedef struct CLEO_OpcodeInfo
+{
+    WORD opcode;
+    WORD paramCount;
+    CLEO_OpcodeParamKind paramKind[16];
+    const char* name;       // borrowed pointer; owned by the registering plugin
+    const char* params;     // borrowed pointer; owned by the registering plugin
+    const char* description;// borrowed pointer; owned by the registering plugin
+    uintptr_t handler;
+    DWORD pluginModule;     // HMODULE of the registering module (0 = core)
+    BOOL legacy;            // TRUE when registered through the old CLEO_RegisterOpcode
+} CLEO_OpcodeInfo;
+
+// Script execution profiler. Times are in milliseconds of wall-clock time on
+// the game thread. "self" excludes time spent inside child scripts.
+typedef struct CLEO_ScriptProfile
+{
+    uintptr_t scriptPtr;
+    char scriptName[9];
+    unsigned long long totalMs;
+    unsigned long long selfMs;
+    unsigned long long opcodes;
+    unsigned long long ticks;
+} CLEO_ScriptProfile;
 
 typedef enum CLEO_DebugLogLevel
 {

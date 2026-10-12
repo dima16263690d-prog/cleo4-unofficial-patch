@@ -9,6 +9,8 @@
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
 #include "CCustomOpcodeSystem.Internal.h"
+#include "CScriptProfiler.h"
+#include "CScriptPluginSdk.h"
 
 namespace CLEO {
 	DWORD FUNC_fopen;
@@ -126,7 +128,7 @@ namespace CLEO {
 	OpcodeResult __stdcall opcode_0AEE(CRunningScript *thread);
 	OpcodeResult __stdcall opcode_0AEF(CRunningScript *thread);
 
-	CustomOpcodeHandler customOpcodeHandlers[100] =
+	CustomOpcodeHandler customOpcodeHandlersEx[100] =
 	{
 		opcode_0A8C, opcode_0A8D, opcode_0A8E, opcode_0A8F, opcode_0A90,
 		opcode_0A91, opcode_0A92, opcode_0A93, opcode_0A94, opcode_0A95,
@@ -162,6 +164,9 @@ namespace CLEO {
 	ScriptDeleteDelegate scriptDeleteDelegate;
 	void RunScriptDeleteDelegate(CRunningScript *script)
 	{
+		// Release SDK 2.0 per-script state first, then run the legacy delete
+		// delegates while the pointer is still valid.
+		PluginSdk::OnScriptDeleted(script);
 		NotifyScriptDeleted(script);
 		scriptDeleteDelegate(script);
 	}
@@ -217,9 +222,17 @@ namespace CLEO {
 	{
 		last_custom_opcode = opcode;
 		last_script = thread;
-		return customOpcodeHandlers[opcode - 0x0A8C](thread);
+		return customOpcodeHandlersEx[opcode - 0x0A8C](thread);
 	}
 
+	// Legacy CLEO4 script-execution loop, kept as the reference implementation.
+	//
+	// It is intentionally NOT installed: the 0x469FF6 hook was removed to
+	// restore the v1.0-test path, so GTA's own script loop drives opcode
+	// dispatch through newOpcodeHandlerTable. The opcode-level profiling and
+	// debug-callback code below is therefore dormant in the current build;
+	// it becomes live again if this loop is hooked back in. Per-script
+	// profiling is driven separately from CCustomScript::Process().
 	char ExecuteLegacyScriptLoop(CRunningScript *thread)
 	{
 		OpcodeResult res;
@@ -247,9 +260,48 @@ namespace CLEO {
 				cs->SetNotFlag((opcode & 0x8000) != 0);
 				opcode &= 0x7FFF;
 
-				// Exact legacy CLEO4 dispatch: use the prepared opcode table
-				// exactly as v1.0-test did. No debug/fast dispatcher is involved.
-				res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+				res = static_cast<OpcodeResult>(OR_INTERRUPT);
+				if (g_scriptProfilerEnabled != 0)
+					CScriptProfiler::Get().OnOpcode(thread);
+				if (opcode >= 0x0A8C && opcode <= 0x0AEF)
+				{
+					last_custom_opcode = opcode;
+					last_script = thread;
+					res = customOpcodeHandlersEx[opcode - 0x0A8C](thread);
+				}
+				else if (opcode >= 0x0AF0 &&
+				         extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] != nullptr)
+				{
+					last_custom_opcode = opcode;
+					last_script = thread;
+					res = extraOpcodeHandlers[opcode % 100][opcode / 100 - 28](thread);
+				}
+				else
+				{
+					// Legacy CLEO4 dispatch: use the prepared opcode table exactly as
+					// v1.0-test did. Built-in and user opcodes above are entered
+					// directly; the debug callbacks and profiler run only when a
+					// plugin registered an opcode observer.
+					if (g_crashSnapshotEnabled != 0 ||
+					    ScriptOpcodeCallbacksActive() ||
+					    g_scriptProfilerEnabled != 0)
+					{
+						const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
+						if (action == CLEO_DEBUG_OPCODE_HANDLED)
+							res = static_cast<OpcodeResult>(OR_CONTINUE);
+						else if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
+							res = static_cast<OpcodeResult>(OR_INTERRUPT);
+						else
+							res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+
+						if (res != OR_INTERRUPT || action == CLEO_DEBUG_OPCODE_PASSTHROUGH)
+							res = NotifyScriptOpcodeProcessAfter(thread, opcode, res);
+					}
+					else
+					{
+						res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+					}
+				}
 			} while (res == OR_CONTINUE);
 		}
 		catch (const char *e)
@@ -1003,6 +1055,9 @@ extern "C"
 		if (opcode > 0x7FFF || callback == nullptr)
 			return FALSE;
 
+		// Legacy entry point. It keeps the historical behaviour (a rejected
+		// duplicate only logs a warning) and additionally records ownership
+		// metadata so the SDK 2.0 queries and unload cleanup can see it.
 		if (opcode < 0x0AF0)
 		{
 			CustomOpcodeHandler& dst = lowOpcodeHandlers[opcode];
@@ -1014,6 +1069,9 @@ extern "C"
 			}
 
 			dst = callback;
+			PluginSdk::RegisterOpcode(opcode, callback, nullptr, nullptr, nullptr,
+				PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback)), true);
+			NotifyScriptOpcodeRegistered(opcode);
 			return TRUE;
 		}
 
@@ -1025,7 +1083,110 @@ extern "C"
 			return FALSE;
 		}
 		dst = callback;
+		PluginSdk::RegisterOpcode(opcode, callback, nullptr, nullptr, nullptr,
+			PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback)), true);
+		NotifyScriptOpcodeRegistered(opcode);
 		return TRUE;
+	}
+
+	BOOL WINAPI CLEO_RegisterOpcodeEx(WORD opcode, CustomOpcodeHandler callback,
+		const char* name, const char* params, const char* description)
+	{
+		if (opcode > 0x7FFF || callback == nullptr)
+			return FALSE;
+
+		const HMODULE module =
+			PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback));
+
+		// Check both the dispatch table and the metadata index first, then
+		// commit, so a rejected registration never leaves half the state set.
+		if (opcode < 0x0AF0)
+		{
+			if (lowOpcodeHandlers[opcode] != nullptr)
+				return FALSE;
+		}
+		else
+		{
+			if (extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] != nullptr)
+				return FALSE;
+		}
+
+		if (!PluginSdk::RegisterOpcode(opcode, callback, name, params, description, module))
+			return FALSE;
+
+		if (opcode < 0x0AF0)
+			lowOpcodeHandlers[opcode] = callback;
+		else
+			extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] = callback;
+
+		NotifyScriptOpcodeRegistered(opcode);
+		return TRUE;
+	}
+
+	BOOL WINAPI CLEO_GetOpcodeInfo(WORD opcode, CLEO_OpcodeInfo* info)
+	{
+		return PluginSdk::GetOpcodeInfo(opcode, info) ? TRUE : FALSE;
+	}
+
+	int WINAPI CLEO_ParseParamSignature(const char* signature,
+		CLEO_OpcodeParamKind* out, int maxOut)
+	{
+		return PluginSdk::ParseSignature(signature, out, maxOut);
+	}
+
+	BOOL WINAPI CLEO_OpcodeValidate(CRunningScript* thread, const char* signature)
+	{
+		return PluginSdk::ValidateParams(thread, signature) ? TRUE : FALSE;
+	}
+
+	void WINAPI CLEO_ReportError(const char* message)
+	{
+		PluginSdk::ReportError(message);
+	}
+
+	void* WINAPI CLEO_GetScriptContext(CRunningScript* thread, uintptr_t key)
+	{
+		return PluginSdk::GetScriptContext(thread, key, PluginSdk::ModuleForAddress(_ReturnAddress()));
+	}
+
+	BOOL WINAPI CLEO_SetScriptContext(CRunningScript* thread, uintptr_t key, void* value)
+	{
+		return PluginSdk::SetScriptContext(thread, key, value,
+			PluginSdk::ModuleForAddress(_ReturnAddress())) ? TRUE : FALSE;
+	}
+
+	BOOL WINAPI CLEO_SetProfilingEnabled(BOOL enabled)
+	{
+		return CScriptProfiler::Get().SetEnabled(enabled != FALSE) ? TRUE : FALSE;
+	}
+
+	DWORD WINAPI CLEO_GetScriptProfileCount()
+	{
+		return static_cast<DWORD>(CScriptProfiler::Get().GetCount());
+	}
+
+	BOOL WINAPI CLEO_GetScriptProfile(DWORD index, CLEO_ScriptProfile* profile)
+	{
+		if (profile == nullptr)
+			return FALSE;
+
+		CScriptProfiler::Snapshot snapshot;
+		if (!CScriptProfiler::Get().GetSnapshot(index, snapshot))
+			return FALSE;
+
+		profile->scriptPtr = snapshot.scriptPtr;
+		memcpy(profile->scriptName, snapshot.name, 9);
+		// Public surface reports milliseconds; internal resolution is us.
+		profile->totalMs = snapshot.totalUs / 1000;
+		profile->selfMs = snapshot.selfUs / 1000;
+		profile->opcodes = snapshot.opcodes;
+		profile->ticks = snapshot.ticks;
+		return TRUE;
+	}
+
+	void WINAPI CLEO_ResetScriptProfiles()
+	{
+		CScriptProfiler::Get().Reset();
 	}
 
 #ifdef _MSC_VER

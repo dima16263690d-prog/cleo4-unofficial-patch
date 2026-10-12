@@ -4,6 +4,7 @@
 #include "crc32.h"
 #include "ScmFunction.h"
 #include "CCleoMemoryManager.h"
+#include "CScriptProfiler.h"
 #include <cstring>
 
 namespace CLEO
@@ -107,6 +108,13 @@ namespace CLEO
 
         RestoreScriptSpecifics();
 
+        // Profile only the real execution work; the sleeping fast path above is
+        // not charged to the script. Gating on the frame stack keeps a direct
+        // ProcessScript() call (outside the hook) from being counted twice.
+        const bool profiling = g_scriptProfilerEnabled != 0 && CScriptProfiler::Get().InFrame(this);
+        if (profiling)
+            CScriptProfiler::Get().BeginScript(this);
+
         bool bNeedDefaults = false;
         if (*useTextCommands)
         {
@@ -117,10 +125,13 @@ namespace CLEO
             if (*useTextCommands == 1)
                 *useTextCommands = 0;
         }
-		
-		ProcessScript(this);
+
+        ProcessScript(this);
 
         StoreScriptSpecifics();
+
+        if (profiling)
+            CScriptProfiler::Get().EndScript(this);
     }
     void CCustomScript::Draw(char bBeforeFade)
     {
@@ -363,8 +374,10 @@ memcpy(Name, parent->Name, sizeof(Name));
         if (cleoState.ownedBuffer)
             delete[] cleoState.ownedBuffer;
 
-		RunScriptDeleteDelegate(reinterpret_cast<CRunningScript*>(this));
-		if (lastScriptCreated == this) lastScriptCreated = nullptr;
+        if (g_scriptProfilerEnabled != 0)
+            CScriptProfiler::Get().OnScriptDeleted(this);
+        RunScriptDeleteDelegate(reinterpret_cast<CRunningScript*>(this));
+        if (lastScriptCreated == this) lastScriptCreated = nullptr;
     }
 
 }

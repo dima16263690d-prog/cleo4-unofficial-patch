@@ -7,22 +7,28 @@ namespace CLEO
 {
     struct CallbackRegistry
     {
-        PVOID callbacks[CLEO_CB_SCRIPT_DELETED + 1] = {};
+        PVOID callbacks[CLEO_CB_SCRIPT_OPCODE_REGISTERED + 1] = {};
     };
 
     static CallbackRegistry g_callbacks;
 
     static uintptr_t GetCallback(eCallbackId id)
     {
-        if (id < 0 || id > CLEO_CB_SCRIPT_DELETED)
+        if (id < 0 || id > CLEO_CB_SCRIPT_OPCODE_REGISTERED)
             return 0;
 
         return reinterpret_cast<uintptr_t>(g_callbacks.callbacks[id]);
     }
 
+    bool ScriptOpcodeCallbacksActive()
+    {
+        return g_callbacks.callbacks[CLEO_CB_SCRIPT_OPCODE_PROCESS_BEFORE] != nullptr ||
+               g_callbacks.callbacks[CLEO_CB_SCRIPT_OPCODE_PROCESS_AFTER] != nullptr;
+    }
+
     BOOL RegisterCallback(eCallbackId id, uintptr_t callback)
     {
-        if (id < 0 || id > CLEO_CB_SCRIPT_DELETED || callback == 0)
+        if (id < 0 || id > CLEO_CB_SCRIPT_OPCODE_REGISTERED || callback == 0)
             return FALSE;
 
         const PVOID previous = InterlockedCompareExchangePointer(
@@ -36,7 +42,7 @@ namespace CLEO
 
     BOOL UnregisterCallback(eCallbackId id, uintptr_t callback)
     {
-        if (id < 0 || id > CLEO_CB_SCRIPT_DELETED || callback == 0)
+        if (id < 0 || id > CLEO_CB_SCRIPT_OPCODE_REGISTERED || callback == 0)
             return FALSE;
 
         const PVOID previous = InterlockedCompareExchangePointer(
@@ -142,5 +148,17 @@ namespace CLEO
     {
         if (auto callback = GetCallback(CLEO_CB_SCRIPT_DELETED))
             reinterpret_cast<ScriptDeletedCallback>(callback)(script);
+    }
+
+    void NotifyScriptOpcodeRegistered(WORD opcode)
+    {
+        if (auto callback = GetCallback(CLEO_CB_SCRIPT_OPCODE_REGISTERED))
+            reinterpret_cast<ScriptOpcodeRegisteredCallback>(callback)(opcode);
+    }
+
+    void NotifyScriptCreated(CRunningScript* script)
+    {
+        if (auto callback = GetCallback(CLEO_CB_SCRIPT_CREATED))
+            reinterpret_cast<ScriptCreatedCallback>(callback)(script);
     }
 }
