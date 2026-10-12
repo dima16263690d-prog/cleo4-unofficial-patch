@@ -64,3 +64,5 @@ EXPORTS
         _CLEO_GetScriptProfile@8		@61
         _CLEO_ResetScriptProfiles@0		@62
         _CLEO_SetProfilingEnabled@4             @63
+        _CLEO_RegisterPluginResource@12         @64
+        _CLEO_UnregisterPluginResource@4        @65

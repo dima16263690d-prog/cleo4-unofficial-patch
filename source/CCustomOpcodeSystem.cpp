@@ -1144,6 +1144,21 @@ extern "C"
 		PluginSdk::ReportError(message);
 	}
 
+	BOOL WINAPI CLEO_RegisterPluginResource(const char* kind, void* resource,
+		CLEO_PluginResourceReleaseFn release)
+	{
+		return PluginSdk::RegisterResource(
+			PluginSdk::ModuleForAddress(_ReturnAddress()),
+			kind, resource,
+			reinterpret_cast<PluginSdk::PluginResourceReleaseFn>(release)) ? TRUE : FALSE;
+	}
+
+	BOOL WINAPI CLEO_UnregisterPluginResource(void* resource)
+	{
+		return PluginSdk::UnregisterResource(
+			PluginSdk::ModuleForAddress(_ReturnAddress()), resource) ? TRUE : FALSE;
+	}
+
 	void* WINAPI CLEO_GetScriptContext(CRunningScript* thread, uintptr_t key)
 	{
 		return PluginSdk::GetScriptContext(thread, key, PluginSdk::ModuleForAddress(_ReturnAddress()));

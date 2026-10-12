@@ -21,6 +21,10 @@ namespace CLEO
     BOOL RegisterCallback(eCallbackId id, uintptr_t callback);
     BOOL UnregisterCallback(eCallbackId id, uintptr_t callback);
 
+    // Drop every subscription that belongs to `module`. Called before the
+    // module is unloaded so no callback can fire into freed code. Idempotent.
+    void ReleaseCallbacksForModule(HMODULE module);
+
     // True when any plugin has registered a per-opcode observer. Used to keep
     // the hot opcode loop free of callback work when nobody is listening.
     bool ScriptOpcodeCallbacksActive();

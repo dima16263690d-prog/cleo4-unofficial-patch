@@ -119,9 +119,11 @@ namespace CLEO
             {
                 if (*it)
                 {
-                    // Drop this plugin's opcode metadata and per-script
-                    // contexts before its code is unmapped, so nothing can
-                    // call into freed memory afterwards.
+                    // Release everything the plugin owns before its code is
+                    // unmapped: opcode metadata, per-script contexts, registered
+                    // resources (with their release callbacks) and event
+                    // callbacks. ReleaseModule is idempotent, so a stray second
+                    // call cannot corrupt state.
                     PluginSdk::ReleaseModule(*it);
                     FreeLibrary(*it);
                 }

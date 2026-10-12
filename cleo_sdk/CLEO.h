@@ -235,6 +235,19 @@ BOOL  WINAPI CLEO_GetScriptProfile(DWORD index, CLEO_ScriptProfile* profile);
 // Resets every per-script counter. Aggregate counters are kept.
 void  WINAPI CLEO_ResetScriptProfiles();
 
+// Unified plugin resource registry. Register any allocation whose lifetime
+// should end when the plugin is unloaded; `release` runs once, right before the
+// module is unmapped, and may be null for a resource that needs no cleanup.
+// `kind` is a borrowed diagnostic tag (string literal). Registering the same
+// pointer twice returns FALSE. CLEO owns the registry, not the resource.
+typedef void (__stdcall *CLEO_PluginResourceReleaseFn)(void* resource);
+BOOL  WINAPI CLEO_RegisterPluginResource(const char* kind, void* resource,
+                                         CLEO_PluginResourceReleaseFn release);
+
+// Remove a resource from the registry without running its release callback.
+// Safe to call for an unknown resource; returns FALSE then.
+BOOL  WINAPI CLEO_UnregisterPluginResource(void* resource);
+
 CScriptThread* WINAPI CLEO_CreateCustomScript(CScriptThread* fromThread, const char *script_name, int label);
 
 CScriptThread* WINAPI CLEO_GetLastCreatedCustomScript();
