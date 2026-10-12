@@ -284,6 +284,10 @@ void DebugUtils::LoadConfig()
             config << "MemoryTrace=0\r\n";
             config << "; Warn when private bytes cross this many MB (0 = off).\r\n";
             config << "MemoryWarnMB=1500\r\n";
+            config << "; Per-module resident-memory dump to attribute non-CLEO growth.\r\n";
+            config << "ModuleMemoryMap=0\r\n";
+            config << "; Seconds between module memory dumps.\r\n";
+            config << "ModuleMemoryMapInterval=30\r\n";
             config << "Diagnostic=0\r\n\r\n";
 
             config << "[DebugUtils.Crash]\r\n";
@@ -353,6 +357,23 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    m_memoryModuleMap =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "ModuleMemoryMap",
+            0,
+            path.c_str()
+        ) != 0;
+
+    m_memoryModuleMapIntervalSeconds = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "ModuleMemoryMapInterval",
+            30,
+            path.c_str()
+        )
+    );
+    if (m_memoryModuleMapIntervalSeconds < 5)
+        m_memoryModuleMapIntervalSeconds = 5;
 
     // Warn when private bytes cross this many megabytes (0 disables the warning).
     m_memoryWarnMegabytes = static_cast<DWORD>(

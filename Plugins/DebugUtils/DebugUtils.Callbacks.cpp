@@ -124,6 +124,7 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_keysReleased = true;
     s_instance->m_lastProfilerTick = GetTickCount();
     s_instance->m_lastMemoryLogTick = GetTickCount();
+    s_instance->m_lastModuleMapTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_lastPrivateUsage = 0;
     s_instance->m_lastMemoryQueueCount = 0;
@@ -225,6 +226,14 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     {
         s_instance->m_lastProfilerTick = now;
         s_instance->WriteProfilerReport("interval");
+    }
+
+    if (s_instance->m_memoryLogEnabled && s_instance->m_memoryModuleMap &&
+        now - s_instance->m_lastModuleMapTick >=
+            s_instance->m_memoryModuleMapIntervalSeconds * 1000u)
+    {
+        s_instance->m_lastModuleMapTick = now;
+        s_instance->WriteModuleMemoryMap();
     }
 }
 

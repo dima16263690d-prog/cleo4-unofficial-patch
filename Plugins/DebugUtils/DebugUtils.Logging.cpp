@@ -1117,3 +1117,124 @@ void DebugUtils::WriteCoreMemorySummary()
     m_lastMemoryCustomCount = customCount;
     m_memoryBaselineReady = true;
 }
+
+// Walk every loaded module, ask the kernel how many of its pages are resident
+// (PSAPI QueryWorkingSet), and print the total per module with the change since
+// the previous dump. This is what attributes private-bytes growth to a specific
+// DLL: CLEO itself shows up tiny and flat while the real grower stands out.
+void DebugUtils::WriteModuleMemoryMap()
+{
+    if (!m_memoryLogEnabled || CLEO_GetGameVersion() != GV_US10)
+        return;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return;
+
+    struct ModuleResident
+    {
+        std::string name;
+        unsigned long long resident;
+    };
+    std::vector<ModuleResident> modules;
+
+    MODULEENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+
+    if (Module32First(snapshot, &entry))
+    {
+        do
+        {
+            const BYTE* base = entry.modBaseAddr;
+            const size_t imageSize = entry.modBaseSize;
+            if (base == nullptr || imageSize == 0)
+                continue;
+
+            // QueryWorkingSet wants a PSAPI_WORKING_SET_INFORMATION: the first
+            // ULONG_PTR is the returned entry count, the entries follow it. The
+            // buffer is sized to this module's page count (plus the header slot).
+            const size_t pageCount = (imageSize + 0xFFFu) / 0x1000u;
+            std::vector<PVOID> pages(pageCount + 1);
+
+            if (!QueryWorkingSet(
+                    GetCurrentProcess(), pages.data(),
+                    static_cast<DWORD>(pages.size() * sizeof(PVOID))))
+                continue;
+
+            const ULONG_PTR count = *reinterpret_cast<ULONG_PTR*>(pages.data());
+
+            unsigned long long resident = 0;
+            const size_t maxEntries = pages.size() - 1;
+            for (ULONG_PTR i = 0; i < count && i < maxEntries; ++i)
+            {
+                // Bit 0 of a working-set block marks a resident page.
+                const uintptr_t bits = reinterpret_cast<uintptr_t>(pages[i + 1]);
+                if ((bits & 1u) != 0)
+                    resident += 0x1000ull;
+            }
+
+            // Convert the base module name to lowercase for stable keying.
+            char name[MAX_PATH] = {};
+            strncpy_s(name, sizeof(name), entry.szModule, _TRUNCATE);
+            for (char* p = name; *p != '\0'; ++p)
+                *p = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
+
+            modules.push_back(ModuleResident{
+                name,
+                resident
+            });
+        } while (Module32Next(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+
+    if (modules.empty())
+        return;
+
+    std::sort(
+        modules.begin(),
+        modules.end(),
+        [](const ModuleResident& a, const ModuleResident& b)
+        {
+            return a.resident > b.resident;
+        }
+    );
+
+    const double uptimeSeconds =
+        static_cast<double>(GetTickCount() - m_memorySessionStartTick) / 1000.0;
+
+    WriteMemory("=================== module memory map (t=%.0fs) ===================", uptimeSeconds);
+    WriteMemory("%-28s %12s %12s", "module", "resident", "delta");
+
+    for (const auto& module : modules)
+    {
+        const char* name =
+            module.name.size() > 28 ? module.name.c_str() + (module.name.size() - 28)
+                                    : module.name.c_str();
+
+        std::string deltaText = "-";
+        auto previous = m_lastModuleResident.find(module.name);
+        if (previous != m_lastModuleResident.end())
+        {
+            const long long delta =
+                static_cast<long long>(module.resident) -
+                static_cast<long long>(previous->second);
+            deltaText =
+                (delta < 0 ? "-" : "+") +
+                MemoryBytes(static_cast<uint64_t>(delta < 0 ? -delta : delta));
+        }
+
+        WriteMemory(
+            "%-28s %12s %12s",
+            name,
+            MemoryBytes(module.resident).c_str(),
+            deltaText.c_str()
+        );
+    }
+
+    // Remember this dump as the baseline for the next one. Rebuild the map from
+    // scratch so unloaded modules disappear.
+    m_lastModuleResident.clear();
+    for (const auto& module : modules)
+        m_lastModuleResident[module.name] = module.resident;
+}

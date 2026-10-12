@@ -162,6 +162,14 @@ private:
     // How many hot opcodes to list per report (0 = no opcode histogram).
     DWORD m_profilerTopOpcodes = 15;
 
+    // Memory attribution: when on, periodically dump resident memory per loaded
+    // module (and how much each grew since the previous dump) so growth that is
+    // not CLEO's own can be traced to a module.
+    bool m_memoryModuleMap = false;
+    DWORD m_memoryModuleMapIntervalSeconds = 30;
+    DWORD m_lastModuleMapTick = 0;
+    std::map<std::string, unsigned long long> m_lastModuleResident;
+
     std::set<uintptr_t> m_debugScripts;
 
     struct BreakpointInfo
@@ -235,6 +243,10 @@ private:
     void WriteCoreThreadLayout();
     void WriteCoreQueueSnapshot(const char* reason);
     void WriteCoreMemorySummary();
+
+    // Per-module resident-memory dump with deltas since the previous dump. Used
+    // to attribute private-bytes growth that is not CLEO's own.
+    void WriteModuleMemoryMap();
     void WriteProfilerReport(const char* reason);
 
     static void __cdecl OnCoreLog(int level, const char* format, va_list args);
