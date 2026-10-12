@@ -383,7 +383,7 @@ namespace CLEO {
 
 				res = static_cast<OpcodeResult>(OR_INTERRUPT);
 				if (g_scriptProfilerEnabled != 0)
-					CScriptProfiler::Get().OnOpcode(thread);
+					CScriptProfiler::Get().OnOpcode(thread, opcode);
 				if (opcode >= 0x0A8C && opcode <= 0x0AEF)
 				{
 					last_custom_opcode = opcode;
