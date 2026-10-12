@@ -21,6 +21,7 @@ DebugUtils owns all diagnostic files:
 - cleo\debug\cleo_core.log — ядро, API, lifecycle, ошибки
 - cleo\debug\cleo_script.log — скрипты, 0AB1/0AB2 и opcode checks
 - cleo\debug\cleo_memory.log — память и VirtualProtect
+- cleo\debug\cleo_frametime.log — время кадра и фризы (свой файл, по умолчанию выключен)
 - cleo\debug\cleo_diagnostic.log — низкоуровневая диагностика, по умолчанию выключена
 - cleo\debug\gta_crashinfo.log — аварийные отчёты
 
@@ -42,6 +43,9 @@ cleo_script.log:
 
 cleo_memory.log:
 //////////////////////// memory ////////////////////////
+
+cleo_frametime.log:
+//////////////////////// frame time ////////////////////////
 
 cleo_diagnostic.log:
 //////////////////////// diagnostic ////////////////////////
@@ -77,10 +81,40 @@ Diagnostic=0
 Command=0
 Time=0
 
+[DebugUtils.FrameTime]
+Enabled=0
+Interval=10
+WarnMs=50
+TopStutter=15
+Histogram=1
+MaxLogMB=16
+
 [DebugUtils.General]
 LegacyDebugOpcodes=0
 
 The script log can be enabled with Enabled=1. The hang guard limits can be disabled by setting the corresponding value to 0.
+
+### Frame-time monitor
+
+[DebugUtils.FrameTime] measures frame timing to locate stutter. It uses
+QueryPerformanceCounter around the per-frame game-logic tick (the same call CLEO
+already wraps) and writes to its own cleo_frametime.log, so the other logs stay
+unchanged. It is off by default; while disabled no clock is read.
+
+Each report shows, for the interval:
+
+- period_ms min/avg/max and fps_avg — the whole frame, regardless of cause;
+- logic_ms avg/max — just the game-logic tick. A frame with a high period but a
+  low logic time points at streaming/driver/render, not at scripts; a high logic
+  time points at the scripts (or CLEO opcodes);
+- stutter count/share/lost_ms — frames at or above WarnMs, and the time lost;
+- a period histogram with fixed edges (16.6/20/25/33.3/50/100/250 ms);
+- the worst frames of the interval, with their logic_ms, active scripts and
+  uptime, so a hitch can be tied to a moment and a script count.
+
+Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
+period-vs-logic split is the whole point — it says whether to optimise scripts or
+streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
 
 ## CLEO 5-style functions
 

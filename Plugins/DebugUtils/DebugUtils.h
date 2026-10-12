@@ -170,6 +170,59 @@ private:
     DWORD m_lastModuleMapTick = 0;
     std::map<std::string, unsigned long long> m_lastModuleResident;
 
+    // Frame-time / stutter monitor. Samples the frame period and the logic-tick
+    // duration with QueryPerformanceCounter and writes a dedicated log, so frame
+    // hitches can be measured and attributed without cluttering the other logs.
+    // Off by default; when disabled no QPC is read at all (zero overhead).
+    bool m_frameTimeEnabled = false;
+    DWORD m_frameTimeIntervalSeconds = 10;
+    DWORD m_frameTimeWarnMs = 50;         // frame period at/above this = stutter event
+    DWORD m_frameTimeTopStutter = 15;     // worst frames listed per report
+    bool m_frameTimeHistogram = true;     // emit a frame-period histogram
+    DWORD m_frameTimeMaxLogMegabytes = 16;
+    DWORD m_lastFrameTimeReportTick = 0;
+    LARGE_INTEGER m_frameTimeFreq{};
+    bool m_frameTimeFreqReady = false;
+    LARGE_INTEGER m_frameTimeLastBefore{};  // previous frame's submit time
+    bool m_frameTimeHaveLast = false;
+    LARGE_INTEGER m_frameTimeLogicStart{};  // this frame's submit time
+    double m_frameTimeLastPeriodMs = 0.0;   // period measured for the current frame
+    unsigned long long m_frameTimeFrames = 0;
+    double m_frameTimeSumPeriodMs = 0.0;
+    double m_frameTimeSumLogicMs = 0.0;
+    double m_frameTimeMinPeriodMs = 0.0;
+    double m_frameTimeMaxPeriodMs = 0.0;
+    double m_frameTimeMaxLogicMs = 0.0;
+    unsigned long long m_frameTimeStutterCount = 0;
+    double m_frameTimeStutterLostMs = 0.0;  // time above the warning threshold
+    double m_frameTimeIntervalMs = 0.0;     // wall-clock span of the interval
+    size_t m_frameTimeScriptsLast = 0;
+
+    // Frame-period histogram. Fixed bucket edges in milliseconds so the same
+    // bins are comparable across intervals; the last bucket is the overflow.
+    static constexpr size_t kFrameTimeHistogramBuckets = 8;
+    static constexpr double kFrameTimeHistogramEdgesMs[kFrameTimeHistogramBuckets] =
+    {
+        16.6, 20.0, 25.0, 33.3, 50.0, 100.0, 250.0
+    };
+    unsigned long long m_frameTimeHistogram[kFrameTimeHistogramBuckets] = {};
+
+    struct FrameTimeSample
+    {
+        double periodMs = 0.0;
+        double logicMs = 0.0;
+        size_t scripts = 0;
+        DWORD uptimeSec = 0;
+    };
+    static constexpr size_t kFrameTimeMaxWorst = 32;
+    std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};
+    size_t m_frameTimeWorstCount = 0;
+
+    std::ofstream m_frameTimeLog;
+    std::mutex m_frameTimeMutex;
+    size_t m_frameTimeBytes = 0;
+    bool m_frameTimeLimitNoticeWritten = false;
+
     std::set<uintptr_t> m_debugScripts;
 
     struct BreakpointInfo
@@ -189,6 +242,7 @@ private:
     std::string ScriptLogPath() const;
     std::string DiagnosticLogPath() const;
     std::string MemoryLogPath() const;
+    std::string FrameTimeLogPath() const;
     std::string CrashLogPath() const;
     std::string CrashInfoPath() const;
     std::string CrashInfoRuPath() const;
@@ -248,6 +302,15 @@ private:
     // to attribute private-bytes growth that is not CLEO's own.
     void WriteModuleMemoryMap();
     void WriteProfilerReport(const char* reason);
+
+    // Frame-time monitor: sample once per frame, flush a report each interval.
+    void BeginFrameTimeFrame();
+    void EndFrameTimeFrame();
+    void WriteFrameTimeReport(const char* reason);
+    void WriteFrameTime(const char* format, ...);
+    void ResetFrameTimeInterval();
+    void InsertWorstTimeSample(const FrameTimeSample& sample);
+    double FrameTimeMs(LARGE_INTEGER from, LARGE_INTEGER to) const;
 
     static void __cdecl OnCoreLog(int level, const char* format, va_list args);
 

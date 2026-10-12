@@ -97,6 +97,18 @@ DebugUtils::DebugUtils()
     if (m_memoryLogEnabled)
         WriteMemory("//////////////////////// memory ////////////////////////");
 
+    if (m_frameTimeEnabled)
+    {
+        WriteFrameTime("//////////////////////// frame time ////////////////////////");
+        WriteFrameTime(
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u target=cleo_frametime.log",
+            static_cast<unsigned>(m_frameTimeIntervalSeconds),
+            static_cast<unsigned>(m_frameTimeWarnMs),
+            static_cast<unsigned>(m_frameTimeTopStutter),
+            m_frameTimeHistogram ? 1u : 0u
+        );
+    }
+
     if (m_diagnosticLogEnabled)
         WriteDiagnostic("//////////////////////// diagnostic ////////////////////////");
 
@@ -268,6 +280,22 @@ void DebugUtils::LoadConfig()
             config << "Overhead=0\r\n";
             config << "; Top opcodes by execution count per report (0 = off).\r\n";
             config << "TopOpcodes=15\r\n\r\n";
+
+            config << "[DebugUtils.FrameTime]\r\n";
+            config << "; Frame-time / stutter monitor. Samples the frame period and the\r\n";
+            config << "; logic-tick duration and writes cleo_frametime.log (own file, so the\r\n";
+            config << "; other logs stay clean). Use it to find what to optimise for freezes.\r\n";
+            config << "Enabled=0\r\n";
+            config << "; Seconds between reports. Counters reset each interval.\r\n";
+            config << "Interval=10\r\n";
+            config << "; A frame period at or above this many ms counts as a stutter event.\r\n";
+            config << "WarnMs=50\r\n";
+            config << "; How many worst frames to list per report (1..32).\r\n";
+            config << "TopStutter=15\r\n";
+            config << "; Emit a frame-period histogram per report.\r\n";
+            config << "Histogram=1\r\n";
+            config << "; Rotate cleo_frametime.log when it grows past this many MB.\r\n";
+            config << "MaxLogMB=16\r\n\r\n";
 
             config << "[DebugUtils.Limits]\r\n";
             config << "Command=0\r\n";
@@ -445,6 +473,63 @@ void DebugUtils::LoadConfig()
     if (m_profilerTopOpcodes > 64)
         m_profilerTopOpcodes = 64;
 
+    m_frameTimeEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "Enabled",
+            0,
+            path.c_str()
+        ) != 0;
+
+    m_frameTimeIntervalSeconds = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "Interval",
+            10,
+            path.c_str()
+        )
+    );
+
+    m_frameTimeWarnMs = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "WarnMs",
+            50,
+            path.c_str()
+        )
+    );
+
+    m_frameTimeTopStutter = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "TopStutter",
+            15,
+            path.c_str()
+        )
+    );
+
+    m_frameTimeHistogram =
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "Histogram",
+            1,
+            path.c_str()
+        ) != 0;
+
+    m_frameTimeMaxLogMegabytes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "MaxLogMB",
+            16,
+            path.c_str()
+        )
+    );
+
+    if (m_frameTimeIntervalSeconds < 1)
+        m_frameTimeIntervalSeconds = 1;
+    if (m_frameTimeWarnMs < 1)
+        m_frameTimeWarnMs = 1;
+    if (m_frameTimeTopStutter == 0)
+        m_frameTimeTopStutter = 1;
+    if (m_frameTimeTopStutter > kFrameTimeMaxWorst)
+        m_frameTimeTopStutter = static_cast<DWORD>(kFrameTimeMaxWorst);
+    if (m_frameTimeMaxLogMegabytes < 1)
+        m_frameTimeMaxLogMegabytes = 1;
+
     m_crashEnabled =
         GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;
 
@@ -492,6 +577,11 @@ std::string DebugUtils::DiagnosticLogPath() const
 std::string DebugUtils::MemoryLogPath() const
 {
     return DebugDir() + "cleo_memory.log";
+}
+
+std::string DebugUtils::FrameTimeLogPath() const
+{
+    return DebugDir() + "cleo_frametime.log";
 }
 
 std::string DebugUtils::CrashLogPath() const

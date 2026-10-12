@@ -11,6 +11,7 @@
   <ItemGroup>
     <ClCompile Include="DebugUtils.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Logging.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.FrameTime.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.CrashInfo.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.StackWalk.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.CrashReport.cpp"><Filter>source</Filter></ClCompile>

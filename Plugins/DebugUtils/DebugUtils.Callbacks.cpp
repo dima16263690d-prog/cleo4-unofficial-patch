@@ -126,6 +126,11 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastMemoryLogTick = GetTickCount();
     s_instance->m_lastModuleMapTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
+    s_instance->m_lastFrameTimeReportTick = s_instance->m_lastMemoryLogTick;
+    s_instance->m_frameTimeHaveLast = false;
+    s_instance->m_frameTimeLastPeriodMs = 0.0;
+    s_instance->m_frameTimeScriptsLast = 0;
+    s_instance->ResetFrameTimeInterval();
     s_instance->m_lastPrivateUsage = 0;
     s_instance->m_lastMemoryQueueCount = 0;
     s_instance->m_lastMemoryCustomCount = 0;
@@ -154,13 +159,21 @@ void __stdcall DebugUtils::OnGameEnd()
     if (s_instance->m_memoryLogEnabled)
         s_instance->WriteCoreMemorySummary();
     s_instance->WriteProfilerReport("game_end");
+    s_instance->WriteFrameTimeReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
 
 void __stdcall DebugUtils::OnGameProcessBefore()
 {
-    if (!s_instance || s_instance->m_breakpoints.empty())
+    if (!s_instance)
+        return;
+
+    // Start the frame-time sample before any early return below, so the period
+    // between consecutive frames is measured even when no breakpoint is set.
+    s_instance->BeginFrameTimeFrame();
+
+    if (s_instance->m_breakpoints.empty())
         return;
 
     bool anyKeyDown = false;
@@ -211,6 +224,9 @@ void __stdcall DebugUtils::OnGameProcessBefore()
 void __stdcall DebugUtils::OnGameProcessAfter()
 {
     if (!s_instance) return;
+
+    // Close the frame-time sample and flush a report when the interval elapses.
+    s_instance->EndFrameTimeFrame();
 
     const DWORD now = GetTickCount();
     if (s_instance->m_memoryLogEnabled &&

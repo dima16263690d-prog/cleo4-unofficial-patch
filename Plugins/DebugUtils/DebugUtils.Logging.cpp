@@ -31,6 +31,12 @@ void DebugUtils::OpenLogs()
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
     if (m_diagnosticLogEnabled)
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
+    if (m_frameTimeEnabled)
+    {
+        m_frameTimeLog.open(FrameTimeLogPath(), std::ios::out | std::ios::trunc);
+        m_frameTimeBytes = 0;
+        m_frameTimeLimitNoticeWritten = false;
+    }
 
     if (!m_coreLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_core.log\n");
@@ -120,6 +126,12 @@ void DebugUtils::CloseLogs()
     {
         m_memoryLog.flush();
         m_memoryLog.close();
+    }
+
+    if (m_frameTimeLog.is_open())
+    {
+        m_frameTimeLog.flush();
+        m_frameTimeLog.close();
     }
 }
 
