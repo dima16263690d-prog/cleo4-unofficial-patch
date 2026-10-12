@@ -105,7 +105,7 @@ DebugUtils::DebugUtils()
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
-            m_frameTimeHistogram ? 1u : 0u
+            m_frameTimeHistogramEnabled ? 1u : 0u
         );
     }
 
@@ -504,7 +504,7 @@ void DebugUtils::LoadConfig()
         )
     );
 
-    m_frameTimeHistogram =
+    m_frameTimeHistogramEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.FrameTime", "Histogram",
             1,

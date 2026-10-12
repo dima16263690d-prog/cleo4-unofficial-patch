@@ -178,7 +178,7 @@ private:
     DWORD m_frameTimeIntervalSeconds = 10;
     DWORD m_frameTimeWarnMs = 50;         // frame period at/above this = stutter event
     DWORD m_frameTimeTopStutter = 15;     // worst frames listed per report
-    bool m_frameTimeHistogram = true;     // emit a frame-period histogram
+    bool m_frameTimeHistogramEnabled = true; // emit a frame-period histogram
     DWORD m_frameTimeMaxLogMegabytes = 16;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};

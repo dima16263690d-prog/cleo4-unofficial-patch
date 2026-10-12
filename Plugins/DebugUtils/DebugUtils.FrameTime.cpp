@@ -272,7 +272,7 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         m_frameTimeStutterLostMs
     );
 
-    if (m_frameTimeHistogram)
+    if (m_frameTimeHistogramEnabled)
     {
         WriteFrameTime("%-24s %10s %8s", "period bucket", "frames", "share%");
         for (size_t i = 0; i < kFrameTimeHistogramBuckets; ++i)
