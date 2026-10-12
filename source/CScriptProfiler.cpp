@@ -19,6 +19,9 @@ namespace CLEO
         const LONG previous = g_scriptProfilerEnabled;
         g_scriptProfilerEnabled = enabled ? 1 : 0;
 
+        if (enabled && m_opcodeCounts.empty())
+            m_opcodeCounts.assign(0x8000, 0ull);
+
         // Leaving a session active could leave stale frames on the stack.
         if (!enabled && previous)
             Reset();
@@ -72,6 +75,10 @@ namespace CLEO
         m_order.clear();
         m_stack.clear();
         m_currentEntry = nullptr;
+
+        // Keep the period cumulative (uptime total), but clear per-interval
+        // counters so a report describes exactly the interval it closes.
+        std::fill(m_opcodeCounts.begin(), m_opcodeCounts.end(), 0ull);
         m_totalOpcodes = 0;
         m_totalUs = 0;
     }
@@ -89,6 +96,7 @@ namespace CLEO
             reinterpret_cast<uintptr_t>(script),
             &entry,
             NowUs(),
+            0,
             0
         });
     }
@@ -107,6 +115,11 @@ namespace CLEO
         frame.entry->totalUs += elapsed;
         frame.entry->selfUs += self;
 
+        // Net time = self time minus the profiler's own instrumentation cost
+        // accrued while this script ran (only tracked in overhead mode).
+        frame.entry->netUs +=
+            self >= frame.opcodeUs ? self - frame.opcodeUs : 0;
+
         m_totalUs += self;
 
         // Attribute this script's time to its caller as child time, so the
@@ -117,12 +130,20 @@ namespace CLEO
         m_currentEntry = m_stack.empty() ? nullptr : m_stack.back().entry;
     }
 
-    void CScriptProfiler::OnOpcode(CRunningScript* script)
+    void CScriptProfiler::OnOpcode(CRunningScript* script, unsigned short opcode)
     {
         if (g_scriptProfilerEnabled == 0)
             return;
 
+        const bool measure = m_overheadMode;
+        const unsigned long long startUs = measure ? NowUs() : 0;
+
         ++m_totalOpcodes;
+
+        // Base opcode (NOT flag stripped by the caller). Bounded for safety.
+        const unsigned short base = opcode & 0x7FFF;
+        if (base < m_opcodeCounts.size())
+            ++m_opcodeCounts[base];
 
         Entry* entry = m_currentEntry;
         if (entry == nullptr)
@@ -136,6 +157,9 @@ namespace CLEO
         }
 
         ++entry->opcodes;
+
+        if (measure && !m_stack.empty())
+            m_stack.back().opcodeUs += NowUs() - startUs;
     }
 
     void CScriptProfiler::OnScriptDeleted(CRunningScript* script)
@@ -175,8 +199,38 @@ namespace CLEO
         memcpy(out.name, entry.name, 9);
         out.totalUs = entry.totalUs;
         out.selfUs = entry.selfUs;
+        out.netUs = entry.netUs;
         out.opcodes = entry.opcodes;
         out.ticks = entry.ticks;
         return true;
+    }
+
+    size_t CScriptProfiler::GetTopOpcodes(OpcodeCount* out, size_t max) const
+    {
+        if (out == nullptr || max == 0)
+            return 0;
+
+        std::vector<OpcodeCount> counts;
+        counts.reserve(m_opcodeCounts.size());
+        for (size_t opcode = 0; opcode < m_opcodeCounts.size(); ++opcode)
+        {
+            if (m_opcodeCounts[opcode] != 0)
+                counts.push_back(OpcodeCount{
+                    static_cast<unsigned short>(opcode),
+                    m_opcodeCounts[opcode]
+                });
+        }
+
+        std::partial_sort(
+            counts.begin(),
+            counts.begin() + std::min(max, counts.size()),
+            counts.end(),
+            [](const OpcodeCount& a, const OpcodeCount& b) { return a.count > b.count; }
+        );
+
+        const size_t written = std::min(max, counts.size());
+        for (size_t i = 0; i < written; ++i)
+            out[i] = counts[i];
+        return written;
     }
 }

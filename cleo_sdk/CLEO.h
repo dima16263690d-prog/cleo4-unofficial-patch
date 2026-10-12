@@ -232,8 +232,18 @@ DWORD WINAPI CLEO_GetScriptProfileCount();
 // Fills one entry by index (0 .. count-1). Returns FALSE when out of range.
 BOOL  WINAPI CLEO_GetScriptProfile(DWORD index, CLEO_ScriptProfile* profile);
 
-// Resets every per-script counter. Aggregate counters are kept.
+// Resets every per-script counter so the next report covers exactly the
+// interval since this call. The uptime total is kept.
 void  WINAPI CLEO_ResetScriptProfiles();
+
+// Enables/disables self-timing of the profiler's opcode instrumentation. When
+// on, CLEO_ScriptProfile::netMs excludes the instrumentation cost (two QPC
+// reads per opcode). Off by default. Returns TRUE.
+BOOL  WINAPI CLEO_SetProfilerOverheadEnabled(BOOL enabled);
+
+// Fills up to `max` opcodes ordered by execution count (descending). Returns the
+// number written. CLEO_OpcodeCount is declared in CLEO_Debug.h.
+DWORD WINAPI CLEO_GetTopOpcodes(CLEO_OpcodeCount* out, DWORD max);
 
 // Unified plugin resource registry. Register any allocation whose lifetime
 // should end when the plugin is unloaded; `release` runs once, right before the

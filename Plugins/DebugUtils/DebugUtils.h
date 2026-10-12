@@ -156,6 +156,11 @@ private:
     DWORD m_profilerIntervalSeconds = 60;
     DWORD m_profilerTop = 20;
     DWORD m_lastProfilerTick = 0;
+    // Measure the profiler's own overhead (two QPC reads per opcode) and report
+    // the instrumentation-free time as a separate column.
+    bool m_profilerOverheadMode = false;
+    // How many hot opcodes to list per report (0 = no opcode histogram).
+    DWORD m_profilerTopOpcodes = 15;
 
     std::set<uintptr_t> m_debugScripts;
 

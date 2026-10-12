@@ -66,3 +66,5 @@ EXPORTS
         _CLEO_SetProfilingEnabled@4             @63
         _CLEO_RegisterPluginResource@12         @64
         _CLEO_UnregisterPluginResource@4        @65
+        _CLEO_SetProfilerOverheadEnabled@4      @66
+        _CLEO_GetTopOpcodes@8                   @67

@@ -105,10 +105,14 @@ DebugUtils::DebugUtils()
     if (m_profilerEnabled)
     {
         CLEO_SetProfilingEnabled(TRUE);
+        if (m_profilerOverheadMode)
+            CLEO_SetProfilerOverheadEnabled(TRUE);
         WriteCore(
-            "[profiler] enabled interval=%us top=%u target=diagnostic_log",
+            "[profiler] enabled interval=%us top=%u topopcodes=%u overhead=%u target=diagnostic_log",
             static_cast<unsigned>(m_profilerIntervalSeconds),
-            static_cast<unsigned>(m_profilerTop)
+            static_cast<unsigned>(m_profilerTop),
+            static_cast<unsigned>(m_profilerTopOpcodes),
+            m_profilerOverheadMode ? 1u : 0u
         );
     }
 
@@ -256,8 +260,14 @@ void DebugUtils::LoadConfig()
             config << "; Per-script execution time and opcode measurement.\r\n";
             config << "; Enabling also activates the core opcode observer.\r\n";
             config << "Enabled=0\r\n";
+            config << "; Seconds between reports. Counters reset each interval.\r\n";
             config << "Interval=60\r\n";
-            config << "Top=20\r\n\r\n";
+            config << "; Top scripts by self time per report.\r\n";
+            config << "Top=20\r\n";
+            config << "; Time the profiler itself and add a net_ms column.\r\n";
+            config << "Overhead=0\r\n";
+            config << "; Top opcodes by execution count per report (0 = off).\r\n";
+            config << "TopOpcodes=15\r\n\r\n";
 
             config << "[DebugUtils.Limits]\r\n";
             config << "Command=0\r\n";
@@ -390,12 +400,29 @@ void DebugUtils::LoadConfig()
         )
     );
 
+    m_profilerOverheadMode =
+        GetPrivateProfileIntA(
+            "DebugUtils.Profiler", "Overhead",
+            0,
+            path.c_str()
+        ) != 0;
+
+    m_profilerTopOpcodes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Profiler", "TopOpcodes",
+            15,
+            path.c_str()
+        )
+    );
+
     if (m_profilerIntervalSeconds < 5)
         m_profilerIntervalSeconds = 5;
     if (m_profilerTop == 0)
         m_profilerTop = 1;
     if (m_profilerTop > 64)
         m_profilerTop = 64;
+    if (m_profilerTopOpcodes > 64)
+        m_profilerTopOpcodes = 64;
 
     m_crashEnabled =
         GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;

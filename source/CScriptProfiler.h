@@ -31,8 +31,17 @@ namespace CLEO
             char name[9];
             unsigned long long totalUs;
             unsigned long long selfUs;
+            // selfUs minus the time spent inside OnOpcode() itself. Only non-zero
+            // while overhead measurement is enabled (SetMeasureOverhead(true)).
+            unsigned long long netUs;
             unsigned long long opcodes;
             unsigned long long ticks;
+        };
+
+        struct OpcodeCount
+        {
+            unsigned short opcode;
+            unsigned long long count;
         };
 
         static CScriptProfiler& Get();
@@ -42,9 +51,15 @@ namespace CLEO
         bool SetEnabled(bool enabled);
         void Reset();
 
+        // When on, OnOpcode() also times itself (two QPC reads per opcode) and
+        // reports the instrumentation cost as Snapshot::netUs. Off by default:
+        // it is a measurement aid, not something to run all the time.
+        void SetMeasureOverhead(bool enabled) { m_overheadMode = enabled; }
+        bool GetMeasureOverhead() const { return m_overheadMode; }
+
         void BeginScript(CRunningScript* script);
         void EndScript(CRunningScript* script);
-        void OnOpcode(CRunningScript* script);
+        void OnOpcode(CRunningScript* script, unsigned short opcode);
 
         // Drop a script's record so deleted scripts do not linger.
         void OnScriptDeleted(CRunningScript* script);
@@ -66,12 +81,17 @@ namespace CLEO
         unsigned long long GetTotalOpcodeCount() const { return m_totalOpcodes; }
         unsigned long long GetTotalUs() const { return m_totalUs; }
 
+        // Top opcodes by execution count, descending. Fills up to `max` entries
+        // and returns how many were written.
+        size_t GetTopOpcodes(OpcodeCount* out, size_t max) const;
+
     private:
         struct Entry
         {
             char name[9] = "none";
             unsigned long long totalUs = 0;
             unsigned long long selfUs = 0;
+            unsigned long long netUs = 0;
             unsigned long long opcodes = 0;
             unsigned long long ticks = 0;
         };
@@ -82,6 +102,8 @@ namespace CLEO
             Entry* entry;
             unsigned long long startUs;
             unsigned long long childUs;
+            // Time accrued inside OnOpcode() for this frame (overhead mode).
+            unsigned long long opcodeUs;
         };
 
         Entry& EntryFor(CRunningScript* script);
@@ -94,6 +116,10 @@ namespace CLEO
 
         // Cached current-script entry so OnOpcode() never touches the map.
         Entry* m_currentEntry = nullptr;
+
+        bool m_overheadMode = false;
+        // Counts indexed by opcode (0..0x7FFF).
+        std::vector<unsigned long long> m_opcodeCounts;
 
         unsigned long long m_totalOpcodes = 0;
         unsigned long long m_totalUs = 0;

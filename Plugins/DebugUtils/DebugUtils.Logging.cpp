@@ -470,15 +470,16 @@ void DebugUtils::WriteProfilerReport(const char* reason)
     // selfMs values are already milliseconds; totalMs is their sum (do NOT
     // divide by 1000, that would silently report seconds under a ms label).
     WriteDiagnostic(
-        "scripts=%u total_self_ms=%llu total_opcodes=%llu top=%u",
+        "scripts=%u total_self_ms=%llu total_opcodes=%llu top=%u overhead=%u",
         static_cast<unsigned>(profiles.size()),
         totalMs,
         totalOpcodes,
-        static_cast<unsigned>(top)
+        static_cast<unsigned>(top),
+        m_profilerOverheadMode ? 1u : 0u
     );
     WriteDiagnostic(
-        "%-3s %-9s %12s %12s %12s %10s %9s",
-        "#", "script", "self_ms", "total_ms", "opcodes", "ticks", "ms/tick"
+        "%-3s %-9s %12s %12s %12s %12s %10s %9s",
+        "#", "script", "self_ms", "net_ms", "total_ms", "opcodes", "ticks", "ms/tick"
     );
 
     for (DWORD i = 0; i < top; ++i)
@@ -502,11 +503,17 @@ void DebugUtils::WriteProfilerReport(const char* reason)
             ? static_cast<double>(profile.selfMs) / static_cast<double>(profile.ticks)
             : 0.0;
 
+        // netMs is 0 unless overhead measurement is on; fall back to selfMs so
+        // the column stays meaningful in the common case.
+        const unsigned long long netMs =
+            m_profilerOverheadMode ? profile.netMs : profile.selfMs;
+
         WriteDiagnostic(
-            "%-3u %-9s %12.3f %12.3f %12llu %10llu %9.4f",
+            "%-3u %-9s %12.3f %12.3f %12.3f %12llu %10llu %9.4f",
             i + 1,
             name,
             static_cast<double>(profile.selfMs),
+            static_cast<double>(netMs),
             static_cast<double>(profile.totalMs),
             profile.opcodes,
             profile.ticks,
@@ -514,15 +521,43 @@ void DebugUtils::WriteProfilerReport(const char* reason)
         );
     }
 
+    // Hot-opcode histogram: which opcodes the whole script set executes most.
+    if (m_profilerTopOpcodes > 0)
+    {
+        std::vector<CLEO_OpcodeCount> opcodes(m_profilerTopOpcodes);
+        const DWORD opcodeCount =
+            CLEO_GetTopOpcodes(opcodes.data(), m_profilerTopOpcodes);
+
+        if (opcodeCount > 0)
+        {
+            WriteDiagnostic("---- top opcodes (execution count) ----");
+            WriteDiagnostic("%-3s %-8s %16s %9s", "#", "opcode", "count", "share%");
+            for (DWORD i = 0; i < opcodeCount; ++i)
+            {
+                const double share = totalOpcodes != 0
+                    ? 100.0 * static_cast<double>(opcodes[i].count)
+                        / static_cast<double>(totalOpcodes)
+                    : 0.0;
+                WriteDiagnostic(
+                    "%-3u %04X     %16llu %8.2f%%",
+                    i + 1,
+                    opcodes[i].opcode,
+                    opcodes[i].count,
+                    share
+                );
+            }
+        }
+    }
+
     // If the diagnostic log is disabled the measurements would otherwise be
     // lost, so mirror a compact summary into the always-on core log.
     if (!m_diagnosticLogEnabled)
     {
         WriteCore(
-            "[profiler] %s scripts=%u total_self_ms=%.3f opcodes=%llu",
+            "[profiler] %s scripts=%u total_self_ms=%llu opcodes=%llu",
             tag,
             static_cast<unsigned>(profiles.size()),
-            static_cast<double>(totalMs) / 1000.0,
+            totalMs,
             totalOpcodes
         );
 
@@ -540,6 +575,12 @@ void DebugUtils::WriteProfilerReport(const char* reason)
             );
         }
     }
+
+    // Counters are cumulative since session start. Clearing them here makes the
+    // next report describe exactly the interval that follows. Skip on game end,
+    // where there is nothing left to measure.
+    if (reason == nullptr || strcmp(reason, "interval") == 0)
+        CLEO_ResetScriptProfiles();
 }
 
 void DebugUtils::WriteDiagnostic(const char* format, ...)

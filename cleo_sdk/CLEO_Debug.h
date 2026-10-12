@@ -64,7 +64,20 @@ typedef struct CLEO_ScriptProfile
     unsigned long long selfMs;
     unsigned long long opcodes;
     unsigned long long ticks;
+    // Appended at the end to keep older field offsets stable. Self time minus
+    // the profiler's own instrumentation cost; meaningful only while overhead
+    // measurement is on (CLEO_SetProfilerOverheadEnabled).
+    unsigned long long netMs;
 } CLEO_ScriptProfile;
+
+// One entry of the top-opcodes histogram (CLEO_GetTopOpcodes). `reserved`
+// keeps the struct 16 bytes and is always zero.
+typedef struct CLEO_OpcodeCount
+{
+    WORD opcode;
+    WORD reserved;
+    unsigned long long count;
+} CLEO_OpcodeCount;
 
 typedef enum CLEO_DebugLogLevel
 {

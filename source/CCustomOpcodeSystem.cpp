@@ -201,7 +201,7 @@ namespace CLEO {
 		const unsigned short base = opcode & 0x7FFF;
 
 		if (g_scriptProfilerEnabled != 0)
-			CScriptProfiler::Get().OnOpcode(thread);
+			CScriptProfiler::Get().OnOpcode(thread, base);
 
 		const bool debugActive =
 			g_crashSnapshotEnabled != 0 || ScriptOpcodeCallbacksActive();
@@ -1312,6 +1312,7 @@ extern "C"
 		// Public surface reports milliseconds; internal resolution is us.
 		profile->totalMs = snapshot.totalUs / 1000;
 		profile->selfMs = snapshot.selfUs / 1000;
+		profile->netMs = snapshot.netUs / 1000;
 		profile->opcodes = snapshot.opcodes;
 		profile->ticks = snapshot.ticks;
 		return TRUE;
@@ -1320,6 +1321,30 @@ extern "C"
 	void WINAPI CLEO_ResetScriptProfiles()
 	{
 		CScriptProfiler::Get().Reset();
+	}
+
+	BOOL WINAPI CLEO_SetProfilerOverheadEnabled(BOOL enabled)
+	{
+		CScriptProfiler::Get().SetMeasureOverhead(enabled != FALSE);
+		return TRUE;
+	}
+
+	DWORD WINAPI CLEO_GetTopOpcodes(CLEO_OpcodeCount* out, DWORD max)
+	{
+		if (out == nullptr || max == 0)
+			return 0;
+
+		std::vector<CScriptProfiler::OpcodeCount> counts(max);
+		const size_t written =
+			CScriptProfiler::Get().GetTopOpcodes(counts.data(), max);
+
+		for (size_t i = 0; i < written; ++i)
+		{
+			out[i].opcode = counts[i].opcode;
+			out[i].reserved = 0;
+			out[i].count = counts[i].count;
+		}
+		return static_cast<DWORD>(written);
 	}
 
 #ifdef _MSC_VER
