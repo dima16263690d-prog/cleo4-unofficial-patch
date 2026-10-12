@@ -467,10 +467,12 @@ void DebugUtils::WriteProfilerReport(const char* reason)
         "==================== script profile (%s) ====================",
         tag
     );
+    // selfMs values are already milliseconds; totalMs is their sum (do NOT
+    // divide by 1000, that would silently report seconds under a ms label).
     WriteDiagnostic(
-        "scripts=%u total_self_ms=%.3f total_opcodes=%llu top=%u",
+        "scripts=%u total_self_ms=%llu total_opcodes=%llu top=%u",
         static_cast<unsigned>(profiles.size()),
-        static_cast<double>(totalMs) / 1000.0,
+        totalMs,
         totalOpcodes,
         static_cast<unsigned>(top)
     );
@@ -486,9 +488,13 @@ void DebugUtils::WriteProfilerReport(const char* reason)
         char name[9];
         memcpy(name, profile.scriptName, 8);
         name[8] = '\0';
-        for (int c = 0; c < 8; ++c)
+        // scriptName is NUL-terminated. Keep ASCII and map any high/non-printable
+        // byte to '?', but stop at the terminator so the remaining column isn't
+        // filled with '?' scratch.
+        for (int c = 0; c < 8 && name[c] != '\0'; ++c)
         {
-            if (!isprint(static_cast<unsigned char>(name[c])))
+            const unsigned char ch = static_cast<unsigned char>(name[c]);
+            if (ch < 0x20 || ch >= 0x7F)
                 name[c] = '?';
         }
 
