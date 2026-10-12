@@ -89,21 +89,17 @@ namespace CLEO
             return block;
         }
 
-        // Otherwise allocate a fresh chunk. Small classes reserve enough for
-        // ~256 blocks up front so subsequent same-class requests bump within it.
-        // Large classes reserve a whole chunk (or the block size, if bigger) so
-        // a request larger than a chunk still has somewhere to go.
-        size_t reserve = kChunkSize;
-        if (!large)
-        {
-            const size_t perClass = blockSize * 256;
-            if (perClass < reserve)
-                reserve = perClass;
-        }
-        else if (blockSize > reserve)
-        {
+        // Reserve enough for a batch of same-size blocks up front so later
+        // requests bump within the chunk instead of reserving again. A class
+        // reserves ~256 blocks, a large class ~48 (a single big block does not
+        // need a whole 16 MB chunk reserved); both are capped at kChunkSize,
+        // and a block larger than the chunk reserves at least itself.
+        const size_t expectedBlocks = large ? 48 : 256;
+        size_t reserve = blockSize * expectedBlocks;
+        if (reserve > kChunkSize)
+            reserve = kChunkSize;
+        if (reserve < blockSize)
             reserve = blockSize;
-        }
         reserve = RoundUp(reserve, kCommitGranularity);
         if (reserve < blockSize)
             return nullptr; // reservation overflow (request is absurdly large)
