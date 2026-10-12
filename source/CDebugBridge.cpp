@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "CDebugBridge.h"
 #include "CCleoMemoryManager.h"
+#include "CCustomOpcodeSystem.h"
 
 #include <windows.h>
 #include <cstdarg>
@@ -80,6 +81,9 @@ extern "C" BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled)
         &CLEO::g_crashSnapshotEnabled,
         enabled ? 1 : 0
     );
+
+    // The crash snapshot records opcodes through the active-path observer.
+    CLEO::RefreshOpcodeObservation();
     return TRUE;
 }
 

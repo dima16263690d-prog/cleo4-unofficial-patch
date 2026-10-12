@@ -3,7 +3,6 @@
 #include <Windows.h>
 #include "CTheScripts.h"
 #include <cstddef>
-#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -51,18 +50,25 @@ namespace CLEO
         {
             size_t size = 0;
             CRunningScript* owner = nullptr;
+            // Points at the owner's entry in m_scriptAllocations. unordered_map is
+            // node-based, so this reference stays valid across rehashes, which
+            // lets Free() update the per-owner counters without a second lookup.
+            AllocationInfo* ownerInfo = nullptr;
         };
 
-        mutable std::mutex m_mutex;
+        // The whole allocator is driven from the single-threaded CLEO script path
+        // (games thread): allocate_memory / free_allocated_memory opcodes, the
+        // script-delete reclaim tick, and game-end teardown. No lock is taken on
+        // the hot path by design.
         std::unordered_map<void*, Allocation> m_allocations;
         std::unordered_map<CRunningScript*, AllocationInfo> m_scriptAllocations;
 
         size_t m_totalBytes = 0;
         size_t m_peakBytes = 0;
 
-        void RegisterMemoryAllocationLocked(CRunningScript* owner, void* address, size_t size);
-        bool UnregisterMemoryAllocationLocked(void* address);
-        void LogRemainingLocked() const;
+        void RegisterMemoryAllocation(CRunningScript* owner, void* address, size_t size);
+        bool UnregisterMemoryAllocation(void* address);
+        void LogRemaining() const;
 
     };
 

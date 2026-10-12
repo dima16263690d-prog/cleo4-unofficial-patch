@@ -416,6 +416,126 @@ void DebugUtils::FlushDiagnosticRepeatLocked()
     m_lastDiagnosticRepeatCount = 0;
 }
 
+void DebugUtils::WriteProfilerReport(const char* reason)
+{
+    if (!m_profilerEnabled)
+        return;
+
+    const DWORD count = CLEO_GetScriptProfileCount();
+    if (count == 0)
+        return;
+
+    std::vector<CLEO_ScriptProfile> profiles;
+    profiles.reserve(count);
+    for (DWORD i = 0; i < count; ++i)
+    {
+        CLEO_ScriptProfile profile{};
+        if (CLEO_GetScriptProfile(i, &profile))
+            profiles.push_back(profile);
+    }
+
+    if (profiles.empty())
+        return;
+
+    // Rank by self time: this is wall-clock time on the game thread excluding
+    // time spent in child scripts, i.e. the time each script really costs.
+    std::sort(
+        profiles.begin(),
+        profiles.end(),
+        [](const CLEO_ScriptProfile& a, const CLEO_ScriptProfile& b)
+        {
+            return a.selfMs > b.selfMs;
+        }
+    );
+
+    const DWORD top = std::min<DWORD>(
+        m_profilerTop,
+        static_cast<DWORD>(profiles.size())
+    );
+
+    unsigned long long totalMs = 0;
+    unsigned long long totalOpcodes = 0;
+    for (const auto& profile : profiles)
+    {
+        totalMs += profile.selfMs;
+        totalOpcodes += profile.opcodes;
+    }
+
+    const char* tag = reason ? reason : "interval";
+
+    WriteDiagnostic(
+        "==================== script profile (%s) ====================",
+        tag
+    );
+    WriteDiagnostic(
+        "scripts=%u total_self_ms=%.3f total_opcodes=%llu top=%u",
+        static_cast<unsigned>(profiles.size()),
+        static_cast<double>(totalMs) / 1000.0,
+        totalOpcodes,
+        static_cast<unsigned>(top)
+    );
+    WriteDiagnostic(
+        "%-3s %-9s %12s %12s %12s %10s %9s",
+        "#", "script", "self_ms", "total_ms", "opcodes", "ticks", "ms/tick"
+    );
+
+    for (DWORD i = 0; i < top; ++i)
+    {
+        const auto& profile = profiles[i];
+
+        char name[9];
+        memcpy(name, profile.scriptName, 8);
+        name[8] = '\0';
+        for (int c = 0; c < 8; ++c)
+        {
+            if (!isprint(static_cast<unsigned char>(name[c])))
+                name[c] = '?';
+        }
+
+        const double perTickMs = profile.ticks != 0
+            ? static_cast<double>(profile.selfMs) / static_cast<double>(profile.ticks)
+            : 0.0;
+
+        WriteDiagnostic(
+            "%-3u %-9s %12.3f %12.3f %12llu %10llu %9.4f",
+            i + 1,
+            name,
+            static_cast<double>(profile.selfMs),
+            static_cast<double>(profile.totalMs),
+            profile.opcodes,
+            profile.ticks,
+            perTickMs
+        );
+    }
+
+    // If the diagnostic log is disabled the measurements would otherwise be
+    // lost, so mirror a compact summary into the always-on core log.
+    if (!m_diagnosticLogEnabled)
+    {
+        WriteCore(
+            "[profiler] %s scripts=%u total_self_ms=%.3f opcodes=%llu",
+            tag,
+            static_cast<unsigned>(profiles.size()),
+            static_cast<double>(totalMs) / 1000.0,
+            totalOpcodes
+        );
+
+        for (DWORD i = 0; i < top; ++i)
+        {
+            const auto& profile = profiles[i];
+            WriteCore(
+                "[profiler] #%u '%.8s' self_ms=%.3f total_ms=%.3f opcodes=%llu ticks=%llu",
+                i + 1,
+                profile.scriptName,
+                static_cast<double>(profile.selfMs),
+                static_cast<double>(profile.totalMs),
+                profile.opcodes,
+                profile.ticks
+            );
+        }
+    }
+}
+
 void DebugUtils::WriteDiagnostic(const char* format, ...)
 {
     if (!m_diagnosticLogEnabled)

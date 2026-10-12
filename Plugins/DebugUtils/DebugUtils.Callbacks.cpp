@@ -122,6 +122,7 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_debugScripts.clear();
     s_instance->m_breakpoints.clear();
     s_instance->m_keysReleased = true;
+    s_instance->m_lastProfilerTick = GetTickCount();
     s_instance->m_lastMemoryLogTick = GetTickCount();
     s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_lastPrivateUsage = 0;
@@ -151,6 +152,7 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteCore("//////////////////////// game end ////////////////////////");
     if (s_instance->m_memoryLogEnabled)
         s_instance->WriteCoreMemorySummary();
+    s_instance->WriteProfilerReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
@@ -215,6 +217,14 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     {
         s_instance->m_lastMemoryLogTick = now;
         s_instance->WriteCoreMemorySummary();
+    }
+
+    if (s_instance->m_profilerEnabled &&
+        now - s_instance->m_lastProfilerTick >=
+            s_instance->m_profilerIntervalSeconds * 1000u)
+    {
+        s_instance->m_lastProfilerTick = now;
+        s_instance->WriteProfilerReport("interval");
     }
 }
 

@@ -150,6 +150,13 @@ private:
     bool m_legacyDebugOpcodes = false;
     bool m_languageRussian = false;
 
+    // Per-script profiler measurement (core CScriptProfiler via CLEO_SetProfilingEnabled).
+    // Results are appended to the diagnostic log at a fixed interval.
+    bool m_profilerEnabled = false;
+    DWORD m_profilerIntervalSeconds = 60;
+    DWORD m_profilerTop = 20;
+    DWORD m_lastProfilerTick = 0;
+
     std::set<uintptr_t> m_debugScripts;
 
     struct BreakpointInfo
@@ -223,6 +230,7 @@ private:
     void WriteCoreThreadLayout();
     void WriteCoreQueueSnapshot(const char* reason);
     void WriteCoreMemorySummary();
+    void WriteProfilerReport(const char* reason);
 
     static void __cdecl OnCoreLog(int level, const char* format, va_list args);
 

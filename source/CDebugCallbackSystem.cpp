@@ -88,6 +88,7 @@ namespace CLEO
 
         g_callbacks[id].push_back(CallbackSubscriber{callback, CallbackOwner(callback)});
         RefreshOpcodeSubscriberCount();
+        RefreshOpcodeObservation();
         return TRUE;
     }
 
@@ -108,6 +109,7 @@ namespace CLEO
         if (subscribers.size() != before)
         {
             RefreshOpcodeSubscriberCount();
+            RefreshOpcodeObservation();
             return TRUE;
         }
         return FALSE;
@@ -126,6 +128,7 @@ namespace CLEO
                 subscribers.end());
         }
         RefreshOpcodeSubscriberCount();
+        RefreshOpcodeObservation();
         // Erasing from an already-empty list is a no-op, so repeated calls for
         // the same module are safe.
     }

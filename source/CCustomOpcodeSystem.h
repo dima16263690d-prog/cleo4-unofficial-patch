@@ -75,4 +75,9 @@ namespace CLEO
     };
 
     extern void(__thiscall * ProcessScript)(CRunningScript*);
+
+    // Activate/deactivate the active-path opcode observer wrapper based on
+    // whether any consumer (plugin opcode callbacks, profiler, crash snapshot)
+    // is currently enabled. Cheap; safe to call on every observer toggle.
+    void RefreshOpcodeObservation();
 }

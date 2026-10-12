@@ -14,50 +14,53 @@ namespace CLEO
         MEMORY_TRACE("INIT per-script tracking enabled (no fixed budget)");
     }
 
-    void CCleoMemoryManager::RegisterMemoryAllocationLocked(
+    void CCleoMemoryManager::RegisterMemoryAllocation(
         CRunningScript* owner,
         void* address,
         size_t size
     )
     {
-        m_allocations[address] = Allocation{ size, owner };
-
-        auto& info = m_scriptAllocations[owner];
+        AllocationInfo& info = m_scriptAllocations[owner];
         ++info.count;
         info.size += size;
         info.blocks.insert(address);
+
+        // Cache the owner entry so a later Free() updates it in O(1).
+        m_allocations[address] = Allocation{ size, owner, &info };
 
         m_totalBytes += size;
         if (m_totalBytes > m_peakBytes)
             m_peakBytes = m_totalBytes;
     }
 
-    bool CCleoMemoryManager::UnregisterMemoryAllocationLocked(void* address)
+    bool CCleoMemoryManager::UnregisterMemoryAllocation(void* address)
     {
         auto it = m_allocations.find(address);
         if (it == m_allocations.end())
             return false;
 
-        const Allocation allocation = it->second;
+        const size_t size = it->second.size;
+        AllocationInfo* info = it->second.ownerInfo;
+        CRunningScript* owner = it->second.owner;
 
         std::free(address);
 
-        auto scriptIt = m_scriptAllocations.find(allocation.owner);
-        if (scriptIt != m_scriptAllocations.end())
+        if (info != nullptr)
         {
-            scriptIt->second.count--;
-            scriptIt->second.blocks.erase(address);
-            if (scriptIt->second.size >= allocation.size)
-                scriptIt->second.size -= allocation.size;
+            if (info->count > 0)
+                --info->count;
+            info->blocks.erase(address);
+            if (info->size >= size)
+                info->size -= size;
             else
-                scriptIt->second.size = 0;
+                info->size = 0;
 
-            if (scriptIt->second.count <= 0)
-                m_scriptAllocations.erase(scriptIt);
+            if (info->count <= 0 && owner != nullptr)
+                m_scriptAllocations.erase(owner);
         }
 
-        if (m_totalBytes >= allocation.size)
-            m_totalBytes -= allocation.size;
+        if (m_totalBytes >= size)
+            m_totalBytes -= size;
         else
             m_totalBytes = 0;
 
@@ -65,7 +68,7 @@ namespace CLEO
         return true;
     }
 
-    void CCleoMemoryManager::LogRemainingLocked() const
+    void CCleoMemoryManager::LogRemaining() const
     {
         MEMORY_TRACE(
             "GAME_END remaining_blocks=%llu remaining_bytes=%llu KB",
@@ -112,8 +115,7 @@ namespace CLEO
             return nullptr;
         }
 
-        std::lock_guard<std::mutex> lock(m_mutex);
-        RegisterMemoryAllocationLocked(owner, memory, size);
+        RegisterMemoryAllocation(owner, memory, size);
 
         // No fixed budget: a script that genuinely needs more than the CLEO5
         // default (16 MB) still receives it. Tracking is per script, and
@@ -127,8 +129,6 @@ namespace CLEO
         if (!address)
             return true;
 
-        std::lock_guard<std::mutex> lock(m_mutex);
-
         const auto it = m_allocations.find(address);
         if (it == m_allocations.end())
         {
@@ -140,7 +140,7 @@ namespace CLEO
             return false;
         }
 
-        return UnregisterMemoryAllocationLocked(address);
+        return UnregisterMemoryAllocation(address);
     }
 
     size_t CCleoMemoryManager::ReleaseOwner(CRunningScript* owner)
@@ -148,7 +148,6 @@ namespace CLEO
         if (!owner)
             return 0;
 
-        std::lock_guard<std::mutex> lock(m_mutex);
         size_t released = 0;
 
         // Walk only this script's blocks instead of every tracked allocation,
@@ -200,9 +199,7 @@ namespace CLEO
         size_t blockCount = 0;
 
         {
-            std::lock_guard<std::mutex> lock(m_mutex);
-
-            LogRemainingLocked();
+            LogRemaining();
 
             blockCount = m_allocations.size();
             toFree.reserve(blockCount);
@@ -227,8 +224,6 @@ namespace CLEO
 
     CCleoMemoryManager::Stats CCleoMemoryManager::GetStats() const
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
-
         Stats result;
         result.totalBlocks = m_allocations.size();
         result.totalBytes = m_totalBytes;
