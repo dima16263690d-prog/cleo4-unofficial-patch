@@ -179,8 +179,10 @@ namespace CLEO
                     return -1; // unknown signature character
                 }
 
+                // Never silently truncate a signature: callers must know
+                // whether every declared parameter was parsed and validated.
                 if (count >= maxOut)
-                    break;
+                    return -1;
 
                 out[count++] = kind;
             }
