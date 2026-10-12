@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CScriptPluginSdk.h"
 #include "CCustomOpcodeSystem.h"
+#include "CCustomOpcodeSystem.Internal.h"
 #include "CDebugBridge.h"
 
 #include "CDebugCallbackSystem.h"
@@ -464,6 +465,9 @@ namespace CLEO
             // first: invoking plugin code while holding g_mutex would deadlock
             // if the callback called back into the SDK.
             std::vector<std::pair<PluginResourceReleaseFn, void*>> releases;
+            // Opcodes owned by this module, so their dispatch slots can be
+            // cleared after the lock is dropped (see UnregisterOpcodeSlot).
+            std::vector<WORD> ownedOpcodes;
             bool alreadyReleased = false;
 
             {
@@ -488,7 +492,10 @@ namespace CLEO
                     for (auto it = g_opcodes.begin(); it != g_opcodes.end(); )
                     {
                         if (it->second.module == module)
+                        {
+                            ownedOpcodes.push_back(it->first);
                             it = g_opcodes.erase(it);
+                        }
                         else
                             ++it;
                     }
@@ -506,6 +513,11 @@ namespace CLEO
 
             if (alreadyReleased)
                 return;
+
+            // Clear the dispatch slots so a dangling handler into the unmapped
+            // module can never be called and the opcode can be re-registered.
+            for (WORD opcode : ownedOpcodes)
+                UnregisterOpcodeSlot(opcode);
 
             for (auto& release : releases)
                 release.first(release.second);

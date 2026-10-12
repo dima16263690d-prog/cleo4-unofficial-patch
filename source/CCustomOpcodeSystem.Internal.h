@@ -39,6 +39,12 @@ namespace CLEO
     void InstallOpcodeObservation();
     void RemoveOpcodeObservation();
 
+    // Clear a single dispatch-table slot (low or extra table). Used when the
+    // plugin that registered the opcode unloads: without this the table would
+    // keep a pointer into unmapped code and the opcode could never be
+    // re-registered. Safe to call for an opcode that is not registered.
+    void UnregisterOpcodeSlot(WORD opcode);
+
     	inline CRunningScript& operator>>(CRunningScript& thread, DWORD& uval)
     	{
     		GetScriptParams(&thread, 1);

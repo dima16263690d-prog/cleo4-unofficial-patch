@@ -287,6 +287,17 @@ namespace CLEO {
 	CustomOpcodeHandler lowOpcodeHandlers[0x0AF0] = {};
 	CustomOpcodeHandler extraOpcodeHandlers[100][300];
 
+	void UnregisterOpcodeSlot(WORD opcode)
+	{
+		if (opcode > 0x7FFF)
+			return;
+
+		if (opcode < 0x0AF0)
+			lowOpcodeHandlers[opcode] = nullptr;
+		else
+			extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] = nullptr;
+	}
+
 	CBuildingPool		**buildingPool = nullptr;			// add for future CLEO releases
 	CVehiclePool			**vehiclePool = nullptr;
 	CObjectPool			**objectPool = nullptr;
