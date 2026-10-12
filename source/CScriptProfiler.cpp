@@ -36,9 +36,15 @@ namespace CLEO
         if (frequency.QuadPart == 0)
             return 0;
 
-        // Convert to microseconds without overflowing 64 bits.
-        return (static_cast<unsigned long long>(counter.QuadPart) * 1000000ull) /
-               static_cast<unsigned long long>(frequency.QuadPart);
+        // Scale to microseconds without overflowing. Multiplying the raw QPC
+        // value (uptime-sized) by 1e6 first would wrap a 64-bit integer after a
+        // few hours/days of uptime; splitting into whole seconds and a
+        // sub-second remainder keeps every intermediate value small.
+        const unsigned long long ticks = static_cast<unsigned long long>(counter.QuadPart);
+        const unsigned long long freq = static_cast<unsigned long long>(frequency.QuadPart);
+        const unsigned long long seconds = ticks / freq;
+        const unsigned long long remainder = ticks % freq;
+        return seconds * 1000000ull + (remainder * 1000000ull) / freq;
     }
 
     CScriptProfiler::Entry& CScriptProfiler::EntryFor(CRunningScript* script)

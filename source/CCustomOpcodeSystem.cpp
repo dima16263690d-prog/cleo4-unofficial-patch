@@ -164,11 +164,12 @@ namespace CLEO {
 	ScriptDeleteDelegate scriptDeleteDelegate;
 	void RunScriptDeleteDelegate(CRunningScript *script)
 	{
-		// Release SDK 2.0 per-script state first, then run the legacy delete
-		// delegates while the pointer is still valid.
-		PluginSdk::OnScriptDeleted(script);
+		// Let plugins and legacy delegates observe the script while its
+		// per-script state is still available (they may read it to free
+		// resources), then drop the SDK 2.0 state.
 		NotifyScriptDeleted(script);
 		scriptDeleteDelegate(script);
+		PluginSdk::OnScriptDeleted(script);
 	}
 
 	_OpcodeHandler *oldOpcodeHandlerTable;

@@ -4,6 +4,7 @@
 #include "ScmFunction.h"
 #include "CDebugCallbackSystem.h"
 #include "CCleoMemoryManager.h"
+#include "CScriptProfiler.h"
 #include <cstdint>
 #include <algorithm>
 
@@ -351,6 +352,14 @@ DWORD FUNC_AddScriptToQueue;
         if (!NotifyScriptProcessBefore(script))
             return;
 
+        // Profile the real execution work at the boundary both script kinds
+        // pass through. Gating on an existing frame avoids double-counting if
+        // the original ProcessScript is somehow driven from two places.
+        const bool profiling =
+            g_scriptProfilerEnabled != 0 && !CScriptProfiler::Get().InFrame(script);
+        if (profiling)
+            CScriptProfiler::Get().BeginScript(script);
+
         // Native GTA scripts retain GTA's original executor. CLEO scripts keep
         // their existing CCustomScript::Process() path.
         CCustomScript *customScript = reinterpret_cast<CCustomScript*>(script);
@@ -358,6 +367,9 @@ DWORD FUNC_AddScriptToQueue;
             customScript->Process();
         else
             ProcessScript(script);
+
+        if (profiling)
+            CScriptProfiler::Get().EndScript(script);
 
         NotifyScriptProcessAfter(script);
     }
