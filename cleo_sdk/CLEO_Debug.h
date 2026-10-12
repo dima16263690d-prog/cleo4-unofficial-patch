@@ -109,6 +109,11 @@ typedef int (__stdcall *CLEO_ScriptOpcodeProcessAfterCallback)(void* thread, DWO
 typedef void (__stdcall *CLEO_GameCallback)();
 typedef void (__stdcall *CLEO_ScriptDeletedCallback)(void* thread);
 
+// Release callback for the Plugin SDK 2.0 resource registry. Lives here so the
+// core can see it via its explicit "CLEO_Debug.h" include regardless of how
+// each translation unit reaches the public CLEO.h.
+typedef void (__stdcall *CLEO_PluginResourceReleaseFn)(void* resource);
+
 BOOL WINAPI CLEO_RegisterCallback(int callbackId, uintptr_t callback);
 BOOL WINAPI CLEO_UnregisterCallback(int callbackId, uintptr_t callback);
 BOOL WINAPI CLEO_DebugSetLogCallback(CLEO_DebugLogCallback callback);

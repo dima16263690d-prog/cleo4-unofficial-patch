@@ -240,7 +240,7 @@ void  WINAPI CLEO_ResetScriptProfiles();
 // module is unmapped, and may be null for a resource that needs no cleanup.
 // `kind` is a borrowed diagnostic tag (string literal). Registering the same
 // pointer twice returns FALSE. CLEO owns the registry, not the resource.
-typedef void (__stdcall *CLEO_PluginResourceReleaseFn)(void* resource);
+// CLEO_PluginResourceReleaseFn is declared in CLEO_Debug.h, included above.
 BOOL  WINAPI CLEO_RegisterPluginResource(const char* kind, void* resource,
                                          CLEO_PluginResourceReleaseFn release);
 
