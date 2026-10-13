@@ -4,6 +4,7 @@
 #include "ScmFunction.h"
 #include "CDebugCallbackSystem.h"
 #include "CCleoMemoryManager.h"
+#include "CScriptProfiler.h"
 #include <cstdint>
 #include <algorithm>
 
@@ -180,11 +181,28 @@ DWORD FUNC_AddScriptToQueue;
     CRunningScript **inactiveThreadQueue, **activeThreadQueue;
 	CCustomScript *lastScriptCreated = nullptr;
 
+    // Requested streaming budget in MB, set by a plugin through
+    // CLEO_SetStreamingMemoryLimit() before SCM init. 0 = leave the game/mod
+    // value untouched (default); -1 = auto; >0 = explicit. Applied once the
+    // engine has initialised streaming (see ApplyStreamingMemoryLimit).
+    static int g_requestedStreamingLimitMb = 0;
+
     // GTA's streaming budget for models/textures (CStreaming::ms_memoryAvailable)
-    // defaults to 50 MB. Raise it once the game has initialised streaming;
-    // never lower a value another mod already set.
+    // decides how much the engine keeps resident before it evicts models. The
+    // requested value comes from a plugin (DebugUtils owns the user setting); the
+    // application is deferred to SCM init so it is not clobbered by the engine's
+    // own streaming init.
+    //
+    // The raise is never forced: a higher value set by another mod (limit
+    // adjuster) is preserved, and an unknown game version changes nothing.
     static void ApplyStreamingMemoryLimit()
     {
+        if (g_requestedStreamingLimitMb == 0)
+        {
+            TRACE("[MEMORY] STREAMING limit unchanged: no plugin requested a change");
+            return;
+        }
+
         DWORD *memoryAvailable = nullptr;
         switch (GetInstance().VersionManager.GetGameVersion())
         {
@@ -197,18 +215,28 @@ DWORD FUNC_AddScriptToQueue;
             return;
         }
 
-        // 1 GB only fits safely in the 4 GB address space given by LAA.
-        const bool largeAddressAware = IsGameLargeAddressAware();
-        const DWORD desired = (largeAddressAware ? 1024u : 512u) * 1024 * 1024;
+        DWORD desiredMb;
+        if (g_requestedStreamingLimitMb < 0)
+        {
+            // 1 GB only fits safely in the 4 GB address space given by LAA.
+            desiredMb = IsGameLargeAddressAware() ? 1024u : 512u;
+        }
+        else
+        {
+            desiredMb = static_cast<DWORD>(g_requestedStreamingLimitMb);
+        }
+
+        const DWORD desired = desiredMb * 1024 * 1024;
         const DWORD current = *memoryAvailable;
 
         if (current < desired)
             *memoryAvailable = desired;
 
-        TRACE("[MEMORY] STREAMING limit %u -> %u MB (large_address_aware=%d)",
+        TRACE("[MEMORY] STREAMING limit %u -> %u MB (requested=%d MB, large_address_aware=%d)",
             current / (1024 * 1024),
             *memoryAvailable / (1024 * 1024),
-            largeAddressAware ? 1 : 0);
+            g_requestedStreamingLimitMb,
+            IsGameLargeAddressAware() ? 1 : 0);
     }
 
     // called to initialise the scripts (after the main.scm has actually had a chance to set up)
@@ -351,6 +379,14 @@ DWORD FUNC_AddScriptToQueue;
         if (!NotifyScriptProcessBefore(script))
             return;
 
+        // Profile the real execution work at the boundary both script kinds
+        // pass through. Gating on an existing frame avoids double-counting if
+        // the original ProcessScript is somehow driven from two places.
+        const bool profiling =
+            g_scriptProfilerEnabled != 0 && !CScriptProfiler::Get().InFrame(script);
+        if (profiling)
+            CScriptProfiler::Get().BeginScript(script);
+
         // Native GTA scripts retain GTA's original executor. CLEO scripts keep
         // their existing CCustomScript::Process() path.
         CCustomScript *customScript = reinterpret_cast<CCustomScript*>(script);
@@ -358,6 +394,9 @@ DWORD FUNC_AddScriptToQueue;
             customScript->Process();
         else
             ProcessScript(script);
+
+        if (profiling)
+            CScriptProfiler::Get().EndScript(script);
 
         NotifyScriptProcessAfter(script);
     }
@@ -529,4 +568,15 @@ DWORD FUNC_AddScriptToQueue;
     }
 
 	float VectorSqrMagnitude(CVector vector) { return vector.x * vector.x + vector.y * vector.y + vector.z * vector.z; }
+
+    // Called by a plugin (DebugUtils owns the user setting) to request a streaming
+    // budget. Stored only; applied at SCM init so the engine's own streaming init
+    // cannot clobber it. Returns the previous requested value.
+    extern "C" int WINAPI CLEO_SetStreamingMemoryLimit(int limitMb)
+    {
+        const int previous = g_requestedStreamingLimitMb;
+        g_requestedStreamingLimitMb = limitMb;
+        TRACE("[MEMORY] STREAMING limit requested=%d MB (applied at SCM init)", limitMb);
+        return previous;
+    }
 }

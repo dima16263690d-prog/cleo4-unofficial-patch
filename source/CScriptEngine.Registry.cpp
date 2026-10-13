@@ -2,6 +2,7 @@
 #include "cleo.h"
 #include "CCustomScript.h"
 #include "CScriptEngine.Internal.h"
+#include "CDebugCallbackSystem.h"
 #include <cstdint>
 #include <algorithm>
 #include <cctype>
@@ -24,6 +25,15 @@ namespace CLEO
         }
 
         return nullptr;
+    }
+
+    CCustomScript *CScriptEngine::FindCustomScriptByPtr(const CRunningScript* script) const
+    {
+        if (script == nullptr)
+            return nullptr;
+
+        auto it = m_customScriptByPtr.find(script);
+        return it == m_customScriptByPtr.end() ? nullptr : it->second;
     }
 
     CCustomScript *CScriptEngine::FindCustomScriptNamed(const char *name)
@@ -222,6 +232,7 @@ namespace CLEO
         }
 
         m_activeCustomScriptRegistry.insert(cs);
+        m_customScriptByPtr[cs] = cs;
 
         if (cs->IsMission())
         {
@@ -238,6 +249,9 @@ namespace CLEO
         // Registry -> GTA queue -> active state.
         AddScriptToQueue(cs, activeThreadQueue);
         cs->SetActive(true);
+
+        // Notify plugins that a new script object is live (SDK 2.0 lifetime).
+        NotifyScriptCreated(cs);
     }
 
     void CScriptEngine::RemoveCustomScript(CCustomScript *cs)
@@ -349,6 +363,7 @@ namespace CLEO
             m_pendingDeleteRegistry.erase(cs);
             m_activeCustomScriptRegistry.erase(cs);
             m_customScriptRegistry.erase(cs);
+            m_customScriptByPtr.erase(cs);
 
             TRACE("Deleting inactive script named %.*s", 8, cs->Name);
             delete cs;

@@ -15,9 +15,19 @@ namespace CLEO
     typedef int (__stdcall *ScriptOpcodeProcessAfterCallback)(CRunningScript*, DWORD, int);
     typedef void (__stdcall *GameCallback)();
     typedef void (__stdcall *ScriptDeletedCallback)(CRunningScript*);
+    typedef void (__stdcall *ScriptOpcodeRegisteredCallback)(WORD opcode);
+    typedef void (__stdcall *ScriptCreatedCallback)(CRunningScript*);
 
     BOOL RegisterCallback(eCallbackId id, uintptr_t callback);
     BOOL UnregisterCallback(eCallbackId id, uintptr_t callback);
+
+    // Drop every subscription that belongs to `module`. Called before the
+    // module is unloaded so no callback can fire into freed code. Idempotent.
+    void ReleaseCallbacksForModule(HMODULE module);
+
+    // True when any plugin has registered a per-opcode observer. Used to keep
+    // the hot opcode loop free of callback work when nobody is listening.
+    bool ScriptOpcodeCallbacksActive();
 
     void NotifyGameBegin();
     void NotifyGameEnd();
@@ -28,4 +38,15 @@ namespace CLEO
     int NotifyScriptOpcodeProcessBefore(CRunningScript* script, DWORD opcode);
     OpcodeResult NotifyScriptOpcodeProcessAfter(CRunningScript* script, DWORD opcode, OpcodeResult result);
     void NotifyScriptDeleted(CRunningScript* script);
+
+    // Minimal crash-snapshot recording, separate from the plugin dispatch. The
+    // hot opcode path uses these directly when only the crash snapshot (and not
+    // a plugin observer) is active, so it avoids the callback mutex/subscriber
+    // rounds on every opcode. Both are no-ops while crash snapshot is disabled.
+    void RecordCrashOpcodeBefore(CRunningScript* script, DWORD opcode);
+    void RecordCrashOpcodeResult(LONG result);
+
+    // Plugin SDK 2.0: announce a newly registered opcode to interested plugins.
+    void NotifyScriptOpcodeRegistered(WORD opcode);
+    void NotifyScriptCreated(CRunningScript* script);
 }

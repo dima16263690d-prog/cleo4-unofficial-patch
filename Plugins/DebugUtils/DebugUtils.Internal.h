@@ -156,6 +156,13 @@ namespace
 
     constexpr DWORD kGtaSa10ActiveScripts = 0x00A8B42C;
 
+    // CStreaming statics in GTA SA 1.0 US (addresses per plugin-sdk CStreaming.cpp).
+    // ms_memoryAvailable is the budget the engine tries to stay under; ms_memoryUsed
+    // is how much it currently holds. Both are plain unsigned int globals.
+    constexpr DWORD kGtaSa10StreamingMemoryAvailable = 0x008A5A80;
+    constexpr DWORD kGtaSa10StreamingMemoryUsed = 0x008E4CB4;
+    constexpr DWORD kGtaSa10StreamingModelsRequested = 0x008E4CB8;
+
     static const char* ExceptionName(DWORD code)
     {
         switch (code)

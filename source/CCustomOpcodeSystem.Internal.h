@@ -30,6 +30,21 @@ namespace CLEO
     void ThreadJump(CRunningScript *thread, int off);
     void SkipUnusedParameters(CRunningScript *thread);
 
+    // Per-opcode observation on the ACTIVE dispatch path. GTA's script loop
+    // reads opcodes itself, so the legacy ExecuteLegacyScriptLoop (which used to
+    // host the debug callbacks and profiler) is not installed. These helpers
+    // install a light wrapper around GTA's opcode handler so DebugUtils opcode
+    // tracing / hang-guard and per-script opcode counts actually observe
+    // execution. They are no-ops when nothing is observing.
+    void InstallOpcodeObservation();
+    void RemoveOpcodeObservation();
+
+    // Clear a single dispatch-table slot (low or extra table). Used when the
+    // plugin that registered the opcode unloads: without this the table would
+    // keep a pointer into unmapped code and the opcode could never be
+    // re-registered. Safe to call for an opcode that is not registered.
+    void UnregisterOpcodeSlot(WORD opcode);
+
     	inline CRunningScript& operator>>(CRunningScript& thread, DWORD& uval)
     	{
     		GetScriptParams(&thread, 1);

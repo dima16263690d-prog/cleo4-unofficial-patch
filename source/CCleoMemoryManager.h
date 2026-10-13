@@ -2,68 +2,156 @@
 
 #include <Windows.h>
 #include "CTheScripts.h"
-#include <cstddef>
-#include <mutex>
+#include <cstdint>
 #include <unordered_map>
-#include <unordered_set>
+#include <vector>
 
 namespace CLEO
 {
+    // Per-script script memory owned by CLEO instead of by GTA.
+    //
+    // allocate_memory (0AC8) hands out blocks from arena chunks that CLEO
+    // obtains straight from VirtualAlloc. Because those chunks are not part of
+    // the game's or the CRT heap, they do not fragment or pressure the 32-bit
+    // address space of GTA, and Windows can page individual chunks out
+    // independently of the game. Freed blocks return to per-size-class free
+    // lists and are reused, so a script that churns memory every frame does not
+    // keep calling the kernel.
+    //
+    // Bookkeeping is fully intrusive: every block carries its own header and the
+    // owner's live blocks are a doubly-linked list threaded through those
+    // headers. The hot path therefore performs NO heap/map insertion per
+    // allocate - only the owner list head is touched, and only when the owner
+    // changes. The single remaining map (owner -> list) has one entry per script,
+    // not one per block.
+    //
+    // THREAD AFFINITY: everything here runs on GTA's single script thread
+    // (allocate_memory / free_allocated_memory opcodes, the script-delete reclaim
+    // tick, game begin/end). No lock is taken by design. The exported
+    // CLEO_DebugGetMemoryStats() must only be called from that same thread.
     class CCleoMemoryManager
     {
     public:
-        struct AllocationInfo
-        {
-            int count = 0;
-            size_t size = 0;
-            std::unordered_set<void*> blocks;
-        };
-
         struct Stats
         {
             size_t totalBlocks = 0;
             size_t totalBytes = 0;
-            size_t peakBytes = 0;
+            size_t peakBytes = 0;       // peak of the CURRENT session (reset at GameEnd)
+            size_t reservedBytes = 0;   // fast memory currently reserved
+            size_t committedBytes = 0;  // fast memory currently committed
+            size_t recyclableBytes = 0; // free blocks held for reuse
         };
 
         CCleoMemoryManager();
+        ~CCleoMemoryManager();
         CCleoMemoryManager(const CCleoMemoryManager&) = delete;
         CCleoMemoryManager& operator=(const CCleoMemoryManager&) = delete;
 
-        // CLEO5-style memory operations.
-        // Every request is honored at its full size (a script that needs more
-        // than any fixed budget simply gets it); memory is tracked per script so
-        // a script that stops without freeing is reclaimed automatically.
+        // Every request is honored at its full size. The block comes from
+        // CLEO-owned fast memory, tracked per script so a script that stops
+        // without freeing is reclaimed automatically.
         void* Allocate(CRunningScript* owner, size_t size);
         bool Free(CRunningScript* owner, void* address);
 
-        // Release every tracked allocation belonging to one script.
-        // Called when a script stops (and again from its destructor as a net).
+        // Release every tracked allocation belonging to one script. The blocks
+        // return to the fast-memory free lists (not the OS), so resetting many
+        // scripts is cheap and the reserved memory is reused by the next script.
+        // Called when a script stops and again from its destructor as a net.
         size_t ReleaseOwner(CRunningScript* owner);
 
-        // Called once when GTA/CLEO ends a game session.
+        // Called once when GTA/CLEO ends a game session: recycle everything,
+        // release the fast-memory chunks back to the OS, and reset the peak.
         void OnGameEnd();
 
+        // Game-thread only (see THREAD AFFINITY above).
         Stats GetStats() const;
 
     private:
-        struct Allocation
+        // Sizes up to kSmallMax use exact 16-byte classes; bigger requests use
+        // 64-byte-granular single-block classes. Both are recycled.
+        static constexpr size_t kSmallStep = 16;
+        static constexpr size_t kSmallMax = 4096;
+        static constexpr size_t kClassCount = kSmallMax / kSmallStep; // 256
+        static constexpr size_t kChunkSize = 16 * 1024 * 1024;        // 16 MB
+        static constexpr size_t kCommitGranularity = 64 * 1024;       // 64 KB
+        static constexpr uint32_t kBlockMagic = 0xC1E0B10Cu;
+
+        // Block header sits immediately before the payload the script sees. It is
+        // not visible to scripts and not counted as payload, so scripts that
+        // treat the pointer as opaque (the normal case) cannot notice it. While
+        // the block is free, its first bytes hold the free-list link instead.
+        // 32 bytes on Win32 (48 on 64-bit hosts): a multiple of 16 either way,
+        // so every payload stays 16-byte aligned.
+        struct BlockHeader
         {
-            size_t size = 0;
+            uint32_t magic = kBlockMagic;   // validates a freed pointer
+            uint32_t payloadSize = 0;       // arena size (freed for reuse)
+            uint32_t claimed = 0;           // bytes the script requested (accounting)
+            uint32_t reserved = 0;          // pads the payload to 16-byte alignment
             CRunningScript* owner = nullptr;
+            BlockHeader* prev = nullptr;    // owner's live list (intrusive)
+            BlockHeader* next = nullptr;
+            bool large = false;
+            uint8_t tailPadding[3] = {};
         };
 
-        mutable std::mutex m_mutex;
-        std::unordered_map<void*, Allocation> m_allocations;
-        std::unordered_map<CRunningScript*, AllocationInfo> m_scriptAllocations;
+        static_assert(sizeof(BlockHeader) % 16 == 0,
+            "BlockHeader must be a multiple of 16 bytes to keep payloads aligned");
 
+        // One size class: a free list of equally-sized blocks and the class
+        // size. While a block is free its first sizeof(void*) bytes hold the
+        // next-free pointer (payloads are >= 16 bytes and 8-byte aligned).
+        struct SizeClass
+        {
+            void* freeList = nullptr;
+            size_t payloadSize = 0;
+        };
+
+        struct OwnerInfo
+        {
+            size_t blockCount = 0;
+            size_t size = 0;
+            BlockHeader* head = nullptr; // intrusive list of this owner's live blocks
+        };
+
+        struct Chunk
+        {
+            BYTE* base = nullptr;
+            size_t reserved = 0;
+            size_t committed = 0;
+            size_t cursor = 0;
+            size_t group = 0; // size class this chunk back-fills, or kAnyGroup
+        };
+
+        static constexpr size_t kAnyGroup = static_cast<size_t>(-1);
+
+        SizeClass m_classes[kClassCount];
+        std::unordered_map<size_t, SizeClass> m_largeClasses;
+
+        std::vector<Chunk*> m_chunks;
+
+        // One entry per script (not per block). Only touched when an owner gains
+        // its first live block or loses its last one.
+        std::unordered_map<CRunningScript*, OwnerInfo> m_owners;
+
+        size_t m_totalBlocks = 0;
         size_t m_totalBytes = 0;
         size_t m_peakBytes = 0;
+        size_t m_reservedBytes = 0;
+        size_t m_committedBytes = 0;
+        size_t m_recyclableBytes = 0;
 
-        void RegisterMemoryAllocationLocked(CRunningScript* owner, void* address, size_t size);
-        bool UnregisterMemoryAllocationLocked(void* address);
-        void LogRemainingLocked() const;
+        SizeClass& ClassFor(size_t payloadSize, bool large);
+        void* TakeFree(size_t payloadSize, bool large);
+        void* Bump(size_t payloadSize, bool large);
+        void Claim(Chunk* chunk, size_t needed);
+        void Recycle(BlockHeader* header);
+        bool OwnsPointer(const void* payload) const;
+        void LinkOwner(BlockHeader* header);
+        void UnlinkOwner(BlockHeader* header);
+        void ReleaseAllChunks();
 
+        static size_t RoundUp(size_t value, size_t alignment);
     };
 
     class CSmartMemoryEngine

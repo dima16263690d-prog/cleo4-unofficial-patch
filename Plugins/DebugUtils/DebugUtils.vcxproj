@@ -75,6 +75,7 @@
   <ItemGroup>
     <ClCompile Include="DebugUtils.cpp" />
     <ClCompile Include="DebugUtils.Logging.cpp" />
+    <ClCompile Include="DebugUtils.FrameTime.cpp" />
     <ClCompile Include="DebugUtils.CrashInfo.cpp" />
     <ClCompile Include="DebugUtils.StackWalk.cpp" />
     <ClCompile Include="DebugUtils.CrashReport.cpp" />

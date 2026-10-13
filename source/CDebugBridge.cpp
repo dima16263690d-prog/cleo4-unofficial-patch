@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "CDebugBridge.h"
 #include "CCleoMemoryManager.h"
+#include "CCustomOpcodeSystem.h"
 
 #include <windows.h>
 #include <cstdarg>
@@ -80,6 +81,9 @@ extern "C" BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled)
         &CLEO::g_crashSnapshotEnabled,
         enabled ? 1 : 0
     );
+
+    // The crash snapshot records opcodes through the active-path observer.
+    CLEO::RefreshOpcodeObservation();
     return TRUE;
 }
 
@@ -93,6 +97,9 @@ extern "C" BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats)
     stats->totalBlocks = snapshot.totalBlocks;
     stats->totalBytes = snapshot.totalBytes;
     stats->peakBytes = snapshot.peakBytes;
+    stats->reservedBytes = snapshot.reservedBytes;
+    stats->committedBytes = snapshot.committedBytes;
+    stats->recyclableBytes = snapshot.recyclableBytes;
     return TRUE;
 }
 

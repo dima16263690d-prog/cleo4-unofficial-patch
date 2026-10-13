@@ -160,6 +160,104 @@ DWORD WINAPI CLEO_Audio_GetType(DWORD stream);
 void  WINAPI CLEO_Audio_SetType(DWORD stream, DWORD type);
 BOOL  WINAPI CLEO_Audio_Set3dSourceSize(DWORD stream, float radius);
 
+/*
+    --------------------------------------------------------------------------
+    Plugin SDK 2.0
+    --------------------------------------------------------------------------
+
+    A single, safe surface for third-party plugins on top of the existing
+    CLEO 4 opcode registry. It adds:
+
+      - opcode metadata (name, parameter signature) exposed to tools and the
+        crash reporter;
+      - parameter validation helpers so a handler never has to trust the
+        script blindly;
+      - error reporting that names the script and opcode;
+      - object lifetime callbacks (CLEO_CB_SCRIPT_CREATED / _DELETED) and a
+        per-script context slot for plugin-owned state;
+      - an opcode-registration notification (CLEO_CB_SCRIPT_OPCODE_REGISTERED).
+
+    Legacy plugins that only call CLEO_RegisterOpcode keep working unchanged:
+    the 2.0 entry points are additive and the old ABI is preserved.
+*/
+
+// Parameter signature characters understood by CLEO_OpcodeValidate:
+//   'i' int, 'f' float, 's' string, 'v' variable/pointer, '*' any, digits are
+//   ignored (used only for readability, e.g. "ii" == 2 ints).
+// CLEO_OpcodeParamKind, CLEO_OpcodeInfo and CLEO_ScriptProfile are declared in
+// CLEO_Debug.h, which this header includes.
+
+typedef void (__stdcall *CLEO_ScriptCreatedCallback)(CScriptThread* thread);
+
+// Register an opcode together with its metadata. The name/params/description
+// pointers must stay valid for as long as the plugin is loaded (string
+// literals are the normal case). Returns FALSE if the opcode is already taken
+// or the callback is null.
+BOOL  WINAPI CLEO_RegisterOpcodeEx(WORD opcode, _pOpcodeHandler callback,
+                                   const char* name, const char* params,
+                                   const char* description);
+
+// Metadata query. Returns FALSE when the opcode is unknown. The returned
+// CLEO_OpcodeInfo is filled from CLEO's own registry; string pointers are
+// borrowed and must not be freed by the caller.
+BOOL  WINAPI CLEO_GetOpcodeInfo(WORD opcode, CLEO_OpcodeInfo* info);
+
+// Fill paramCount kinds from a signature string such as "iif". Returns the
+// number of characters that were recognised, or -1 on invalid input.
+int   WINAPI CLEO_ParseParamSignature(const char* signature,
+                                      CLEO_OpcodeParamKind* out, int maxOut);
+
+// Validate that the next parameters in the script match the signature. This
+// only inspects the parameter type bytes; it does not consume them. Returns
+// TRUE when every parameter is acceptable, FALSE otherwise.
+BOOL  WINAPI CLEO_OpcodeValidate(CScriptThread* thread, const char* signature);
+
+// Report a plugin error. The message is routed through the CLEO debug log
+// (DebugUtils) so it lands in the same stream as core diagnostics.
+void  WINAPI CLEO_ReportError(const char* message);
+
+// Per-script plugin context. Values are keyed by the calling plugin module so
+// two plugins can never collide. A key of 0 uses the calling module itself.
+void* WINAPI CLEO_GetScriptContext(CScriptThread* thread, uintptr_t key);
+BOOL  WINAPI CLEO_SetScriptContext(CScriptThread* thread, uintptr_t key, void* value);
+
+// Script execution profiler (CLEO_ScriptProfile is declared in CLEO_Debug.h).
+// Profiling is off by default; enable it before reading counters. Returns the
+// previous enabled state.
+BOOL  WINAPI CLEO_SetProfilingEnabled(BOOL enabled);
+
+// Returns the number of scripts currently tracked (0 when profiling is off).
+DWORD WINAPI CLEO_GetScriptProfileCount();
+
+// Fills one entry by index (0 .. count-1). Returns FALSE when out of range.
+BOOL  WINAPI CLEO_GetScriptProfile(DWORD index, CLEO_ScriptProfile* profile);
+
+// Resets every per-script counter so the next report covers exactly the
+// interval since this call. The uptime total is kept.
+void  WINAPI CLEO_ResetScriptProfiles();
+
+// Enables/disables self-timing of the profiler's opcode instrumentation. When
+// on, CLEO_ScriptProfile::netMs excludes the instrumentation cost (two QPC
+// reads per opcode). Off by default. Returns TRUE.
+BOOL  WINAPI CLEO_SetProfilerOverheadEnabled(BOOL enabled);
+
+// Fills up to `max` opcodes ordered by execution count (descending). Returns the
+// number written. CLEO_OpcodeCount is declared in CLEO_Debug.h.
+DWORD WINAPI CLEO_GetTopOpcodes(CLEO_OpcodeCount* out, DWORD max);
+
+// Unified plugin resource registry. Register any allocation whose lifetime
+// should end when the plugin is unloaded; `release` runs once, right before the
+// module is unmapped, and may be null for a resource that needs no cleanup.
+// `kind` is a borrowed diagnostic tag (string literal). Registering the same
+// pointer twice returns FALSE. CLEO owns the registry, not the resource.
+// CLEO_PluginResourceReleaseFn is declared in CLEO_Debug.h, included above.
+BOOL  WINAPI CLEO_RegisterPluginResource(const char* kind, void* resource,
+                                         CLEO_PluginResourceReleaseFn release);
+
+// Remove a resource from the registry without running its release callback.
+// Safe to call for an unknown resource; returns FALSE then.
+BOOL  WINAPI CLEO_UnregisterPluginResource(void* resource);
+
 CScriptThread* WINAPI CLEO_CreateCustomScript(CScriptThread* fromThread, const char *script_name, int label);
 
 CScriptThread* WINAPI CLEO_GetLastCreatedCustomScript();
@@ -167,6 +265,15 @@ CScriptThread* WINAPI CLEO_GetLastCreatedCustomScript();
 void WINAPI CLEO_AddScriptDeleteDelegate(FuncScriptDeleteDelegateT func);
 
 void WINAPI CLEO_RemoveScriptDeleteDelegate(FuncScriptDeleteDelegateT func);
+
+// Requests a streaming memory budget (CStreaming::ms_memoryAvailable, in MB) for
+// GTA SA 1.0. The value is stored and applied at SCM init, so the engine's own
+// streaming initialisation cannot clobber it. 0 = leave the game/mod value
+// untouched; -1 = auto (1024 MB with Large Address Aware, else 512 MB); >0 = that
+// many MB. The value is only ever raised, never lowered, and unknown game
+// versions are left unchanged. Returns the previous requested value.
+// Call before the game finishes loading (e.g. from a plugin's init).
+int WINAPI CLEO_SetStreamingMemoryLimit(int limitMb);
 
 #ifdef __cplusplus
 }

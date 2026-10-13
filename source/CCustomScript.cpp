@@ -4,6 +4,7 @@
 #include "crc32.h"
 #include "ScmFunction.h"
 #include "CCleoMemoryManager.h"
+#include "CScriptProfiler.h"
 #include <cstring>
 
 namespace CLEO
@@ -117,8 +118,8 @@ namespace CLEO
             if (*useTextCommands == 1)
                 *useTextCommands = 0;
         }
-		
-		ProcessScript(this);
+
+        ProcessScript(this);
 
         StoreScriptSpecifics();
     }
@@ -363,8 +364,10 @@ memcpy(Name, parent->Name, sizeof(Name));
         if (cleoState.ownedBuffer)
             delete[] cleoState.ownedBuffer;
 
-		RunScriptDeleteDelegate(reinterpret_cast<CRunningScript*>(this));
-		if (lastScriptCreated == this) lastScriptCreated = nullptr;
+        if (g_scriptProfilerEnabled != 0)
+            CScriptProfiler::Get().OnScriptDeleted(this);
+        RunScriptDeleteDelegate(reinterpret_cast<CRunningScript*>(this));
+        if (lastScriptCreated == this) lastScriptCreated = nullptr;
     }
 
 }

@@ -24,6 +24,7 @@
 #include <vector>
 #include <set>
 #include <cstdint>
+#include <intrin.h>
 
 // New plugin-sdk: RenderWare types must be available before GTA SA animation/pool headers.
 #include <RenderWare.h>

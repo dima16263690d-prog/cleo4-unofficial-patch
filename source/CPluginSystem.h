@@ -7,6 +7,7 @@
 #include <windows.h>
 #include "FileEnumerator.h"
 #include "CDebugBridge.h"
+#include "CScriptPluginSdk.h"
 
 namespace CLEO
 {
@@ -117,7 +118,15 @@ namespace CLEO
             for (auto it = plugins.rbegin(); it != plugins.rend(); ++it)
             {
                 if (*it)
+                {
+                    // Release everything the plugin owns before its code is
+                    // unmapped: opcode metadata, per-script contexts, registered
+                    // resources (with their release callbacks) and event
+                    // callbacks. ReleaseModule is idempotent, so a stray second
+                    // call cannot corrupt state.
+                    PluginSdk::ReleaseModule(*it);
                     FreeLibrary(*it);
+                }
             }
 
             plugins.clear();

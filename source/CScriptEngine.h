@@ -29,6 +29,9 @@ namespace CLEO
         std::unordered_set<const CRunningScript*> m_activeCustomScriptRegistry;
         std::unordered_set<const CRunningScript*> m_pendingDeleteRegistry;
         std::unordered_map<std::string, std::vector<CCustomScript*>> m_customScriptsByName;
+        // Reverse index: script pointer -> owning CCustomScript. Gives O(1)
+        // name/pointer resolution without reinterpreting foreign pointers.
+        std::unordered_map<const CRunningScript*, CCustomScript*> m_customScriptByPtr;
 
         // Lifecycle state for the existing single-threaded CLEO engine.
         // GTA's active queue remains the authoritative execution order.
@@ -50,6 +53,9 @@ namespace CLEO
         void							SaveState();
         CRunningScript			*	FindScriptNamed(const char *);
         CCustomScript			*	FindCustomScriptNamed(const char*);
+        // O(1) reverse-index lookup: returns the owning CCustomScript for a
+        // registered pointer, or nullptr for native/unregistered scripts.
+        CCustomScript			*	FindCustomScriptByPtr(const CRunningScript* script) const;
         CCustomScript			*	CreateCustomScript(CRunningScript *fromThread, const char *scriptName, int label);
         bool							IsActiveScriptPtr(const CRunningScript *script) const;
         bool							IsValidScriptPtr(const CRunningScript *script) const;

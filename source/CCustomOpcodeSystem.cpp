@@ -8,7 +8,10 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
+#include "CDebugBridge.h"
 #include "CCustomOpcodeSystem.Internal.h"
+#include "CScriptProfiler.h"
+#include "CScriptPluginSdk.h"
 
 namespace CLEO {
 	DWORD FUNC_fopen;
@@ -126,7 +129,7 @@ namespace CLEO {
 	OpcodeResult __stdcall opcode_0AEE(CRunningScript *thread);
 	OpcodeResult __stdcall opcode_0AEF(CRunningScript *thread);
 
-	CustomOpcodeHandler customOpcodeHandlers[100] =
+	CustomOpcodeHandler customOpcodeHandlersEx[100] =
 	{
 		opcode_0A8C, opcode_0A8D, opcode_0A8E, opcode_0A8F, opcode_0A90,
 		opcode_0A91, opcode_0A92, opcode_0A93, opcode_0A94, opcode_0A95,
@@ -162,8 +165,134 @@ namespace CLEO {
 	ScriptDeleteDelegate scriptDeleteDelegate;
 	void RunScriptDeleteDelegate(CRunningScript *script)
 	{
+		// Let plugins and legacy delegates observe the script while its
+		// per-script state is still available (they may read it to free
+		// resources), then drop the SDK 2.0 state.
 		NotifyScriptDeleted(script);
 		scriptDeleteDelegate(script);
+		PluginSdk::OnScriptDeleted(script);
+	}
+
+	// Opcode dispatch tables (defined further below; declared here so the
+	// observation wrapper can be installed/uninstalled before they are defined).
+	extern _OpcodeHandler *oldOpcodeHandlerTable;
+	extern _OpcodeHandler newOpcodeHandlerTable[329];
+
+	// ------------------------------------------------------------------
+	// Active-path opcode observation
+	// ------------------------------------------------------------------
+	// GTA's script loop reads the opcode itself and calls
+	// opcodeHandlerTable[opcode/100](thread, opcode) directly. The legacy CLEO
+	// loop that used to host the per-opcode debug callbacks and the profiler is
+	// NOT installed, so without this wrapper those observers would never fire.
+	//
+	// Every group in the active table is wrapped, so the observer sees every
+	// opcode (00xx control flow, 0Axx/0Bxx CLEO opcodes, ...). A single indexed
+	// table of the captured originals keeps the forward cheap: the wrapper looks
+	// up the real handler by opcode/100.
+	constexpr size_t kOpcodeGroupCount = 329;
+	_OpcodeHandler g_originalHandlers[kOpcodeGroupCount];
+	bool g_opcodeObservationInstalled = false;
+
+	OpcodeResult __fastcall ObservedOpcodeHandler(CRunningScript *thread, int, unsigned short opcode)
+	{
+		// GTA passes the NOT-flag-cleared opcode to the table, so strip the high
+		// bit before indexing and forwarding (group index must stay in range).
+		const unsigned short base = opcode & 0x7FFF;
+
+		if (g_scriptProfilerEnabled != 0)
+			CScriptProfiler::Get().OnOpcode(thread, base);
+
+		// No plugin observer registered: nothing can HANDLED/INTERRUPT the
+		// opcode, so skip the callback dispatch entirely. When only the crash
+		// snapshot is active, record the last opcode directly; that path is
+		// mutex-free and much cheaper than the generic notifiers.
+		if (!ScriptOpcodeCallbacksActive())
+		{
+			const bool crashSnapshot = g_crashSnapshotEnabled != 0;
+			if (crashSnapshot)
+				RecordCrashOpcodeBefore(thread, base);
+
+			OpcodeResult result = g_originalHandlers[base / 100](thread, base);
+
+			if (crashSnapshot)
+				RecordCrashOpcodeResult(static_cast<LONG>(result));
+
+			return result;
+		}
+
+		const int action = NotifyScriptOpcodeProcessBefore(thread, base);
+
+		OpcodeResult result;
+		if (action == CLEO_DEBUG_OPCODE_HANDLED)
+			result = static_cast<OpcodeResult>(OR_CONTINUE);
+		else if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
+			result = static_cast<OpcodeResult>(OR_INTERRUPT);
+		else
+			result = g_originalHandlers[base / 100](thread, base);
+
+		if (result != OR_INTERRUPT || action == CLEO_DEBUG_OPCODE_PASSTHROUGH)
+			result = NotifyScriptOpcodeProcessAfter(thread, base, result);
+
+		return result;
+	}
+
+	void InstallOpcodeObservation()
+	{
+		if (oldOpcodeHandlerTable == nullptr || g_opcodeObservationInstalled)
+			return;
+
+		// Snapshot the real handlers from the active table (newOpcodeHandlerTable;
+		// MA_OPCODE_HANDLER_REF points at it) and point every slot at the wrapper.
+		// Every slot is non-null here: Inject() copies groups 0..27 from GTA's
+		// table and fills 28..328 with extraOpcodeHandler before this runs, so
+		// the wrapper never chains into a null handler.
+		for (size_t group = 0; group < kOpcodeGroupCount; ++group)
+		{
+			g_originalHandlers[group] = newOpcodeHandlerTable[group];
+			newOpcodeHandlerTable[group] = reinterpret_cast<_OpcodeHandler>(ObservedOpcodeHandler);
+		}
+
+		// Keep the source table (groups 0..27) in sync too, so a later handler
+		// registration against it is not shadowed.
+		for (size_t group = 0; group < 28; ++group)
+			oldOpcodeHandlerTable[group] = reinterpret_cast<_OpcodeHandler>(ObservedOpcodeHandler);
+
+		g_opcodeObservationInstalled = true;
+	}
+
+	void RemoveOpcodeObservation()
+	{
+		if (!g_opcodeObservationInstalled)
+			return;
+
+		for (size_t group = 0; group < kOpcodeGroupCount; ++group)
+			newOpcodeHandlerTable[group] = g_originalHandlers[group];
+
+		if (oldOpcodeHandlerTable != nullptr)
+		{
+			for (size_t group = 0; group < 28; ++group)
+				oldOpcodeHandlerTable[group] = g_originalHandlers[group];
+		}
+
+		g_opcodeObservationInstalled = false;
+	}
+
+	void RefreshOpcodeObservation()
+	{
+		// Observation is needed exactly when some consumer is listening:
+		// a plugin opcode observer, the per-script profiler, or the crash
+		// snapshot recorder. Keeping the wrapper out of the hot path otherwise
+		// means zero overhead for players who use none of them.
+		const bool needed =
+			ScriptOpcodeCallbacksActive() ||
+			g_scriptProfilerEnabled != 0 ||
+			g_crashSnapshotEnabled != 0;
+
+		if (needed)
+			InstallOpcodeObservation();
+		else
+			RemoveOpcodeObservation();
 	}
 
 	_OpcodeHandler *oldOpcodeHandlerTable;
@@ -172,6 +301,17 @@ namespace CLEO {
 	// Optional low opcode callbacks are owned by optional plugins.
 	CustomOpcodeHandler lowOpcodeHandlers[0x0AF0] = {};
 	CustomOpcodeHandler extraOpcodeHandlers[100][300];
+
+	void UnregisterOpcodeSlot(WORD opcode)
+	{
+		if (opcode > 0x7FFF)
+			return;
+
+		if (opcode < 0x0AF0)
+			lowOpcodeHandlers[opcode] = nullptr;
+		else
+			extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] = nullptr;
+	}
 
 	CBuildingPool		**buildingPool = nullptr;			// add for future CLEO releases
 	CVehiclePool			**vehiclePool = nullptr;
@@ -217,9 +357,18 @@ namespace CLEO {
 	{
 		last_custom_opcode = opcode;
 		last_script = thread;
-		return customOpcodeHandlers[opcode - 0x0A8C](thread);
+		return customOpcodeHandlersEx[opcode - 0x0A8C](thread);
 	}
 
+	// Legacy CLEO4 script-execution loop, kept as the reference implementation.
+	//
+	// It is intentionally NOT installed: the 0x469FF6 hook was removed to
+	// restore the v1.0-test path, so GTA's own script loop drives opcode
+	// dispatch through newOpcodeHandlerTable. This loop is therefore dormant.
+	// Per-opcode profiling and debug callbacks are observed by the
+	// ObservedOpcodeHandler wrapper that InstallOpcodeObservation() places in
+	// newOpcodeHandlerTable; per-script timing frames come from
+	// HOOK_ProcessScript.
 	char ExecuteLegacyScriptLoop(CRunningScript *thread)
 	{
 		OpcodeResult res;
@@ -247,9 +396,48 @@ namespace CLEO {
 				cs->SetNotFlag((opcode & 0x8000) != 0);
 				opcode &= 0x7FFF;
 
-				// Exact legacy CLEO4 dispatch: use the prepared opcode table
-				// exactly as v1.0-test did. No debug/fast dispatcher is involved.
-				res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+				res = static_cast<OpcodeResult>(OR_INTERRUPT);
+				if (g_scriptProfilerEnabled != 0)
+					CScriptProfiler::Get().OnOpcode(thread, opcode);
+				if (opcode >= 0x0A8C && opcode <= 0x0AEF)
+				{
+					last_custom_opcode = opcode;
+					last_script = thread;
+					res = customOpcodeHandlersEx[opcode - 0x0A8C](thread);
+				}
+				else if (opcode >= 0x0AF0 &&
+				         extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] != nullptr)
+				{
+					last_custom_opcode = opcode;
+					last_script = thread;
+					res = extraOpcodeHandlers[opcode % 100][opcode / 100 - 28](thread);
+				}
+				else
+				{
+					// Legacy CLEO4 dispatch: use the prepared opcode table exactly as
+					// v1.0-test did. Built-in and user opcodes above are entered
+					// directly; the debug callbacks and profiler run only when a
+					// plugin registered an opcode observer.
+					if (g_crashSnapshotEnabled != 0 ||
+					    ScriptOpcodeCallbacksActive() ||
+					    g_scriptProfilerEnabled != 0)
+					{
+						const int action = NotifyScriptOpcodeProcessBefore(thread, opcode);
+						if (action == CLEO_DEBUG_OPCODE_HANDLED)
+							res = static_cast<OpcodeResult>(OR_CONTINUE);
+						else if (action == CLEO_DEBUG_OPCODE_INTERRUPT)
+							res = static_cast<OpcodeResult>(OR_INTERRUPT);
+						else
+							res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+
+						if (res != OR_INTERRUPT || action == CLEO_DEBUG_OPCODE_PASSTHROUGH)
+							res = NotifyScriptOpcodeProcessAfter(thread, opcode, res);
+					}
+					else
+					{
+						res = newOpcodeHandlerTable[opcode / 100](thread, opcode);
+					}
+				}
 			} while (res == OR_CONTINUE);
 		}
 		catch (const char *e)
@@ -289,6 +477,11 @@ namespace CLEO {
 
 		// fill the rest with default handler
 		std::fill(newOpcodeHandlerTable + 28, newOpcodeHandlerTable + 329, reinterpret_cast<_OpcodeHandler>(extraOpcodeHandler));
+
+		// Now that newOpcodeHandlerTable is fully built, arm the observer wrapper
+		// if any consumer is already listening. Otherwise it stays off (zero
+		// overhead) and gets installed on demand by RefreshOpcodeObservation().
+		RefreshOpcodeObservation();
 
 		// Keep the original CLEO4 opcode execution path.
 		// The experimental fast dispatcher is not installed into the legacy
@@ -1003,6 +1196,9 @@ extern "C"
 		if (opcode > 0x7FFF || callback == nullptr)
 			return FALSE;
 
+		// Legacy entry point. It keeps the historical behaviour (a rejected
+		// duplicate only logs a warning) and additionally records ownership
+		// metadata so the SDK 2.0 queries and unload cleanup can see it.
 		if (opcode < 0x0AF0)
 		{
 			CustomOpcodeHandler& dst = lowOpcodeHandlers[opcode];
@@ -1014,6 +1210,9 @@ extern "C"
 			}
 
 			dst = callback;
+			PluginSdk::RegisterOpcode(opcode, callback, nullptr, nullptr, nullptr,
+				PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback)), true);
+			NotifyScriptOpcodeRegistered(opcode);
 			return TRUE;
 		}
 
@@ -1025,7 +1224,153 @@ extern "C"
 			return FALSE;
 		}
 		dst = callback;
+		PluginSdk::RegisterOpcode(opcode, callback, nullptr, nullptr, nullptr,
+			PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback)), true);
+		NotifyScriptOpcodeRegistered(opcode);
 		return TRUE;
+	}
+
+	BOOL WINAPI CLEO_RegisterOpcodeEx(WORD opcode, CustomOpcodeHandler callback,
+		const char* name, const char* params, const char* description)
+	{
+		if (opcode > 0x7FFF || callback == nullptr)
+			return FALSE;
+
+		const HMODULE module =
+			PluginSdk::ModuleForAddress(reinterpret_cast<const void*>(callback));
+
+		// Check both the dispatch table and the metadata index first, then
+		// commit, so a rejected registration never leaves half the state set.
+		if (opcode < 0x0AF0)
+		{
+			if (lowOpcodeHandlers[opcode] != nullptr)
+				return FALSE;
+		}
+		else
+		{
+			if (extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] != nullptr)
+				return FALSE;
+		}
+
+		if (!PluginSdk::RegisterOpcode(opcode, callback, name, params, description, module))
+			return FALSE;
+
+		if (opcode < 0x0AF0)
+			lowOpcodeHandlers[opcode] = callback;
+		else
+			extraOpcodeHandlers[opcode % 100][opcode / 100 - 28] = callback;
+
+		NotifyScriptOpcodeRegistered(opcode);
+		return TRUE;
+	}
+
+	BOOL WINAPI CLEO_GetOpcodeInfo(WORD opcode, CLEO_OpcodeInfo* info)
+	{
+		return PluginSdk::GetOpcodeInfo(opcode, info) ? TRUE : FALSE;
+	}
+
+	int WINAPI CLEO_ParseParamSignature(const char* signature,
+		CLEO_OpcodeParamKind* out, int maxOut)
+	{
+		return PluginSdk::ParseSignature(signature, out, maxOut);
+	}
+
+	BOOL WINAPI CLEO_OpcodeValidate(CRunningScript* thread, const char* signature)
+	{
+		return PluginSdk::ValidateParams(thread, signature) ? TRUE : FALSE;
+	}
+
+	void WINAPI CLEO_ReportError(const char* message)
+	{
+		PluginSdk::ReportError(message);
+	}
+
+	BOOL WINAPI CLEO_RegisterPluginResource(const char* kind, void* resource,
+		CLEO_PluginResourceReleaseFn release)
+	{
+		return PluginSdk::RegisterResource(
+			PluginSdk::ModuleForAddress(_ReturnAddress()),
+			kind, resource,
+			reinterpret_cast<PluginSdk::PluginResourceReleaseFn>(release)) ? TRUE : FALSE;
+	}
+
+	BOOL WINAPI CLEO_UnregisterPluginResource(void* resource)
+	{
+		return PluginSdk::UnregisterResource(
+			PluginSdk::ModuleForAddress(_ReturnAddress()), resource) ? TRUE : FALSE;
+	}
+
+	void* WINAPI CLEO_GetScriptContext(CRunningScript* thread, uintptr_t key)
+	{
+		return PluginSdk::GetScriptContext(thread, key, PluginSdk::ModuleForAddress(_ReturnAddress()));
+	}
+
+	BOOL WINAPI CLEO_SetScriptContext(CRunningScript* thread, uintptr_t key, void* value)
+	{
+		return PluginSdk::SetScriptContext(thread, key, value,
+			PluginSdk::ModuleForAddress(_ReturnAddress())) ? TRUE : FALSE;
+	}
+
+	BOOL WINAPI CLEO_SetProfilingEnabled(BOOL enabled)
+	{
+		const BOOL previous = CScriptProfiler::Get().SetEnabled(enabled != FALSE) ? TRUE : FALSE;
+		// The profiler counts opcodes through the active-path observer wrapper.
+		RefreshOpcodeObservation();
+		return previous;
+	}
+
+	DWORD WINAPI CLEO_GetScriptProfileCount()
+	{
+		return static_cast<DWORD>(CScriptProfiler::Get().GetCount());
+	}
+
+	BOOL WINAPI CLEO_GetScriptProfile(DWORD index, CLEO_ScriptProfile* profile)
+	{
+		if (profile == nullptr)
+			return FALSE;
+
+		CScriptProfiler::Snapshot snapshot;
+		if (!CScriptProfiler::Get().GetSnapshot(index, snapshot))
+			return FALSE;
+
+		profile->scriptPtr = snapshot.scriptPtr;
+		memcpy(profile->scriptName, snapshot.name, 9);
+		// Public surface reports milliseconds; internal resolution is us.
+		profile->totalMs = snapshot.totalUs / 1000;
+		profile->selfMs = snapshot.selfUs / 1000;
+		profile->netMs = snapshot.netUs / 1000;
+		profile->opcodes = snapshot.opcodes;
+		profile->ticks = snapshot.ticks;
+		return TRUE;
+	}
+
+	void WINAPI CLEO_ResetScriptProfiles()
+	{
+		CScriptProfiler::Get().Reset();
+	}
+
+	BOOL WINAPI CLEO_SetProfilerOverheadEnabled(BOOL enabled)
+	{
+		CScriptProfiler::Get().SetMeasureOverhead(enabled != FALSE);
+		return TRUE;
+	}
+
+	DWORD WINAPI CLEO_GetTopOpcodes(CLEO_OpcodeCount* out, DWORD max)
+	{
+		if (out == nullptr || max == 0)
+			return 0;
+
+		std::vector<CScriptProfiler::OpcodeCount> counts(max);
+		const size_t written =
+			CScriptProfiler::Get().GetTopOpcodes(counts.data(), max);
+
+		for (size_t i = 0; i < written; ++i)
+		{
+			out[i].opcode = counts[i].opcode;
+			out[i].reserved = 0;
+			out[i].count = counts[i].count;
+		}
+		return static_cast<DWORD>(written);
 	}
 
 #ifdef _MSC_VER

@@ -18,6 +18,8 @@
 #include <sstream>
 #include <regex>
 #include <CTimer.h>
+#include <d3d9.h>
+#pragma comment(lib, "d3d9.lib")
 
 void DebugUtils::OpenLogs()
 {
@@ -31,6 +33,12 @@ void DebugUtils::OpenLogs()
         m_memoryLog.open(MemoryLogPath(), std::ios::out | std::ios::trunc);
     if (m_diagnosticLogEnabled)
         m_diagnosticLog.open(DiagnosticLogPath(), std::ios::out | std::ios::trunc);
+    if (m_frameTimeEnabled)
+    {
+        m_frameTimeLog.open(FrameTimeLogPath(), std::ios::out | std::ios::trunc);
+        m_frameTimeBytes = 0;
+        m_frameTimeLimitNoticeWritten = false;
+    }
 
     if (!m_coreLog.is_open())
         OutputDebugStringA("[debugutils] failed to open cleo_core.log\n");
@@ -120,6 +128,12 @@ void DebugUtils::CloseLogs()
     {
         m_memoryLog.flush();
         m_memoryLog.close();
+    }
+
+    if (m_frameTimeLog.is_open())
+    {
+        m_frameTimeLog.flush();
+        m_frameTimeLog.close();
     }
 }
 
@@ -416,6 +430,173 @@ void DebugUtils::FlushDiagnosticRepeatLocked()
     m_lastDiagnosticRepeatCount = 0;
 }
 
+void DebugUtils::WriteProfilerReport(const char* reason)
+{
+    if (!m_profilerEnabled)
+        return;
+
+    const DWORD count = CLEO_GetScriptProfileCount();
+    if (count == 0)
+        return;
+
+    std::vector<CLEO_ScriptProfile> profiles;
+    profiles.reserve(count);
+    for (DWORD i = 0; i < count; ++i)
+    {
+        CLEO_ScriptProfile profile{};
+        if (CLEO_GetScriptProfile(i, &profile))
+            profiles.push_back(profile);
+    }
+
+    if (profiles.empty())
+        return;
+
+    // Rank by self time: this is wall-clock time on the game thread excluding
+    // time spent in child scripts, i.e. the time each script really costs.
+    std::sort(
+        profiles.begin(),
+        profiles.end(),
+        [](const CLEO_ScriptProfile& a, const CLEO_ScriptProfile& b)
+        {
+            return a.selfMs > b.selfMs;
+        }
+    );
+
+    const DWORD top = std::min<DWORD>(
+        m_profilerTop,
+        static_cast<DWORD>(profiles.size())
+    );
+
+    unsigned long long totalMs = 0;
+    unsigned long long totalOpcodes = 0;
+    for (const auto& profile : profiles)
+    {
+        totalMs += profile.selfMs;
+        totalOpcodes += profile.opcodes;
+    }
+
+    const char* tag = reason ? reason : "interval";
+
+    WriteDiagnostic(
+        "==================== script profile (%s) ====================",
+        tag
+    );
+    // selfMs values are already milliseconds; totalMs is their sum (do NOT
+    // divide by 1000, that would silently report seconds under a ms label).
+    WriteDiagnostic(
+        "scripts=%u total_self_ms=%llu total_opcodes=%llu top=%u overhead=%u",
+        static_cast<unsigned>(profiles.size()),
+        totalMs,
+        totalOpcodes,
+        static_cast<unsigned>(top),
+        m_profilerOverheadMode ? 1u : 0u
+    );
+    WriteDiagnostic(
+        "%-3s %-9s %12s %12s %12s %12s %10s %9s",
+        "#", "script", "self_ms", "net_ms", "total_ms", "opcodes", "ticks", "ms/tick"
+    );
+
+    for (DWORD i = 0; i < top; ++i)
+    {
+        const auto& profile = profiles[i];
+
+        char name[9];
+        memcpy(name, profile.scriptName, 8);
+        name[8] = '\0';
+        // scriptName is NUL-terminated. Keep ASCII and map any high/non-printable
+        // byte to '?', but stop at the terminator so the remaining column isn't
+        // filled with '?' scratch.
+        for (int c = 0; c < 8 && name[c] != '\0'; ++c)
+        {
+            const unsigned char ch = static_cast<unsigned char>(name[c]);
+            if (ch < 0x20 || ch >= 0x7F)
+                name[c] = '?';
+        }
+
+        const double perTickMs = profile.ticks != 0
+            ? static_cast<double>(profile.selfMs) / static_cast<double>(profile.ticks)
+            : 0.0;
+
+        // netMs is 0 unless overhead measurement is on; fall back to selfMs so
+        // the column stays meaningful in the common case.
+        const unsigned long long netMs =
+            m_profilerOverheadMode ? profile.netMs : profile.selfMs;
+
+        WriteDiagnostic(
+            "%-3u %-9s %12.3f %12.3f %12.3f %12llu %10llu %9.4f",
+            i + 1,
+            name,
+            static_cast<double>(profile.selfMs),
+            static_cast<double>(netMs),
+            static_cast<double>(profile.totalMs),
+            profile.opcodes,
+            profile.ticks,
+            perTickMs
+        );
+    }
+
+    // Hot-opcode histogram: which opcodes the whole script set executes most.
+    if (m_profilerTopOpcodes > 0)
+    {
+        std::vector<CLEO_OpcodeCount> opcodes(m_profilerTopOpcodes);
+        const DWORD opcodeCount =
+            CLEO_GetTopOpcodes(opcodes.data(), m_profilerTopOpcodes);
+
+        if (opcodeCount > 0)
+        {
+            WriteDiagnostic("---- top opcodes (execution count) ----");
+            WriteDiagnostic("%-3s %-8s %16s %9s", "#", "opcode", "count", "share%");
+            for (DWORD i = 0; i < opcodeCount; ++i)
+            {
+                const double share = totalOpcodes != 0
+                    ? 100.0 * static_cast<double>(opcodes[i].count)
+                        / static_cast<double>(totalOpcodes)
+                    : 0.0;
+                WriteDiagnostic(
+                    "%-3u %04X     %16llu %8.2f%%",
+                    i + 1,
+                    opcodes[i].opcode,
+                    opcodes[i].count,
+                    share
+                );
+            }
+        }
+    }
+
+    // If the diagnostic log is disabled the measurements would otherwise be
+    // lost, so mirror a compact summary into the always-on core log.
+    if (!m_diagnosticLogEnabled)
+    {
+        WriteCore(
+            "[profiler] %s scripts=%u total_self_ms=%llu opcodes=%llu",
+            tag,
+            static_cast<unsigned>(profiles.size()),
+            totalMs,
+            totalOpcodes
+        );
+
+        for (DWORD i = 0; i < top; ++i)
+        {
+            const auto& profile = profiles[i];
+            WriteCore(
+                "[profiler] #%u '%.8s' self_ms=%.3f total_ms=%.3f opcodes=%llu ticks=%llu",
+                i + 1,
+                profile.scriptName,
+                static_cast<double>(profile.selfMs),
+                static_cast<double>(profile.totalMs),
+                profile.opcodes,
+                profile.ticks
+            );
+        }
+    }
+
+    // Counters are cumulative since session start. Clearing them here makes the
+    // next report describe exactly the interval that follows. Skip on game end,
+    // where there is nothing left to measure.
+    if (reason == nullptr || strcmp(reason, "interval") == 0)
+        CLEO_ResetScriptProfiles();
+}
+
 void DebugUtils::WriteDiagnostic(const char* format, ...)
 {
     if (!m_diagnosticLogEnabled)
@@ -649,6 +830,8 @@ void DebugUtils::WriteCoreHeader()
         );
     }
 
+    WriteSystemInfo();
+
     WriteCore("//////////////////////// game / api ////////////////////////");
     WriteCore("[game] GTA SA version enum=%d", CLEO_GetGameVersion());
     WriteCore("[api] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
@@ -658,6 +841,113 @@ void DebugUtils::WriteCoreHeader()
     WriteCore("[api] CLEO_RegisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterCallback)));
     WriteCore("[api] CLEO_UnregisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_UnregisterCallback)));
     WriteCore("[gta] pActiveScripts address=0x%08X", kGtaSa10ActiveScripts);
+}
+
+// GPU, driver and display info, so a stutter report is self-contained and the
+// driver/vsync side can be checked without asking which card/driver is in use.
+// D3D9 is already loaded by the game, so this only queries the existing device.
+void DebugUtils::WriteSystemInfo()
+{
+    WriteCore("//////////////////////// system ////////////////////////");
+
+    char computer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD computerLen = sizeof(computer);
+    if (GetComputerNameA(computer, &computerLen))
+        WriteCore("[system] computer=%s", computer);
+
+    OSVERSIONINFOA os{};
+    os.dwOSVersionInfoSize = sizeof(os);
+#pragma warning(push)
+#pragma warning(disable : 4996) // GetVersionExA is fine for a diagnostic string
+    const BOOL haveOs = GetVersionExA(&os);
+#pragma warning(pop)
+    if (haveOs)
+        WriteCore(
+            "[system] os=%u.%u build=%u",
+            static_cast<unsigned>(os.dwMajorVersion),
+            static_cast<unsigned>(os.dwMinorVersion),
+            static_cast<unsigned>(os.dwBuildNumber)
+        );
+
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+    WriteCore(
+        "[system] cpus=%u arch=%u",
+        static_cast<unsigned>(si.dwNumberOfProcessors),
+        static_cast<unsigned>(si.wProcessorArchitecture)
+    );
+
+    MEMORYSTATUSEX mem{};
+    mem.dwLength = sizeof(mem);
+    if (GlobalMemoryStatusEx(&mem))
+        WriteCore(
+            "[system] ram_total=%llu MB ram_avail=%llu MB",
+            mem.ullTotalPhys / (1024ull * 1024ull),
+            mem.ullAvailPhys / (1024ull * 1024ull)
+        );
+
+    // Display and GPU. The game already created a D3D9 device; enumerating the
+    // default adapter gives us the vendor/device ids and the driver string.
+    HDC hdc = GetDC(nullptr);
+    if (hdc)
+    {
+        const int width = GetDeviceCaps(hdc, HORZRES);
+        const int height = GetDeviceCaps(hdc, VERTRES);
+        const int refresh = GetDeviceCaps(hdc, VREFRESH);
+        const int bpp = GetDeviceCaps(hdc, BITSPIXEL);
+        WriteCore(
+            "[display] desktop=%dx%d bpp=%d refresh_hz=%d",
+            width, height, bpp, refresh
+        );
+        ReleaseDC(nullptr, hdc);
+    }
+
+    IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
+    if (d3d == nullptr)
+    {
+        WriteCore("[gpu] Direct3DCreate9 failed");
+        return;
+    }
+
+    const UINT adapters = d3d->GetAdapterCount();
+    WriteCore("[gpu] adapters=%u", static_cast<unsigned>(adapters));
+
+    for (UINT i = 0; i < adapters; ++i)
+    {
+        D3DADAPTER_IDENTIFIER9 id{};
+        if (FAILED(d3d->GetAdapterIdentifier(i, 0, &id)))
+            continue;
+
+        D3DDISPLAYMODE mode{};
+        if (SUCCEEDED(d3d->GetAdapterDisplayMode(i, &mode)))
+            WriteCore(
+                "[gpu] #%u %s vendor=0x%04X device=0x%04X driver='%s' version=%u.%u.%u.%u "
+                "mode=%ux%u@%u",
+                static_cast<unsigned>(i),
+                id.Description,
+                static_cast<unsigned>(id.VendorId),
+                static_cast<unsigned>(id.DeviceId),
+                id.Driver,
+                id.DriverVersion.HighPart >> 16,
+                id.DriverVersion.HighPart & 0xFFFF,
+                id.DriverVersion.LowPart >> 16,
+                id.DriverVersion.LowPart & 0xFFFF,
+                static_cast<unsigned>(mode.Width),
+                static_cast<unsigned>(mode.Height),
+                static_cast<unsigned>(mode.RefreshRate)
+            );
+        else
+            WriteCore(
+                "[gpu] #%u %s vendor=0x%04X device=0x%04X driver='%s'",
+                static_cast<unsigned>(i),
+                id.Description,
+                static_cast<unsigned>(id.VendorId),
+                static_cast<unsigned>(id.DeviceId),
+                id.Driver
+            );
+    }
+
+    d3d->Release();
 }
 
 void DebugUtils::WriteCoreThreadLayout()
@@ -908,9 +1198,13 @@ void DebugUtils::WriteCoreMemorySummary()
         if (haveScriptStats)
         {
             WriteMemory(
-                "         script_blocks=%llu script_mem=%s",
+                "         script_blocks=%llu script_mem=%s"
+                " fast_reserved=%s fast_committed=%s fast_recyclable=%s",
                 m_lastMemoryScriptBlocks,
-                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str()
+                MemoryBytes(static_cast<uint64_t>(m_lastMemoryScriptBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.reservedBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.committedBytes)).c_str(),
+                MemoryBytes(static_cast<uint64_t>(scriptStats.recyclableBytes)).c_str()
             );
         }
 
@@ -949,4 +1243,125 @@ void DebugUtils::WriteCoreMemorySummary()
     m_lastMemoryQueueCount = queueCount;
     m_lastMemoryCustomCount = customCount;
     m_memoryBaselineReady = true;
+}
+
+// Walk every loaded module, ask the kernel how many of its pages are resident
+// (PSAPI QueryWorkingSet), and print the total per module with the change since
+// the previous dump. This is what attributes private-bytes growth to a specific
+// DLL: CLEO itself shows up tiny and flat while the real grower stands out.
+void DebugUtils::WriteModuleMemoryMap()
+{
+    if (!m_memoryLogEnabled || CLEO_GetGameVersion() != GV_US10)
+        return;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return;
+
+    struct ModuleResident
+    {
+        std::string name;
+        unsigned long long resident;
+    };
+    std::vector<ModuleResident> modules;
+
+    MODULEENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+
+    if (Module32First(snapshot, &entry))
+    {
+        do
+        {
+            const BYTE* base = entry.modBaseAddr;
+            const size_t imageSize = entry.modBaseSize;
+            if (base == nullptr || imageSize == 0)
+                continue;
+
+            // QueryWorkingSet wants a PSAPI_WORKING_SET_INFORMATION: the first
+            // ULONG_PTR is the returned entry count, the entries follow it. The
+            // buffer is sized to this module's page count (plus the header slot).
+            const size_t pageCount = (imageSize + 0xFFFu) / 0x1000u;
+            std::vector<PVOID> pages(pageCount + 1);
+
+            if (!QueryWorkingSet(
+                    GetCurrentProcess(), pages.data(),
+                    static_cast<DWORD>(pages.size() * sizeof(PVOID))))
+                continue;
+
+            const ULONG_PTR count = *reinterpret_cast<ULONG_PTR*>(pages.data());
+
+            unsigned long long resident = 0;
+            const size_t maxEntries = pages.size() - 1;
+            for (ULONG_PTR i = 0; i < count && i < maxEntries; ++i)
+            {
+                // Bit 0 of a working-set block marks a resident page.
+                const uintptr_t bits = reinterpret_cast<uintptr_t>(pages[i + 1]);
+                if ((bits & 1u) != 0)
+                    resident += 0x1000ull;
+            }
+
+            // Convert the base module name to lowercase for stable keying.
+            char name[MAX_PATH] = {};
+            strncpy_s(name, sizeof(name), entry.szModule, _TRUNCATE);
+            for (char* p = name; *p != '\0'; ++p)
+                *p = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
+
+            modules.push_back(ModuleResident{
+                name,
+                resident
+            });
+        } while (Module32Next(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+
+    if (modules.empty())
+        return;
+
+    std::sort(
+        modules.begin(),
+        modules.end(),
+        [](const ModuleResident& a, const ModuleResident& b)
+        {
+            return a.resident > b.resident;
+        }
+    );
+
+    const double uptimeSeconds =
+        static_cast<double>(GetTickCount() - m_memorySessionStartTick) / 1000.0;
+
+    WriteMemory("=================== module memory map (t=%.0fs) ===================", uptimeSeconds);
+    WriteMemory("%-28s %12s %12s", "module", "resident", "delta");
+
+    for (const auto& module : modules)
+    {
+        const char* name =
+            module.name.size() > 28 ? module.name.c_str() + (module.name.size() - 28)
+                                    : module.name.c_str();
+
+        std::string deltaText = "-";
+        auto previous = m_lastModuleResident.find(module.name);
+        if (previous != m_lastModuleResident.end())
+        {
+            const long long delta =
+                static_cast<long long>(module.resident) -
+                static_cast<long long>(previous->second);
+            deltaText =
+                (delta < 0 ? "-" : "+") +
+                MemoryBytes(static_cast<uint64_t>(delta < 0 ? -delta : delta));
+        }
+
+        WriteMemory(
+            "%-28s %12s %12s",
+            name,
+            MemoryBytes(module.resident).c_str(),
+            deltaText.c_str()
+        );
+    }
+
+    // Remember this dump as the baseline for the next one. Rebuild the map from
+    // scratch so unloaded modules disappear.
+    m_lastModuleResident.clear();
+    for (const auto& module : modules)
+        m_lastModuleResident[module.name] = module.resident;
 }

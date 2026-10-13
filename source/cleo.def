@@ -53,3 +53,19 @@ EXPORTS
 	_CLEO_DebugRecordCrashOpcode@20		@49
 	_CLEO_DebugGetCrashSnapshot@4		@50
         _CLEO_DebugGetMemoryStats@4		@52
+        _CLEO_RegisterOpcodeEx@20		@53
+        _CLEO_GetOpcodeInfo@8		@54
+        _CLEO_ParseParamSignature@12		@55
+        _CLEO_OpcodeValidate@8		@56
+        _CLEO_ReportError@4		@57
+        _CLEO_GetScriptContext@8		@58
+        _CLEO_SetScriptContext@12		@59
+        _CLEO_GetScriptProfileCount@0		@60
+        _CLEO_GetScriptProfile@8		@61
+        _CLEO_ResetScriptProfiles@0		@62
+        _CLEO_SetProfilingEnabled@4             @63
+        _CLEO_RegisterPluginResource@12         @64
+        _CLEO_UnregisterPluginResource@4        @65
+        _CLEO_SetProfilerOverheadEnabled@4      @66
+        _CLEO_GetTopOpcodes@8                   @67
+        _CLEO_SetStreamingMemoryLimit@4         @68
