@@ -208,6 +208,9 @@ private:
     unsigned long long m_frameTimeStreamUsedMax = 0;
     unsigned long long m_frameTimeStreamAvail = 0;
     unsigned long long m_frameTimeStreamSamples = 0;
+    unsigned long long m_frameTimeStreamReqSum = 0;   // ms_numModelsRequested sum
+    unsigned long long m_frameTimeStreamReqMax = 0;
+    unsigned long long m_frameTimeStreamReqBusy = 0;  // frames with a pending request
 
     // Frame-period histogram. Fixed bucket edges in milliseconds so the same
     // bins are comparable across intervals; the last bucket is the overflow.
@@ -225,6 +228,7 @@ private:
         size_t scripts = 0;
         DWORD uptimeSec = 0;
         unsigned long long streamUsed = 0;  // ms_memoryUsed at the frame (bytes)
+        unsigned long long streamReq = 0;   // ms_numModelsRequested at the frame
     };
     static constexpr size_t kFrameTimeMaxWorst = 32;
     std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};

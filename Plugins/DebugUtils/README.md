@@ -112,9 +112,11 @@ Each report shows, for the interval:
 - the worst frames of the interval, with their logic_ms, active scripts and
   uptime, so a hitch can be tied to a moment and a script count;
 - streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
-  average and peak bytes held, and peak as a share of the budget, plus a
-  stream_MB column in the worst-frames table. This answers whether stutters line
-  up with streaming pressure (high/rising used) or not (used flat = the cause is
+  average and peak bytes held, peak as a share of the budget, plus pending model
+  requests (ms_numModelsRequested: avg/max, and the share of frames with a
+  request in flight), and stream_MB/req columns in the worst-frames table. This
+  answers whether stutters line up with streaming pressure (used near the budget,
+  or requests in flight) or not (used flat and req=0 = the cause is
   render/driver/vsync, not streaming).
 
 Streaming budget (GTA SA 1.0 only, StreamLimitMB): this ini key owns the
