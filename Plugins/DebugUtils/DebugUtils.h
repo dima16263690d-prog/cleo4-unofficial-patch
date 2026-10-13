@@ -180,6 +180,7 @@ private:
     DWORD m_frameTimeTopStutter = 15;     // worst frames listed per report
     bool m_frameTimeHistogramEnabled = true; // emit a frame-period histogram
     bool m_frameTimeStreamingEnabled = true; // snapshot ms_memoryUsed per frame (SA 1.0)
+    int  m_frameTimeStreamLimitMb = 0;       // request CStreaming budget: 0=off,-1=auto,>0=MB
     DWORD m_frameTimeMaxLogMegabytes = 16;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};

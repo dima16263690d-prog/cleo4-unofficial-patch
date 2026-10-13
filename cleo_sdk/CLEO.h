@@ -266,6 +266,15 @@ void WINAPI CLEO_AddScriptDeleteDelegate(FuncScriptDeleteDelegateT func);
 
 void WINAPI CLEO_RemoveScriptDeleteDelegate(FuncScriptDeleteDelegateT func);
 
+// Requests a streaming memory budget (CStreaming::ms_memoryAvailable, in MB) for
+// GTA SA 1.0. The value is stored and applied at SCM init, so the engine's own
+// streaming initialisation cannot clobber it. 0 = leave the game/mod value
+// untouched; -1 = auto (1024 MB with Large Address Aware, else 512 MB); >0 = that
+// many MB. The value is only ever raised, never lowered, and unknown game
+// versions are left unchanged. Returns the previous requested value.
+// Call before the game finishes loading (e.g. from a plugin's init).
+int WINAPI CLEO_SetStreamingMemoryLimit(int limitMb);
+
 #ifdef __cplusplus
 }
 #endif	//__cplusplus

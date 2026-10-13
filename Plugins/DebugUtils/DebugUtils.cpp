@@ -97,16 +97,30 @@ DebugUtils::DebugUtils()
     if (m_memoryLogEnabled)
         WriteMemory("//////////////////////// memory ////////////////////////");
 
+    // Streaming budget request is forwarded to the core, which applies it at SCM
+    // init. Independent of the frame-time monitor, so it works even with the
+    // monitor off.
+    if (m_frameTimeStreamLimitMb != 0)
+    {
+        const int previous = CLEO_SetStreamingMemoryLimit(m_frameTimeStreamLimitMb);
+        WriteCore(
+            "[debugutils] streaming limit requested=%d MB previous=%d MB (applied by core at SCM init)",
+            m_frameTimeStreamLimitMb,
+            previous
+        );
+    }
+
     if (m_frameTimeEnabled)
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
             m_frameTimeHistogramEnabled ? 1u : 0u,
-            m_frameTimeStreamingEnabled ? 1u : 0u
+            m_frameTimeStreamingEnabled ? 1u : 0u,
+            m_frameTimeStreamLimitMb
         );
     }
 
@@ -299,6 +313,11 @@ void DebugUtils::LoadConfig()
             config << "; each frame, to see whether stutters track streaming pressure.\r\n";
             config << "; GTA SA 1.0 only; ignored on other versions.\r\n";
             config << "Streaming=1\r\n";
+            config << "; Requested streaming budget (CStreaming::ms_memoryAvailable), in MB.\r\n";
+            config << ";   0 = leave the value the game / another mod set (default);\r\n";
+            config << ";  -1 = auto: 1024 MB with Large Address Aware, else 512 MB;\r\n";
+            config << ";  >0 = that many MB. Only ever raised, never lowered. SA 1.0 only.\r\n";
+            config << "StreamLimitMB=0\r\n";
             config << "; Rotate cleo_frametime.log when it grows past this many MB.\r\n";
             config << "MaxLogMB=16\r\n\r\n";
 
@@ -522,6 +541,14 @@ void DebugUtils::LoadConfig()
             1,
             path.c_str()
         ) != 0;
+
+    m_frameTimeStreamLimitMb = static_cast<int>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "StreamLimitMB",
+            0,
+            path.c_str()
+        )
+    );
 
     m_frameTimeMaxLogMegabytes = static_cast<DWORD>(
         GetPrivateProfileIntA(

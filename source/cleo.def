@@ -68,3 +68,4 @@ EXPORTS
         _CLEO_UnregisterPluginResource@4        @65
         _CLEO_SetProfilerOverheadEnabled@4      @66
         _CLEO_GetTopOpcodes@8                   @67
+        _CLEO_SetStreamingMemoryLimit@4         @68

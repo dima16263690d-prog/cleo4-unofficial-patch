@@ -117,6 +117,13 @@ Each report shows, for the interval:
   up with streaming pressure (high/rising used) or not (used flat = the cause is
   render/driver/vsync, not streaming).
 
+Streaming budget (GTA SA 1.0 only, StreamLimitMB): this ini key owns the
+`CStreaming::ms_memoryAvailable` setting and forwards it to the core through
+`CLEO_SetStreamingMemoryLimit()`. 0 (default) leaves the game/mod value
+untouched; -1 sets auto (1024 MB with Large Address Aware, else 512 MB); >0 sets
+that many MB. The value is only ever raised, never lowered. Because it is read
+from this file, an A/B test needs no rebuild: run with 0, then with -1.
+
 Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or
 streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
