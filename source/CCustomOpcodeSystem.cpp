@@ -1519,19 +1519,35 @@ extern "C"
 		{
 			TRACE("Starting new custom script %s", script_name);
 		}
+
+		// A label child must originate from a live CLEO custom script. Do not
+		// read the CLEO marker byte from an arbitrary native CRunningScript.
+		CCustomScript *parent = label != 0
+			? GetInstance().ScriptEngine.FindCustomScriptByPtr(fromThread)
+			: nullptr;
+		if (label != 0 && (!parent || !parent->IsCustom()))
+		{
+			TRACE("Rejected custom child creation: parent is not a registered CLEO script");
+			if (fromThread)
+			{
+				SetScriptCondResult(fromThread, false);
+				SkipUnusedParameters(fromThread);
+			}
+			return nullptr;
+		}
+
 		char cwd[MAX_PATH];
 		_getcwd(cwd, sizeof(cwd));
 		_chdir(cleo_dir);
 		// if "label == 0" then "script_name" need to be the file name
-		auto cs = new CCustomScript(script_name, false, reinterpret_cast<CCustomScript*>(fromThread), label);
+		auto cs = new CCustomScript(script_name, false, parent, label);
 		if (fromThread) SetScriptCondResult(fromThread, cs && cs->IsOK());
 		if (cs && cs->IsOK())
 		{
 			GetInstance().ScriptEngine.AddCustomScript(cs);
 			if (fromThread) TransmitScriptParams(fromThread, cs);
-			if (fromThread && label != 0)
-				GetInstance().ScriptEngine.RestorePendingChildScript(
-					reinterpret_cast<CCustomScript *>(fromThread), cs, label);
+			if (parent && label != 0)
+				GetInstance().ScriptEngine.RestorePendingChildScript(parent, cs, label);
 		}
 		else
 		{
