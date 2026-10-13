@@ -130,6 +130,13 @@ Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or
 streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
 
+Localized ini: the comments in DebugUtils.ini are written in the language of
+`[DebugUtils.General] Language` (en or ru). Set Language and restart the game;
+the file is rewritten with the descriptions in that language, and every value you
+set is preserved. The previous file is kept once as DebugUtils.ini.bak. A config
+from an older build (missing keys) is also rewritten so new options are
+documented.
+
 ## CLEO 5-style functions
 
 00C3 debug_on

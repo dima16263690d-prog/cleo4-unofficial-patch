@@ -249,6 +249,268 @@ std::string DebugUtils::ConfigPath() const
     return standardPath;
 }
 
+namespace
+{
+    std::string TrimAscii(const std::string& s)
+    {
+        size_t a = 0;
+        size_t b = s.size();
+        while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n'))
+            ++a;
+        while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n'))
+            --b;
+        return s.substr(a, b - a);
+    }
+
+    // Reads every key=value in the ini (no matter the comment language) so a
+    // rewrite preserves the values the user set. Empty when the file is absent.
+    std::map<std::string, std::string> ReadRawConfig(const std::string& path)
+    {
+        std::map<std::string, std::string> out;
+
+        std::ifstream file(path);
+        if (!file.is_open())
+            return out;
+
+        std::string line;
+        std::string section;
+        while (std::getline(file, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+
+            const std::string trimmed = TrimAscii(line);
+            if (trimmed.empty() || trimmed[0] == ';' || trimmed[0] == '#')
+                continue;
+
+            if (trimmed.front() == '[' && trimmed.back() == ']')
+            {
+                section = trimmed.substr(1, trimmed.size() - 2);
+                continue;
+            }
+
+            const size_t eq = trimmed.find('=');
+            if (eq == std::string::npos)
+                continue;
+
+            out[section + "." + TrimAscii(trimmed.substr(0, eq))] =
+                TrimAscii(trimmed.substr(eq + 1));
+        }
+
+        return out;
+    }
+
+    std::string ValueOr(const std::map<std::string, std::string>& raw,
+        const char* section, const char* key, const char* fallback)
+    {
+        const auto it = raw.find(std::string(section) + "." + key);
+        if (it != raw.end() && !it->second.empty())
+            return it->second;
+        return fallback;
+    }
+
+    // Comment language can be told apart by the marker line written at the top.
+    bool IniUsesRussian(const std::string& path)
+    {
+        std::ifstream file(path);
+        if (!file.is_open())
+            return false;
+
+        std::string line;
+        while (std::getline(file, line))
+        {
+            if (line.find("; language=ru") != std::string::npos)
+                return true;
+            if (line.find("; language=en") != std::string::npos)
+                return false;
+        }
+        return false;
+    }
+}
+
+// Builds the ini text with the descriptions in the chosen language. Only the
+// comments are localized; keys and values never change. Values already present in
+// `raw` are kept, everything else falls back to the defaults.
+std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std::string>& raw) const
+{
+    std::string out;
+    auto line = [&out](const std::string& text) { out += text; out += '\n'; };
+    auto kv = [&](const char* section, const char* key, const char* fallback)
+    {
+        line(std::string(key) + "=" + ValueOr(raw, section, key, fallback));
+    };
+
+    line(ru ? "; language=ru" : "; language=en");
+    line(ru ? "; Конфигурация DebugUtils. Значения читаются при запуске GTA."
+            : "; DebugUtils configuration. Values are read when GTA starts.");
+    line(ru ? "; Измените Language и перезапустите игру — файл перепишется с описанием"
+            : "; Change Language and restart the game - the file is rewritten with the");
+    line(ru ? "; на выбранном языке, а ваши значения сохранятся."
+            : "; descriptions in the chosen language, keeping your values.");
+    line(ru ? "; 1 = включено, 0 = выключено."
+            : "; 1 = enabled, 0 = disabled.");
+    line("");
+
+    line("[DebugUtils.General]");
+    line(ru ? "; Язык интерфейса и CrashInfo: en или ru."
+            : "; UI and CrashInfo language: en or ru.");
+    kv("DebugUtils.General", "Language", "en");
+    line(ru ? "; Включить устаревшие отладочные опкоды 0662/0663/0664."
+            : "; Enable the legacy debug opcodes 0662/0663/0664.");
+    kv("DebugUtils.General", "LegacyDebugOpcodes", "0");
+    line("");
+
+    line("[DebugUtils.Profiler]");
+    line(ru ? "; Замер времени выполнения скриптов и подсчёт опкодов."
+            : "; Per-script execution time and opcode measurement.");
+    line(ru ? "; Включение также активирует наблюдатель опкодов в ядре."
+            : "; Enabling also activates the core opcode observer.");
+    line(ru ? "Enabled: 1 = включить профайлер, 0 = выключить."
+            : "Enabled: 1 = enable the profiler, 0 = disable.");
+    kv("DebugUtils.Profiler", "Enabled", "0");
+    line(ru ? "Interval: секунды между отчётами; счётчики сбрасываются каждый интервал."
+            : "Interval: seconds between reports; counters reset each interval.");
+    kv("DebugUtils.Profiler", "Interval", "60");
+    line(ru ? "Top: сколько самых тяжёлых скриптов выводить в отчёте."
+            : "Top: how many heaviest scripts to list per report.");
+    kv("DebugUtils.Profiler", "Top", "20");
+    line(ru ? "Overhead: 1 = замерять и сам профайлер, добавив колонку net_ms."
+            : "Overhead: 1 = time the profiler itself and add a net_ms column.");
+    kv("DebugUtils.Profiler", "Overhead", "0");
+    line(ru ? "TopOpcodes: сколько горячих опкодов показывать по частоте (0 = выкл)."
+            : "TopOpcodes: hot opcodes by execution count per report (0 = off).");
+    kv("DebugUtils.Profiler", "TopOpcodes", "15");
+    line("");
+
+    line("[DebugUtils.FrameTime]");
+    line(ru ? "; Монитор времени кадра и подвисаний. Замеряет период кадра и время"
+            : "; Frame-time / stutter monitor. Samples the frame period and the logic");
+    line(ru ? "; игровой логики, пишет cleo_frametime.log (отдельный файл). Помогает"
+            : "; tick and writes cleo_frametime.log (its own file). Use it to find what");
+    line(ru ? "; найти, что оптимизировать для устранения фризов."
+            : "; to optimise for freezes.");
+    line(ru ? "Enabled: 1 = вести монитор, 0 = выключить (при 0 часы не читаются)."
+            : "Enabled: 1 = run the monitor, 0 = off (when off no clock is read).");
+    kv("DebugUtils.FrameTime", "Enabled", "0");
+    line(ru ? "Interval: секунды между отчётами; счётчики сбрасываются каждый интервал."
+            : "Interval: seconds between reports; counters reset each interval.");
+    kv("DebugUtils.FrameTime", "Interval", "10");
+    line(ru ? "WarnMs: период кадра не меньше этого числа мс считается подвисанием."
+            : "WarnMs: a frame period at or above this many ms counts as a stutter.");
+    kv("DebugUtils.FrameTime", "WarnMs", "50");
+    line(ru ? "TopStutter: сколько худших кадров выводить в отчёте (1..32)."
+            : "TopStutter: how many worst frames to list per report (1..32).");
+    kv("DebugUtils.FrameTime", "TopStutter", "15");
+    line(ru ? "Histogram: 1 = выводить гистограмму периодов кадров."
+            : "Histogram: 1 = emit a frame-period histogram per report.");
+    kv("DebugUtils.FrameTime", "Histogram", "1");
+    line(ru ? "Streaming: 1 = каждый кадр снимать память CStreaming"
+            : "Streaming: 1 = snapshot CStreaming memory each frame");
+    line(ru ? "  (ms_memoryUsed/ms_memoryAvailable), чтобы связать фризы с нагрузкой"
+            : "  (ms_memoryUsed/ms_memoryAvailable) to tie stutters to streaming load.");
+    line(ru ? "  стриминга. Только GTA SA 1.0, на других версиях игнорируется."
+            : "  GTA SA 1.0 only; ignored on other versions.");
+    kv("DebugUtils.FrameTime", "Streaming", "1");
+    line(ru ? "StreamLimitMB: запрашиваемый бюджет стриминга, МБ (только SA 1.0)."
+            : "StreamLimitMB: requested streaming budget, in MB (SA 1.0 only).");
+    line(ru ? "   0 = не менять значение игры/мода (по умолчанию);"
+            : "   0 = leave the value the game / another mod set (default);");
+    line(ru ? "  -1 = авто: 1024 МБ при Large Address Aware, иначе 512 МБ;"
+            : "  -1 = auto: 1024 MB with Large Address Aware, else 512 MB;");
+    line(ru ? "  >0 = указанное число МБ. Значение только повышается, не понижается."
+            : "  >0 = that many MB. Only ever raised, never lowered.");
+    kv("DebugUtils.FrameTime", "StreamLimitMB", "0");
+    line(ru ? "MaxLogMB: ротация cleo_frametime.log после этого размера, МБ."
+            : "MaxLogMB: rotate cleo_frametime.log when it grows past this many MB.");
+    kv("DebugUtils.FrameTime", "MaxLogMB", "16");
+    line("");
+
+    line("[DebugUtils.Limits]");
+    line(ru ? "Command: предел команд на один запуск скрипта (0 = без предела)."
+            : "Command: per-run command limit for a script (0 = no limit).");
+    kv("DebugUtils.Limits", "Command", "0");
+    line(ru ? "Time: предел времени работы скрипта в секундах (0 = без предела)."
+            : "Time: per-run time limit for a script in seconds (0 = no limit).");
+    kv("DebugUtils.Limits", "Time", "0");
+    line("");
+
+    line("[DebugUtils.ScriptLog]");
+    line(ru ? "Enabled: 1 = писать лог скриптов, 0 = выключить."
+            : "Enabled: 1 = write the script log, 0 = disable.");
+    kv("DebugUtils.ScriptLog", "Enabled", "1");
+    line(ru ? "OpcodeTrace: 1 = трассировать каждый опкод (очень подробно)."
+            : "OpcodeTrace: 1 = trace every opcode (very verbose).");
+    kv("DebugUtils.ScriptLog", "OpcodeTrace", "0");
+    line(ru ? "FunctionTrace: 1 = проверять вызовы функций 0AB1/0AB2."
+            : "FunctionTrace: 1 = check the function calls 0AB1/0AB2.");
+    kv("DebugUtils.ScriptLog", "FunctionTrace", "0");
+    line(ru ? "Deduplicate: 1 = схлопывать повторяющиеся строки лога."
+            : "Deduplicate: 1 = collapse repeated log lines.");
+    kv("DebugUtils.ScriptLog", "Deduplicate", "1");
+    line("");
+
+    line("[DebugUtils.Logs]");
+    line(ru ? "Memory: 1 = писать лог памяти, 0 = выключить."
+            : "Memory: 1 = write the memory log, 0 = disable.");
+    kv("DebugUtils.Logs", "Memory", "1");
+    line(ru ? "MemoryTrace: 1 = подробная трассировка памяти."
+            : "MemoryTrace: 1 = verbose memory tracing.");
+    kv("DebugUtils.Logs", "MemoryTrace", "0");
+    line(ru ? "MemoryWarnMB: предупреждать при private bytes выше этого числа МБ (0 = выкл)."
+            : "MemoryWarnMB: warn when private bytes cross this many MB (0 = off).");
+    kv("DebugUtils.Logs", "MemoryWarnMB", "1500");
+    line(ru ? "ModuleMemoryMap: 1 = дамп резидентной памяти по модулям."
+            : "ModuleMemoryMap: 1 = per-module resident-memory dump.");
+    kv("DebugUtils.Logs", "ModuleMemoryMap", "0");
+    line(ru ? "ModuleMemoryMapInterval: секунды между дампами памяти по модулям."
+            : "ModuleMemoryMapInterval: seconds between module memory dumps.");
+    kv("DebugUtils.Logs", "ModuleMemoryMapInterval", "30");
+    line(ru ? "Diagnostic: 1 = писать диагностический лог, 0 = выключить."
+            : "Diagnostic: 1 = write the diagnostic log, 0 = disable.");
+    kv("DebugUtils.Logs", "Diagnostic", "0");
+    line("");
+
+    line("[DebugUtils.Crash]");
+    line(ru ? "Enabled: 1 = перехватывать падения и писать CrashInfo, 0 = выключить."
+            : "Enabled: 1 = capture crashes and write CrashInfo, 0 = disable.");
+    kv("DebugUtils.Crash", "Enabled", "1");
+    line(ru ? "Window: 1 = показывать окно CrashInfo при падении."
+            : "Window: 1 = show the CrashInfo window on a crash.");
+    kv("DebugUtils.Crash", "Window", "1");
+    line(ru ? "Backtrace: 1 = собирать стек вызовов при падении."
+            : "Backtrace: 1 = collect a backtrace on a crash.");
+    kv("DebugUtils.Crash", "Backtrace", "1");
+    line(ru ? "OpcodeHistory: 1 = хранить историю последних опкодов."
+            : "OpcodeHistory: 1 = keep a history of recent opcodes.");
+    kv("DebugUtils.Crash", "OpcodeHistory", "0");
+    line(ru ? "MaxFrames: максимальная глубина стека вызовов."
+            : "MaxFrames: maximum backtrace frame depth.");
+    kv("DebugUtils.Crash", "MaxFrames", "32");
+
+    return out;
+}
+
+void DebugUtils::WriteConfigFile(const std::string& path, bool ru,
+    const std::map<std::string, std::string>& raw) const
+{
+    std::string text = BuildConfigText(ru, raw);
+
+    // The ini format expects CRLF; the builder uses LF for readability.
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (char c : text)
+    {
+        if (c == '\n')
+            crlf += "\r\n";
+        else
+            crlf += c;
+    }
+
+    std::ofstream config(path, std::ios::out | std::ios::trunc | std::ios::binary);
+    if (config.is_open())
+        config.write(crlf.data(), static_cast<std::streamsize>(crlf.size()));
+}
+
 void DebugUtils::LoadConfig()
 {
     const std::string path = ConfigPath();
@@ -268,88 +530,22 @@ void DebugUtils::LoadConfig()
 
     m_languageRussian = _stricmp(language, "ru") == 0;
 
-    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+    const std::map<std::string, std::string> raw = ReadRawConfig(path);
+
+    const bool fileMissing = GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+    const bool languageMismatch = !fileMissing && (IniUsesRussian(path) != m_languageRussian);
+    // A config from an older build lacks keys added since; rewrite it so the new
+    // options are documented without dropping the values already set.
+    const bool missingNewKeys =
+        !fileMissing && raw.find("DebugUtils.Logs.ModuleMemoryMap") == raw.end();
+
+    if (fileMissing || languageMismatch || missingNewKeys)
     {
-        std::ofstream config(path, std::ios::out | std::ios::trunc);
+        // Keep a one-shot backup of the previous file before rewriting it.
+        if (!fileMissing && GetFileAttributesA((path + ".bak").c_str()) == INVALID_FILE_ATTRIBUTES)
+            CopyFileA(path.c_str(), (path + ".bak").c_str(), TRUE);
 
-        if (config.is_open())
-        {
-            config << "; DebugUtils configuration\r\n";
-            config << "; Changes are loaded when GTA starts.\r\n";
-            config << "; 1 = enabled, 0 = disabled.\r\n\r\n";
-
-            config << "[DebugUtils.General]\r\n";
-            config << "; UI and CrashInfo language: en or ru.\r\n";
-            config << "Language=en\r\n";
-            config << "LegacyDebugOpcodes=0\r\n\r\n";
-
-            config << "[DebugUtils.Profiler]\r\n";
-            config << "; Per-script execution time and opcode measurement.\r\n";
-            config << "; Enabling also activates the core opcode observer.\r\n";
-            config << "Enabled=0\r\n";
-            config << "; Seconds between reports. Counters reset each interval.\r\n";
-            config << "Interval=60\r\n";
-            config << "; Top scripts by self time per report.\r\n";
-            config << "Top=20\r\n";
-            config << "; Time the profiler itself and add a net_ms column.\r\n";
-            config << "Overhead=0\r\n";
-            config << "; Top opcodes by execution count per report (0 = off).\r\n";
-            config << "TopOpcodes=15\r\n\r\n";
-
-            config << "[DebugUtils.FrameTime]\r\n";
-            config << "; Frame-time / stutter monitor. Samples the frame period and the\r\n";
-            config << "; logic-tick duration and writes cleo_frametime.log (own file, so the\r\n";
-            config << "; other logs stay clean). Use it to find what to optimise for freezes.\r\n";
-            config << "Enabled=0\r\n";
-            config << "; Seconds between reports. Counters reset each interval.\r\n";
-            config << "Interval=10\r\n";
-            config << "; A frame period at or above this many ms counts as a stutter event.\r\n";
-            config << "WarnMs=50\r\n";
-            config << "; How many worst frames to list per report (1..32).\r\n";
-            config << "TopStutter=15\r\n";
-            config << "; Emit a frame-period histogram per report.\r\n";
-            config << "Histogram=1\r\n";
-            config << "; Also snapshot CStreaming memory (ms_memoryUsed/ms_memoryAvailable)\r\n";
-            config << "; each frame, to see whether stutters track streaming pressure.\r\n";
-            config << "; GTA SA 1.0 only; ignored on other versions.\r\n";
-            config << "Streaming=1\r\n";
-            config << "; Requested streaming budget (CStreaming::ms_memoryAvailable), in MB.\r\n";
-            config << ";   0 = leave the value the game / another mod set (default);\r\n";
-            config << ";  -1 = auto: 1024 MB with Large Address Aware, else 512 MB;\r\n";
-            config << ";  >0 = that many MB. Only ever raised, never lowered. SA 1.0 only.\r\n";
-            config << "StreamLimitMB=0\r\n";
-            config << "; Rotate cleo_frametime.log when it grows past this many MB.\r\n";
-            config << "MaxLogMB=16\r\n\r\n";
-
-            config << "[DebugUtils.Limits]\r\n";
-            config << "Command=0\r\n";
-            config << "Time=0\r\n\r\n";
-
-            config << "[DebugUtils.ScriptLog]\r\n";
-            config << "Enabled=1\r\n";
-            config << "OpcodeTrace=0\r\n";
-            config << "FunctionTrace=0\r\n";
-            config << "Deduplicate=1\r\n\r\n";
-
-            config << "[DebugUtils.Logs]\r\n";
-            config << "Memory=1\r\n";
-            config << "MemoryTrace=0\r\n";
-            config << "; Warn when private bytes cross this many MB (0 = off).\r\n";
-            config << "MemoryWarnMB=1500\r\n";
-            config << "; Per-module resident-memory dump to attribute non-CLEO growth.\r\n";
-            config << "ModuleMemoryMap=0\r\n";
-            config << "; Seconds between module memory dumps.\r\n";
-            config << "ModuleMemoryMapInterval=30\r\n";
-            config << "Diagnostic=0\r\n\r\n";
-
-            config << "[DebugUtils.Crash]\r\n";
-            config << "; Main crash capture/test switch.\r\n";
-            config << "Enabled=1\r\n";
-            config << "Window=1\r\n";
-            config << "Backtrace=1\r\n";
-            config << "OpcodeHistory=0\r\n";
-            config << "MaxFrames=32\r\n";
-        }
+        WriteConfigFile(path, m_languageRussian, raw);
     }
 
     m_commandLimit = static_cast<size_t>(

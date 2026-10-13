@@ -265,6 +265,13 @@ private:
     std::string CrashInfoAutoPath() const;
     std::string ConfigPath() const;
 
+    // Writes the ini with comments in `ru` (Russian) or English, keeping any
+    // values already present in `raw`. The file is fully regenerated on language
+    // change or when keys were added since it was written.
+    std::string BuildConfigText(bool ru, const std::map<std::string, std::string>& raw) const;
+    void WriteConfigFile(const std::string& path, bool ru,
+        const std::map<std::string, std::string>& raw) const;
+
     void LoadConfig();
     void OpenLogs();
     void CloseLogs();
