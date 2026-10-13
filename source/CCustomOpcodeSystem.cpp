@@ -1551,7 +1551,11 @@ extern "C"
 		}
 		else
 		{
-			if (cs) delete cs;
+			if (cs)
+			{
+				delete cs;
+				cs = nullptr;
+			}
 			if (fromThread) SkipUnusedParameters(fromThread);
 			TRACE("Failed to load script '%s'.", script_name);
 		}
