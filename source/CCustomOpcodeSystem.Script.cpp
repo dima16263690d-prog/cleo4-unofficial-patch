@@ -450,6 +450,9 @@ namespace CLEO
 		DWORD	varId,
 			value;
 		*thread >> varId >> value;
+		// Bounds guard: never write past CleoVariables (was silent OOB corruption).
+		if (varId >= _countof(GetInstance().ScriptEngine.CleoVariables))
+			return OR_CONTINUE;
 		GetInstance().ScriptEngine.CleoVariables[varId].dwParam = value;
 		return OR_CONTINUE;
 	}
@@ -459,7 +462,11 @@ namespace CLEO
 	{
 		DWORD varId;
 		*thread >> varId;
-		*thread << GetInstance().ScriptEngine.CleoVariables[varId].dwParam;
+		// Bounds guard: out-of-range index reads back as 0 instead of OOB.
+		if (varId >= _countof(GetInstance().ScriptEngine.CleoVariables))
+			*thread << (DWORD)0;
+		else
+			*thread << GetInstance().ScriptEngine.CleoVariables[varId].dwParam;
 		return OR_CONTINUE;
 	}
 

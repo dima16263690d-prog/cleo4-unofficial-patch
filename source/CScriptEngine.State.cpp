@@ -29,7 +29,12 @@ namespace CLEO
     std::vector<ScmFunctionSaveInfo> pendingScmFunctionSaves;
     std::vector<bool> safeInfoUsed;
 
-    SCRIPT_VAR CScriptEngine::CleoVariables[0x400];
+    SCRIPT_VAR CScriptEngine::CleoVariables[0x1000];
+
+    // Legacy save files store exactly 1024 shared variables. Keep reading/writing
+    // that prefix size so existing saves stay compatible while the in-memory array
+    // is larger and can hold high indices like 2679/2681.
+    static constexpr size_t kSavedCleoVarCount = 0x400;
 
 template<typename T>
     void inline ReadBinary(std::istream& stream, T& value);
@@ -200,14 +205,14 @@ template<typename T>
                     safe_info_utilizer.reset(safe_info);
                     stopped_info = new unsigned long[safe_header.n_stopped_threads];
                     stopped_info_utilizer.reset(stopped_info);
-                    ReadBinary(ss, CleoVariables, 0x400);
+                    ReadBinary(ss, CleoVariables, kSavedCleoVarCount);
                     ReadBinary(ss, safe_info, safe_header.n_saved_threads);
                     ReadBinary(ss, stopped_info, safe_header.n_stopped_threads);
                     safeInfoUsed.assign(safe_header.n_saved_threads, false);
                     for (size_t i = 0; i < safe_header.n_stopped_threads; ++i)
                         InactiveScriptHashes.insert(stopped_info[i]);
                     TRACE("Finished. Loaded %u cleo variables, %u saved threads info, %u stopped threads info",
-                        0x400, safe_header.n_saved_threads, safe_header.n_stopped_threads);
+                        (unsigned)kSavedCleoVarCount, safe_header.n_saved_threads, safe_header.n_stopped_threads);
                 }
                 else
                 {
@@ -482,7 +487,7 @@ template<typename T>
                 ss.exceptions(std::ios::failbit | std::ios::badbit);
 
                 WriteBinary(ss, header);
-                WriteBinary(ss, CleoVariables, 0x400);
+                WriteBinary(ss, CleoVariables, kSavedCleoVarCount);
 
                 std::for_each(savedThreads.begin(), savedThreads.end(), [&savedThreads, &ss](CCustomScript *cs)
                 {
@@ -495,7 +500,7 @@ template<typename T>
                 });
 
                 TRACE("Done. Saved %u cleo variables, %u saved threads, %u stopped threads",
-                    0x400, header.n_saved_threads, header.n_stopped_threads);
+                    (unsigned)kSavedCleoVarCount, header.n_saved_threads, header.n_stopped_threads);
             }
             else
             {
