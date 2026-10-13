@@ -273,6 +273,8 @@ private:
         const std::map<std::string, std::string>& raw) const;
 
     void LoadConfig();
+    // Logs machine, display and GPU/driver info once at startup (from D3D9).
+    void WriteSystemInfo();
     void OpenLogs();
     void CloseLogs();
     void WriteCore(const char* format, ...);

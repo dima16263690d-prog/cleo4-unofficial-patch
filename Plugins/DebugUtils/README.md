@@ -130,6 +130,11 @@ Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or
 streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
 
+The core log starts with a system header (GPU description, vendor/device id,
+driver string and version, desktop resolution/refresh, OS build, CPU count, RAM)
+queried from D3D9, so a stutter report says which card/driver it came from
+without a follow-up question.
+
 Localized ini: the comments in DebugUtils.ini are written in the language of
 `[DebugUtils.General] Language` (en or ru). Set Language and restart the game;
 the file is rewritten with the descriptions in that language, and every value you

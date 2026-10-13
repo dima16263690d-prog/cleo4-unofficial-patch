@@ -18,6 +18,8 @@
 #include <sstream>
 #include <regex>
 #include <CTimer.h>
+#include <d3d9.h>
+#pragma comment(lib, "d3d9.lib")
 
 void DebugUtils::OpenLogs()
 {
@@ -828,6 +830,8 @@ void DebugUtils::WriteCoreHeader()
         );
     }
 
+    WriteSystemInfo();
+
     WriteCore("//////////////////////// game / api ////////////////////////");
     WriteCore("[game] GTA SA version enum=%d", CLEO_GetGameVersion());
     WriteCore("[api] CLEO_GetVersion=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_GetVersion)));
@@ -837,6 +841,113 @@ void DebugUtils::WriteCoreHeader()
     WriteCore("[api] CLEO_RegisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_RegisterCallback)));
     WriteCore("[api] CLEO_UnregisterCallback=%p", reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(&CLEO_UnregisterCallback)));
     WriteCore("[gta] pActiveScripts address=0x%08X", kGtaSa10ActiveScripts);
+}
+
+// GPU, driver and display info, so a stutter report is self-contained and the
+// driver/vsync side can be checked without asking which card/driver is in use.
+// D3D9 is already loaded by the game, so this only queries the existing device.
+void DebugUtils::WriteSystemInfo()
+{
+    WriteCore("//////////////////////// system ////////////////////////");
+
+    char computer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD computerLen = sizeof(computer);
+    if (GetComputerNameA(computer, &computerLen))
+        WriteCore("[system] computer=%s", computer);
+
+    OSVERSIONINFOA os{};
+    os.dwOSVersionInfoSize = sizeof(os);
+#pragma warning(push)
+#pragma warning(disable : 4996) // GetVersionExA is fine for a diagnostic string
+    const BOOL haveOs = GetVersionExA(&os);
+#pragma warning(pop)
+    if (haveOs)
+        WriteCore(
+            "[system] os=%u.%u build=%u",
+            static_cast<unsigned>(os.dwMajorVersion),
+            static_cast<unsigned>(os.dwMinorVersion),
+            static_cast<unsigned>(os.dwBuildNumber)
+        );
+
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+    WriteCore(
+        "[system] cpus=%u arch=%u",
+        static_cast<unsigned>(si.dwNumberOfProcessors),
+        static_cast<unsigned>(si.wProcessorArchitecture)
+    );
+
+    MEMORYSTATUSEX mem{};
+    mem.dwLength = sizeof(mem);
+    if (GlobalMemoryStatusEx(&mem))
+        WriteCore(
+            "[system] ram_total=%llu MB ram_avail=%llu MB",
+            mem.ullTotalPhys / (1024ull * 1024ull),
+            mem.ullAvailPhys / (1024ull * 1024ull)
+        );
+
+    // Display and GPU. The game already created a D3D9 device; enumerating the
+    // default adapter gives us the vendor/device ids and the driver string.
+    HDC hdc = GetDC(nullptr);
+    if (hdc)
+    {
+        const int width = GetDeviceCaps(hdc, HORZRES);
+        const int height = GetDeviceCaps(hdc, VERTRES);
+        const int refresh = GetDeviceCaps(hdc, VREFRESH);
+        const int bpp = GetDeviceCaps(hdc, BITSPIXEL);
+        WriteCore(
+            "[display] desktop=%dx%d bpp=%d refresh_hz=%d",
+            width, height, bpp, refresh
+        );
+        ReleaseDC(nullptr, hdc);
+    }
+
+    IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
+    if (d3d == nullptr)
+    {
+        WriteCore("[gpu] Direct3DCreate9 failed");
+        return;
+    }
+
+    const UINT adapters = d3d->GetAdapterCount();
+    WriteCore("[gpu] adapters=%u", static_cast<unsigned>(adapters));
+
+    for (UINT i = 0; i < adapters; ++i)
+    {
+        D3DADAPTER_IDENTIFIER9 id{};
+        if (FAILED(d3d->GetAdapterIdentifier(i, 0, &id)))
+            continue;
+
+        D3DDISPLAYMODE mode{};
+        if (SUCCEEDED(d3d->GetAdapterDisplayMode(i, &mode)))
+            WriteCore(
+                "[gpu] #%u %s vendor=0x%04X device=0x%04X driver='%s' version=%u.%u.%u.%u "
+                "mode=%ux%u@%u",
+                static_cast<unsigned>(i),
+                id.Description,
+                static_cast<unsigned>(id.VendorId),
+                static_cast<unsigned>(id.DeviceId),
+                id.Driver,
+                id.DriverVersion.HighPart >> 16,
+                id.DriverVersion.HighPart & 0xFFFF,
+                id.DriverVersion.LowPart >> 16,
+                id.DriverVersion.LowPart & 0xFFFF,
+                static_cast<unsigned>(mode.Width),
+                static_cast<unsigned>(mode.Height),
+                static_cast<unsigned>(mode.RefreshRate)
+            );
+        else
+            WriteCore(
+                "[gpu] #%u %s vendor=0x%04X device=0x%04X driver='%s'",
+                static_cast<unsigned>(i),
+                id.Description,
+                static_cast<unsigned>(id.VendorId),
+                static_cast<unsigned>(id.DeviceId),
+                id.Driver
+            );
+    }
+
+    d3d->Release();
 }
 
 void DebugUtils::WriteCoreThreadLayout()
