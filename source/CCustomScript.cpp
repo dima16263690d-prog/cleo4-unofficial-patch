@@ -272,14 +272,27 @@ namespace CLEO
 				// thread as a CCustomScript and using an incompatible code buffer.
 				if (!parent->IsCustom())
 					throw std::logic_error("Trying to create external thread from non-custom parent thread");
-				// Child scripts inherit the parent's CLEO compatibility mode.
+				// SCM labels passed to 0E6F are encoded as negative offsets
+				// from the shared script base. Validate before doing pointer math:
+				// malformed labels must not start a child outside the code buffer.
+				const size_t parentCodeSize = parent->GetCodeSize();
+				BYTE *parentBase = parent->GetBasePointer();
+				const long long labelOffset = -static_cast<long long>(label);
+				if (label >= 0 || parentBase == nullptr ||
+					labelOffset < 0 || static_cast<unsigned long long>(labelOffset) >= parentCodeSize)
+				{
+					throw std::logic_error("Invalid label offset for custom child script");
+				}
+
+				// Child scripts share immutable code bytes, but retain their own
+				// CRunningScript state (locals, stack, timers, condition flags).
 				cleoState.CompatVer = parent->GetCompatibility();
-				BaseIP = parent->GetBasePointer();
-				CurrentIP = parent->GetBasePointer() - label;
-								cleoState.CodeSize = parent->GetCodeSize();
+				BaseIP = parentBase;
+				CurrentIP = parentBase + static_cast<size_t>(labelOffset);
+				cleoState.CodeSize = parentCodeSize;
 				cleoState.ScriptFileDir = parent->GetScriptFileDir();
 				cleoState.ScriptFileName = parent->GetScriptFileName();
-memcpy(Name, parent->Name, sizeof(Name));
+				memcpy(Name, parent->Name, sizeof(Name));
 				cleoState.dwChecksum = parent->cleoState.dwChecksum;
 				parentThread = parent;
 				parent->childThreads.push_back(this);
@@ -332,12 +345,6 @@ memcpy(Name, parent->Name, sizeof(Name));
 			}
 			lastScriptCreated = this;
             cleoState.bOK = true;
-            if (parent)
-            {
-            }
-            else
-            {
-            }
         }
         catch (std::exception& e)
         {
