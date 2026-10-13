@@ -181,9 +181,39 @@ DWORD FUNC_AddScriptToQueue;
     CRunningScript **inactiveThreadQueue, **activeThreadQueue;
 	CCustomScript *lastScriptCreated = nullptr;
 
+    // Write a commented default cleo\CLEO.ini on first run so the [Streaming]
+    // option is discoverable. Never overwrite an existing file.
+    static void EnsureCleoIni()
+    {
+        if (GetFileAttributesA("cleo\\CLEO.ini") != INVALID_FILE_ATTRIBUTES)
+            return;
+
+        static const char kDefaultIni[] =
+            "; CLEO 4 core settings.\r\n"
+            "\r\n"
+            "[Streaming]\r\n"
+            "; Streaming memory budget (CStreaming::ms_memoryAvailable).\r\n"
+            ";   0 = leave the value the game / another mod set (default)\r\n"
+            ";  -1 = auto: 1024 MB with Large Address Aware, else 512 MB\r\n"
+            ";  >0 = that many MB (only raised if the current value is lower)\r\n"
+            "LimitMB=0\r\n";
+
+        std::ofstream file("cleo\\CLEO.ini", std::ios::binary);
+        if (file.is_open())
+            file.write(kDefaultIni, sizeof(kDefaultIni) - 1);
+    }
+
     // GTA's streaming budget for models/textures (CStreaming::ms_memoryAvailable)
-    // defaults to 50 MB. Raise it once the game has initialised streaming;
-    // never lower a value another mod already set.
+    // decides how much the engine keeps resident before it evicts models. The
+    // budget is user-configurable in cleo\CLEO.ini:
+    //
+    //   [Streaming]
+    //   LimitMB=0    ; 0 = leave the game/mod value untouched (default)
+    //                ; -1 = auto (1024 MB if Large Address Aware, else 512 MB)
+    //                ; >0 = that many MB, raised only if currently lower
+    //
+    // The raise is never forced: a higher value set by another mod (limit
+    // adjuster) is preserved, and an unknown game version changes nothing.
     static void ApplyStreamingMemoryLimit()
     {
         DWORD *memoryAvailable = nullptr;
@@ -198,18 +228,38 @@ DWORD FUNC_AddScriptToQueue;
             return;
         }
 
-        // 1 GB only fits safely in the 4 GB address space given by LAA.
-        const bool largeAddressAware = IsGameLargeAddressAware();
-        const DWORD desired = (largeAddressAware ? 1024u : 512u) * 1024 * 1024;
+        CreateDirectoryA("cleo", nullptr);
+        EnsureCleoIni();
+        const int configuredMb = GetPrivateProfileIntA(
+            "Streaming", "LimitMB", 0, "cleo\\CLEO.ini");
+        if (configuredMb == 0)
+        {
+            TRACE("[MEMORY] STREAMING limit unchanged: LimitMB=0 (cleo\\CLEO.ini)");
+            return;
+        }
+
+        DWORD desiredMb;
+        if (configuredMb < 0)
+        {
+            // 1 GB only fits safely in the 4 GB address space given by LAA.
+            desiredMb = IsGameLargeAddressAware() ? 1024u : 512u;
+        }
+        else
+        {
+            desiredMb = static_cast<DWORD>(configuredMb);
+        }
+
+        const DWORD desired = desiredMb * 1024 * 1024;
         const DWORD current = *memoryAvailable;
 
         if (current < desired)
             *memoryAvailable = desired;
 
-        TRACE("[MEMORY] STREAMING limit %u -> %u MB (large_address_aware=%d)",
+        TRACE("[MEMORY] STREAMING limit %u -> %u MB (requested=%d MB, large_address_aware=%d)",
             current / (1024 * 1024),
             *memoryAvailable / (1024 * 1024),
-            largeAddressAware ? 1 : 0);
+            configuredMb,
+            IsGameLargeAddressAware() ? 1 : 0);
     }
 
     // called to initialise the scripts (after the main.scm has actually had a chance to set up)

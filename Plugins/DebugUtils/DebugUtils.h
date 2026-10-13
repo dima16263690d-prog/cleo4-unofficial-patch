@@ -179,6 +179,7 @@ private:
     DWORD m_frameTimeWarnMs = 50;         // frame period at/above this = stutter event
     DWORD m_frameTimeTopStutter = 15;     // worst frames listed per report
     bool m_frameTimeHistogramEnabled = true; // emit a frame-period histogram
+    bool m_frameTimeStreamingEnabled = true; // snapshot ms_memoryUsed per frame (SA 1.0)
     DWORD m_frameTimeMaxLogMegabytes = 16;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};
@@ -198,6 +199,15 @@ private:
     double m_frameTimeIntervalMs = 0.0;     // wall-clock span of the interval
     size_t m_frameTimeScriptsLast = 0;
 
+    // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
+    // answer "do stutters coincide with streaming memory pressure / eviction
+    // churn?". The engine updates ms_memoryUsed on the same logic thread these
+    // hooks run on, so the read is race-free.
+    unsigned long long m_frameTimeStreamUsedSum = 0;
+    unsigned long long m_frameTimeStreamUsedMax = 0;
+    unsigned long long m_frameTimeStreamAvail = 0;
+    unsigned long long m_frameTimeStreamSamples = 0;
+
     // Frame-period histogram. Fixed bucket edges in milliseconds so the same
     // bins are comparable across intervals; the last bucket is the overflow.
     static constexpr size_t kFrameTimeHistogramBuckets = 8;
@@ -213,6 +223,7 @@ private:
         double logicMs = 0.0;
         size_t scripts = 0;
         DWORD uptimeSec = 0;
+        unsigned long long streamUsed = 0;  // ms_memoryUsed at the frame (bytes)
     };
     static constexpr size_t kFrameTimeMaxWorst = 32;
     std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};

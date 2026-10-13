@@ -110,7 +110,12 @@ Each report shows, for the interval:
 - stutter count/share/lost_ms — frames at or above WarnMs, and the time lost;
 - a period histogram with fixed edges (16.6/20/25/33.3/50/100/250 ms);
 - the worst frames of the interval, with their logic_ms, active scripts and
-  uptime, so a hitch can be tied to a moment and a script count.
+  uptime, so a hitch can be tied to a moment and a script count;
+- streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
+  average and peak bytes held, and peak as a share of the budget, plus a
+  stream_MB column in the worst-frames table. This answers whether stutters line
+  up with streaming pressure (high/rising used) or not (used flat = the cause is
+  render/driver/vsync, not streaming).
 
 Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or

@@ -45,6 +45,10 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeStutterLostMs = 0.0;
     m_frameTimeIntervalMs = 0.0;
     m_frameTimeWorstCount = 0;
+    m_frameTimeStreamUsedSum = 0;
+    m_frameTimeStreamUsedMax = 0;
+    m_frameTimeStreamAvail = 0;
+    m_frameTimeStreamSamples = 0;
     for (size_t i = 0; i < kFrameTimeHistogramBuckets; ++i)
         m_frameTimeHistogram[i] = 0;
 }
@@ -162,12 +166,31 @@ void DebugUtils::EndFrameTimeFrame()
             ++scripts;
     }
 
+    // Streaming memory snapshot. Both globals are updated by the same thread that
+    // runs this hook, so no lock is needed. Only meaningful on 1.0 (US/EU share
+    // the addresses; 1.01 is unsupported).
+    unsigned long long streamUsed = 0;
+    if (m_frameTimeStreamingEnabled &&
+        (CLEO_GetGameVersion() == GV_US10 || CLEO_GetGameVersion() == GV_EU10))
+    {
+        streamUsed = *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryUsed);
+        const unsigned long long avail =
+            *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryAvailable);
+        if (m_frameTimeStreamSamples == 0)
+            m_frameTimeStreamAvail = avail;
+        m_frameTimeStreamUsedSum += streamUsed;
+        if (streamUsed > m_frameTimeStreamUsedMax)
+            m_frameTimeStreamUsedMax = streamUsed;
+        ++m_frameTimeStreamSamples;
+    }
+
     FrameTimeSample sample;
     sample.periodMs = m_frameTimeLastPeriodMs;
     sample.logicMs = logicMs;
     sample.scripts = scripts;
     sample.uptimeSec = static_cast<DWORD>(
         (GetTickCount() - m_memorySessionStartTick) / 1000u);
+    sample.streamUsed = streamUsed;
     InsertWorstTimeSample(sample);
 
     m_frameTimeScriptsLast = scripts;
@@ -272,6 +295,28 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         m_frameTimeStutterLostMs
     );
 
+    if (m_frameTimeStreamSamples > 0)
+    {
+        // Bytes so the reader sees exact values; MB in parentheses for scale.
+        const double avgUsedMb =
+            static_cast<double>(m_frameTimeStreamUsedSum / m_frameTimeStreamSamples) / (1024.0 * 1024.0);
+        const double maxUsedMb =
+            static_cast<double>(m_frameTimeStreamUsedMax) / (1024.0 * 1024.0);
+        const double availMb =
+            static_cast<double>(m_frameTimeStreamAvail) / (1024.0 * 1024.0);
+        const double pct = m_frameTimeStreamAvail > 0
+            ? 100.0 * static_cast<double>(m_frameTimeStreamUsedMax) /
+              static_cast<double>(m_frameTimeStreamAvail)
+            : 0.0;
+        WriteFrameTime(
+            "streaming avail=%.1f MB used avg=%.1f MB max=%.1f MB (max %.1f%% of avail)",
+            availMb,
+            avgUsedMb,
+            maxUsedMb,
+            pct
+        );
+    }
+
     if (m_frameTimeHistogramEnabled)
     {
         WriteFrameTime("%-24s %10s %8s", "period bucket", "frames", "share%");
@@ -300,18 +345,19 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     if (listed > 0)
     {
         WriteFrameTime("---- worst frames ----");
-        WriteFrameTime("%-3s %12s %12s %8s %9s",
-            "#", "period_ms", "logic_ms", "scripts", "uptime_s");
+        WriteFrameTime("%-3s %12s %12s %8s %9s %12s",
+            "#", "period_ms", "logic_ms", "scripts", "uptime_s", "stream_MB");
         for (size_t i = 0; i < listed; ++i)
         {
             const auto& s = m_frameTimeWorst[i];
             WriteFrameTime(
-                "%-3zu %12.2f %12.2f %8zu %9u",
+                "%-3zu %12.2f %12.2f %8zu %9u %12.1f",
                 i + 1,
                 s.periodMs,
                 s.logicMs,
                 s.scripts,
-                static_cast<unsigned>(s.uptimeSec)
+                static_cast<unsigned>(s.uptimeSec),
+                static_cast<double>(s.streamUsed) / (1024.0 * 1024.0)
             );
         }
     }

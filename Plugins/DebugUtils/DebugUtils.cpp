@@ -101,11 +101,12 @@ DebugUtils::DebugUtils()
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
-            m_frameTimeHistogramEnabled ? 1u : 0u
+            m_frameTimeHistogramEnabled ? 1u : 0u,
+            m_frameTimeStreamingEnabled ? 1u : 0u
         );
     }
 
@@ -294,6 +295,10 @@ void DebugUtils::LoadConfig()
             config << "TopStutter=15\r\n";
             config << "; Emit a frame-period histogram per report.\r\n";
             config << "Histogram=1\r\n";
+            config << "; Also snapshot CStreaming memory (ms_memoryUsed/ms_memoryAvailable)\r\n";
+            config << "; each frame, to see whether stutters track streaming pressure.\r\n";
+            config << "; GTA SA 1.0 only; ignored on other versions.\r\n";
+            config << "Streaming=1\r\n";
             config << "; Rotate cleo_frametime.log when it grows past this many MB.\r\n";
             config << "MaxLogMB=16\r\n\r\n";
 
@@ -507,6 +512,13 @@ void DebugUtils::LoadConfig()
     m_frameTimeHistogramEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.FrameTime", "Histogram",
+            1,
+            path.c_str()
+        ) != 0;
+
+    m_frameTimeStreamingEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "Streaming",
             1,
             path.c_str()
         ) != 0;
