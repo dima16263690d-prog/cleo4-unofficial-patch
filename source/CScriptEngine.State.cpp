@@ -533,34 +533,7 @@ template<typename T>
             CreateDirectory("cleo", NULL);
             CreateDirectory("cleo/cleo_saves", NULL);
 
-            // Save extended variables separately so the original csN.sav binary
-            // layout remains compatible with existing save files.
-            try
-            {
-                std::ofstream varsFile(vars_safe_name, std::ios::binary);
-                if (varsFile.is_open())
-                {
-                    varsFile.exceptions(std::ios::failbit | std::ios::badbit);
-                    const uint32_t signature = kSharedVarsSaveSignature;
-                    const uint32_t version = kSharedVarsSaveVersion;
-                    const uint32_t count = static_cast<uint32_t>(kExtendedCleoVarCount);
-                    WriteBinary(varsFile, signature);
-                    WriteBinary(varsFile, version);
-                    WriteBinary(varsFile, count);
-                    WriteBinary(varsFile, CleoVariables + kSavedCleoVarCount, kExtendedCleoVarCount);
-                    TRACE("Saved %u extended CLEO shared variables to %s",
-                        (unsigned)kExtendedCleoVarCount, vars_safe_name);
-                }
-                else
-                {
-                    TRACE("Failed to write extended shared-variable file '%s'!", vars_safe_name);
-                }
-            }
-            catch (std::exception& ex)
-            {
-                TRACE("Saving extended shared variables %s failed: %s", vars_safe_name, ex.what());
-            }
-
+            bool baseSaveWritten = false;
             std::ofstream ss(safe_name, std::ios::binary);
             if (ss.is_open())
             {
@@ -579,12 +552,53 @@ template<typename T>
                     WriteBinary(ss, hash);
                 });
 
+                // Flush and close before saving the companion file; never load an updated
+                // extended-variable sidecar alongside an unsuccessful base save.
+                ss.flush();
+                ss.close();
+                baseSaveWritten = true;
                 TRACE("Done. Saved %u cleo variables, %u saved threads, %u stopped threads",
                     (unsigned)kSavedCleoVarCount, header.n_saved_threads, header.n_stopped_threads);
             }
             else
             {
                 TRACE("Failed to write save file '%s'!", safe_name);
+            }
+
+            if (baseSaveWritten)
+            {
+                // Save extended variables separately so the original csN.sav binary
+                // layout remains compatible with existing save files.
+                try
+                {
+                    std::ofstream varsFile(vars_safe_name, std::ios::binary);
+                    if (varsFile.is_open())
+                    {
+                        varsFile.exceptions(std::ios::failbit | std::ios::badbit);
+                        const uint32_t signature = kSharedVarsSaveSignature;
+                        const uint32_t version = kSharedVarsSaveVersion;
+                        const uint32_t count = static_cast<uint32_t>(kExtendedCleoVarCount);
+                        WriteBinary(varsFile, signature);
+                        WriteBinary(varsFile, version);
+                        WriteBinary(varsFile, count);
+                        WriteBinary(varsFile, CleoVariables + kSavedCleoVarCount, kExtendedCleoVarCount);
+                        TRACE("Saved %u extended CLEO shared variables to %s",
+                            (unsigned)kExtendedCleoVarCount, vars_safe_name);
+                    }
+                    else
+                    {
+                        TRACE("Failed to write extended shared-variable file '%s'!", vars_safe_name);
+                    }
+                }
+                catch (std::exception& ex)
+                {
+                    TRACE("Saving extended shared variables %s failed: %s", vars_safe_name, ex.what());
+                }
+    
+                }
+            else
+            {
+                TRACE("Skipping extended shared-variable save because base save failed: %s", safe_name);
             }
 
             try
