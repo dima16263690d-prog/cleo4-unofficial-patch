@@ -9,6 +9,7 @@
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
 #include "CDebugBridge.h"
+#include "CModLoaderCompat.h"
 #include "CCustomOpcodeSystem.Internal.h"
 #include "CScriptProfiler.h"
 #include "CScriptPluginSdk.h"
@@ -895,6 +896,14 @@ namespace CLEO {
 
 	bool is_legacy_handle(DWORD dwHandle) { return (dwHandle & 0x1) == 0; }
 	FILE * convert_handle_to_file(DWORD dwHandle) { return dwHandle ? reinterpret_cast<FILE*>(is_legacy_handle(dwHandle) ? dwHandle : dwHandle & ~(0x1)) : nullptr; }
+
+	// Resolve a game-relative path into the Mod Loader tree. Returns false
+	// when Mod Loader is not installed or the file is not present there, so
+	// callers can fall back to the original path.
+	bool ResolveModLoaderPath(const char *szPath, std::string& out)
+	{
+		return CModLoaderCompat::Get().ResolveFile(szPath, out);
+	}
 
 	DWORD open_file(const char * szPath, const char * szMode, bool bLegacy)
 	{

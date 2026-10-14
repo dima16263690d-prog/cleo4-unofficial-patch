@@ -8,15 +8,30 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
+#include "CModLoaderCompat.h"
 #include "CCustomOpcodeSystem.Internal.h"
+
+#include <string>
 
 namespace CLEO
 {
+	// Resolves a script name passed to 0A92/0A94 (which CLEO opens relative to
+	// ./cleo) into the Mod Loader tree when a mod provides it. Returns true and
+	// sets @out when a mod file was found.
+	static bool ResolveModLoaderScript(const char *script_name, std::string& out)
+	{
+		std::string gameRel = std::string("cleo/") + script_name;
+		return CModLoaderCompat::Get().ResolveFile(gameRel.c_str(), out);
+	}
+
 	//0A92=-1,create_custom_thread %1d%
 	OpcodeResult __stdcall opcode_0A92(CRunningScript *thread)
 	{
 		const char *script_name = readString(thread);
 		TRACE("[0A92] Starting new custom script %s from thread named %s", script_name, thread->GetName());
+		std::string modScript;
+		if (ResolveModLoaderScript(script_name, modScript))
+			script_name = modScript.c_str();
 		char cwd[MAX_PATH];
 		_getcwd(cwd, sizeof(cwd));
 		_chdir(cleo_dir);
@@ -57,10 +72,12 @@ namespace CLEO
 		readString(thread, script_name);
 		strcat(script_name, ".cm");		// add custom mission extension
 		TRACE("[0A94] Starting new custom mission %s from thread named %s", script_name, thread->GetName());
+		std::string modScript;
+		const char *missionPath = ResolveModLoaderScript(script_name, modScript) ? modScript.c_str() : script_name;
 		char cwd[MAX_PATH];
 		_getcwd(cwd, sizeof(cwd));
 		_chdir(cleo_dir);
-		auto cs = new CCustomScript(script_name, true);
+		auto cs = new CCustomScript(missionPath, true);
 		SetScriptCondResult(thread, cs && cs->IsOK());
 		if (cs && cs->IsOK())
 		{

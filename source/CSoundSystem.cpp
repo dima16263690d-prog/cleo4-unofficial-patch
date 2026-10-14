@@ -3,6 +3,7 @@
 #include "bass.h"
 #include "CDebugBridge.h"
 #include "cleo.h"
+#include "CModLoaderCompat.h"
 #include <windows.h>
 
 namespace CLEO
@@ -200,6 +201,14 @@ namespace CLEO
 
     CAudioStream *CSoundSystem::LoadStream(const char *filename, bool in3d)
     {
+        // Mod Loader keeps its files outside the search paths CLEO talks to
+        // (CLEO.asi is not one of its patched modules), so an audio file such
+        // as "cleo/audio/GANG_CASH.mp3" only exists under modloader/. Redirect
+        // to the real path there before asking BASS to open it.
+        std::string modloaderPath;
+        if (CModLoaderCompat::Get().ResolveFile(filename, modloaderPath))
+            filename = modloaderPath.c_str();
+
         CAudioStream *result = in3d
             ? static_cast<CAudioStream*>(new C3DAudioStream(filename))
             : static_cast<CAudioStream*>(new CAudioStream(filename));

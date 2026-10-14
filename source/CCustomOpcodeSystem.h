@@ -3,6 +3,9 @@
 #include "CDebugBridge.h"
 #include <direct.h>
 #include <set>
+#include <string>
+#include <vector>
+#include <unordered_map>
 
 namespace CLEO
 {
@@ -35,6 +38,17 @@ namespace CLEO
         std::set<HANDLE> m_hFileSearches;
         std::set<void *> m_pAllocations;
 
+        // Emulated file searches over the Mod Loader tree (opcodes 0AE6/0AE7).
+        // Each entry carries the remaining matches so find_next_file can walk
+        // them without re-scanning modloader/.
+        struct ModLoaderFileSearch
+        {
+            std::vector<std::string> matches;
+            size_t next = 0;
+        };
+        std::unordered_map<DWORD, ModLoaderFileSearch> m_modloaderSearches;
+        DWORD m_modloaderSearchCounter = 0;
+
         void FinalizeScriptObjects()
         {
             // clean up after opcode_0A99
@@ -58,6 +72,7 @@ namespace CLEO
             // clean up file searches
             std::for_each(m_hFileSearches.begin(), m_hFileSearches.end(), FindClose);
             m_hFileSearches.clear();
+            m_modloaderSearches.clear();
 
             // clean up after opcode_0AB1
             ResetScmFunctionStore();

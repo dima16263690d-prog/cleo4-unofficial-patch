@@ -21,6 +21,12 @@ namespace CLEO
     char *readString(CRunningScript *thread, char *buf = nullptr, BYTE size = 0);
     int format(CRunningScript *thread, char *str, size_t len, const char *format);
 
+    // Mod Loader interop. These translate a game-relative path (as written by
+    // a CLEO script) into the real file inside modloader/ when one exists
+    // there. They are no-ops (return false) when Mod Loader is not installed,
+    // in which case the original path is used unchanged.
+    bool ResolveModLoaderPath(const char *szPath, std::string& out);
+
     DWORD open_file(const char *szPath, const char *szMode, bool bLegacy);
     void close_file(DWORD dwHandle);
     DWORD file_get_size(DWORD file_handle);

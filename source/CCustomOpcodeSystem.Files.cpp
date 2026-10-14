@@ -8,10 +8,51 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
+#include "CModLoaderCompat.h"
+#include "CModLoaderPaths.h"
 #include "CCustomOpcodeSystem.Internal.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace CLEO
 {
+	// Marker bit that flags an emulated Mod Loader file search. Real
+	// FindFirstFile handles never have the high bit set, so this cannot clash.
+	static const uintptr_t MODLOADER_FIND_MARKER = 0x80000000u;
+
+	// Writes a WIN32_FIND_DATA file name into the script output parameter of
+	// opcodes 0AE6/0AE7, honoring the parameter type (string / text label /
+	// pointer). Shared by the native and the Mod Loader search paths.
+	static void WriteFindDataToScript(CRunningScript* thread, const WIN32_FIND_DATA& ffd)
+	{
+		auto type = *thread->GetBytePointer();
+		char* str;
+		switch (type)
+		{
+		case DT_VAR_STRING:
+		case DT_LVAR_STRING:
+		case DT_VAR_STRING_ARRAY:
+		case DT_LVAR_STRING_ARRAY:
+			str = (char*)GetScriptParamPointer(thread);
+			memcpy(str, ffd.cFileName, 16);
+			str[15] = '\0';
+			break;
+		case DT_VAR_TEXTLABEL:
+		case DT_LVAR_TEXTLABEL:
+		case DT_VAR_TEXTLABEL_ARRAY:
+		case DT_LVAR_TEXTLABEL_ARRAY:
+			str = (char*)GetScriptParamPointer(thread);
+			memcpy(str, ffd.cFileName, 8);
+			str[7] = '\0';
+			break;
+		default:
+			*thread >> str;
+			if (str)
+				strncpy_s(str, 16, ffd.cFileName, _TRUNCATE);
+		}
+	}
+
 	//0A9A=3,%3d% = openfile %1d% mode %2d% // IF and SET
 	OpcodeResult __stdcall opcode_0A9A(CRunningScript *thread)
 	{
@@ -41,7 +82,12 @@ namespace CLEO
 			GetScriptStringParam(thread, mode, sizeof(mode));
 		}
 
-		if (auto hfile = open_file(fname, mode, bLegacyMode))
+		// Prefer the Mod Loader copy when the script addresses a file that a
+		// mod provides, mirroring Mod Loader's own precedence.
+		std::string resolved;
+		const char *openPath = ResolveModLoaderPath(fname, resolved) ? resolved.c_str() : fname;
+
+		if (auto hfile = open_file(openPath, mode, bLegacyMode))
 		{
 			GetInstance().OpcodeSystem.m_hFiles.insert(hfile);
 
@@ -113,7 +159,18 @@ namespace CLEO
 	//0AAB=1,  file_exists %1d%
 	OpcodeResult __stdcall opcode_0AAB(CRunningScript *thread)
 	{
-		DWORD fAttr = GetFileAttributes(readString(thread));
+		const char *path = readString(thread);
+		DWORD fAttr = GetFileAttributes(path);
+
+		// A file that only exists under modloader/ must still be reported as
+		// existing, exactly as if Mod Loader had translated the call.
+		if (fAttr == INVALID_FILE_ATTRIBUTES)
+		{
+			std::string resolved;
+			if (ResolveModLoaderPath(path, resolved))
+				fAttr = GetFileAttributes(resolved.c_str());
+		}
+
 		SetScriptCondResult(thread, (fAttr != INVALID_FILE_ATTRIBUTES) && !(fAttr & FILE_ATTRIBUTE_DIRECTORY));
 		return OR_CONTINUE;
 	}
@@ -222,7 +279,16 @@ namespace CLEO
 	//0AE4=1,  directory_exist %1d%
 	OpcodeResult __stdcall opcode_0AE4(CRunningScript *thread)
 	{
-		auto fAttr = GetFileAttributes(readString(thread));
+		const char *path = readString(thread);
+		auto fAttr = GetFileAttributes(path);
+
+		if (fAttr == INVALID_FILE_ATTRIBUTES)
+		{
+			std::string resolved;
+			if (CModLoaderCompat::Get().ResolveDirectory(path, resolved))
+				fAttr = GetFileAttributes(resolved.c_str());
+		}
+
 		SetScriptCondResult(thread, (fAttr != INVALID_FILE_ATTRIBUTES) && (fAttr & FILE_ATTRIBUTE_DIRECTORY));
 		return OR_CONTINUE;
 	}
@@ -238,39 +304,67 @@ namespace CLEO
 	//0AE6=3,%2d% = find_first_file %1d% get_filename_to %3d% //IF and SET
 	OpcodeResult __stdcall opcode_0AE6(CRunningScript *thread)
 	{
+		const char *mask = readString(thread);
+
+		// If a mod provides files for this mask, emulate the search so those
+		// files are visible too; otherwise fall through to the native search.
+		std::vector<std::string> modMatches;
+		CModLoaderCompat::Get().MatchFiles(mask, modMatches);
+		if (!modMatches.empty())
+		{
+			// Merge the native files (they must stay visible) with the mod
+			// files, native first, skipping case-insensitive duplicates.
+			std::vector<std::string> names;
+			WIN32_FIND_DATA nativeFfd;
+			memset(&nativeFfd, 0, sizeof(nativeFfd));
+			HANDLE native = FindFirstFile(mask, &nativeFfd);
+			if (native != INVALID_HANDLE_VALUE)
+			{
+				do
+				{
+					if (!(nativeFfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+						names.push_back(nativeFfd.cFileName);
+				} while (FindNextFile(native, &nativeFfd));
+				FindClose(native);
+			}
+			for (const std::string& p : modMatches)
+			{
+				const std::string name = ModLoaderPaths::FileName(p);
+				const bool dup = std::any_of(names.begin(), names.end(), [&name](const std::string& n) {
+					return ModLoaderPaths::ToLower(n) == ModLoaderPaths::ToLower(name);
+				});
+				if (!dup)
+					names.push_back(name);
+			}
+
+			if (!names.empty())
+			{
+				WIN32_FIND_DATA ffd;
+				memset(&ffd, 0, sizeof(ffd));
+				strncpy_s(ffd.cFileName, MAX_PATH, names[0].c_str(), _TRUNCATE);
+
+				auto& opcodeSystem = GetInstance().OpcodeSystem;
+				const DWORD handle = static_cast<DWORD>(MODLOADER_FIND_MARKER | (++opcodeSystem.m_modloaderSearchCounter));
+				auto& search = opcodeSystem.m_modloaderSearches[handle];
+				search.matches = std::move(names);
+				search.next = 1;
+
+				*thread << handle;
+				WriteFindDataToScript(thread, ffd);
+				SetScriptCondResult(thread, true);
+				return OR_CONTINUE;
+			}
+		}
+
 		WIN32_FIND_DATA ffd;
 		memset(&ffd, 0, sizeof(ffd));
 
-		HANDLE handle = FindFirstFile(readString(thread), &ffd);
+		HANDLE handle = FindFirstFile(mask, &ffd);
 		*thread << handle;
 		GetInstance().OpcodeSystem.m_hFileSearches.insert(handle);
 		if (handle != INVALID_HANDLE_VALUE)
 		{
-			auto type = *thread->GetBytePointer();
-			char* str;
-			switch (type)
-			{
-			case DT_VAR_STRING:
-			case DT_LVAR_STRING:
-			case DT_VAR_STRING_ARRAY:
-			case DT_LVAR_STRING_ARRAY:
-				str = (char*)GetScriptParamPointer(thread);
-				memcpy(str, ffd.cFileName, 16);
-				str[15] = '\0';
-				break;
-			case DT_VAR_TEXTLABEL:
-			case DT_LVAR_TEXTLABEL:
-			case DT_VAR_TEXTLABEL_ARRAY:
-			case DT_LVAR_TEXTLABEL_ARRAY:
-				str = (char*)GetScriptParamPointer(thread);
-				memcpy(str, ffd.cFileName, 8);
-				str[7] = '\0';
-				break;
-			default:
-				*thread >> str;
-				if (str)
-					strncpy_s(str, 16, ffd.cFileName, _TRUNCATE);
-			}
+			WriteFindDataToScript(thread, ffd);
 			SetScriptCondResult(thread, true);
 		}
 		else
@@ -284,38 +378,38 @@ namespace CLEO
 	//0AE7=2,%2d% = find_next_file %1d% //IF and SET
 	OpcodeResult __stdcall opcode_0AE7(CRunningScript *thread)
 	{
+		HANDLE handle;
+		*thread >> handle;
+
+		// Emulated Mod Loader search: walk the precomputed match list.
+		auto& searches = GetInstance().OpcodeSystem.m_modloaderSearches;
+		if (auto it = searches.find(static_cast<DWORD>(reinterpret_cast<uintptr_t>(handle))); it != searches.end())
+		{
+			if (it->second.next < it->second.matches.size())
+			{
+				WIN32_FIND_DATA ffd;
+				memset(&ffd, 0, sizeof(ffd));
+				strncpy_s(ffd.cFileName, MAX_PATH,
+					ModLoaderPaths::FileName(it->second.matches[it->second.next]).c_str(), _TRUNCATE);
+				++it->second.next;
+
+				WriteFindDataToScript(thread, ffd);
+				SetScriptCondResult(thread, true);
+			}
+			else
+			{
+				readString(thread);
+				SetScriptCondResult(thread, false);
+			}
+			return OR_CONTINUE;
+		}
+
 		WIN32_FIND_DATA ffd;
 		memset(&ffd, 0, sizeof(ffd));
 
-		HANDLE handle;
-		*thread >> handle;
 		if (FindNextFile(handle, &ffd))
 		{
-			auto type = *thread->GetBytePointer();
-			char* str;
-			switch (type)
-			{
-			case DT_VAR_STRING:
-			case DT_LVAR_STRING:
-			case DT_VAR_STRING_ARRAY:
-			case DT_LVAR_STRING_ARRAY:
-				str = (char*)GetScriptParamPointer(thread);
-				memcpy(str, ffd.cFileName, 16);
-				str[15] = '\0';
-				break;
-			case DT_VAR_TEXTLABEL:
-			case DT_LVAR_TEXTLABEL:
-			case DT_VAR_TEXTLABEL_ARRAY:
-			case DT_LVAR_TEXTLABEL_ARRAY:
-				str = (char*)GetScriptParamPointer(thread);
-				memcpy(str, ffd.cFileName, 8);
-				str[7] = '\0';
-				break;
-			default:
-				*thread >> str;
-				if (str)
-					strncpy_s(str, 16, ffd.cFileName, _TRUNCATE);
-			}
+			WriteFindDataToScript(thread, ffd);
 			SetScriptCondResult(thread, true);
 		}
 		else
@@ -331,6 +425,14 @@ namespace CLEO
 	{
 		HANDLE handle;
 		*thread >> handle;
+
+		auto& searches = GetInstance().OpcodeSystem.m_modloaderSearches;
+		if (auto it = searches.find(static_cast<DWORD>(reinterpret_cast<uintptr_t>(handle))); it != searches.end())
+		{
+			searches.erase(it);
+			return OR_CONTINUE;
+		}
+
 		FindClose(handle);
 		GetInstance().OpcodeSystem.m_hFileSearches.erase(handle);
 		return OR_CONTINUE;

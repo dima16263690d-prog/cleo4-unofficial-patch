@@ -4,10 +4,13 @@
 #include "ScmFunction.h"
 #include "CScriptEngine.Internal.h"
 #include "CScriptEngine.State.h"
+#include "CModLoaderCompat.h"
+#include "CModLoaderPaths.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -386,27 +389,38 @@ template<typename T>
 
         TRACE("Searching for cleo scripts");
 
-        FilesWalk(cs_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
-                RestorePendingChildTree(cs);
-        });
-        FilesWalk(cs4_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
+        // Load the scripts the real cleo/ folder holds, then overlay the ones a
+        // mod ships under modloader/<mod>/cleo/. Mod Loader gives a mod file
+        // precedence over a same-named game file, so a mod script with the same
+        // name replaces (does not duplicate) the game one. CLEO.asi is not one
+        // of the modules Mod Loader patches, hence the explicit overlay here.
+        auto loadScripts = [this](const char *gameMask, const char *modMask, CLEO_Version compatVer, bool setCompat)
+        {
+            std::map<std::string, std::string> scripts;
+
+            FilesWalk(gameMask, [&scripts](const char *filename) {
+                scripts[ModLoaderPaths::ToLower(filename)] = filename;
+            });
+
+            std::vector<std::string> modFiles;
+            CModLoaderCompat::Get().MatchFiles(modMask, modFiles);
+            for (const std::string& file : modFiles)
+                scripts[ModLoaderPaths::ToLower(ModLoaderPaths::FileName(file))] = file;
+
+            for (const auto& entry : scripts)
             {
-                cs->SetCompatibility(CLEO_VER_4);
+                auto cs = LoadScript(entry.second.c_str());
+                if (!cs)
+                    continue;
+                if (setCompat)
+                    cs->SetCompatibility(compatVer);
                 RestorePendingChildTree(cs);
             }
-        });
-        FilesWalk(cs3_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
-            {
-                cs->SetCompatibility(CLEO_VER_3);
-                RestorePendingChildTree(cs);
-            }
-        });
+        };
+
+        loadScripts(cs_mask, "cleo/*.cs", CLEO_VER_4, false);
+        loadScripts(cs4_mask, "cleo/*.cs4", CLEO_VER_4, true);
+        loadScripts(cs3_mask, "cleo/*.cs3", CLEO_VER_3, true);
 
         _chdir(cwd);
     }
