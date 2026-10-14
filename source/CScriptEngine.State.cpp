@@ -587,17 +587,20 @@ template<typename T>
                     }
                     else
                     {
+                        DeleteFile(vars_safe_name);
                         TRACE("Failed to write extended shared-variable file '%s'!", vars_safe_name);
                     }
                 }
                 catch (std::exception& ex)
                 {
+                    DeleteFile(vars_safe_name);
                     TRACE("Saving extended shared variables %s failed: %s", vars_safe_name, ex.what());
                 }
-    
-                }
+            }
             else
             {
+                // Avoid accidentally loading an obsolete sidecar on a later session.
+                DeleteFile(vars_safe_name);
                 TRACE("Skipping extended shared-variable save because base save failed: %s", safe_name);
             }
 
