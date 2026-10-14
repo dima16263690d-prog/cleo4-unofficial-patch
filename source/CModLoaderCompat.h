@@ -78,6 +78,8 @@ namespace CLEO
 
         std::unordered_map<std::string, const Entry*> m_byModPath;
         std::unordered_map<std::string, const Entry*> m_byRelPath;
+        // filename -> entries, for the folder-agnostic fuzzy fallback.
+        std::unordered_map<std::string, std::vector<const Entry*>> m_byFileName;
 
         // modloader.ini derived filters (profile-aware subset).
         std::vector<std::string> m_ignoreMods;

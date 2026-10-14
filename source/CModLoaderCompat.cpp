@@ -239,6 +239,7 @@ namespace CLEO
         {
             m_byModPath.emplace(e.modPath, &e);
             m_byRelPath.emplace(e.relPath, &e);
+            m_byFileName[ModLoaderPaths::FileName(e.modPath)].push_back(&e);
         }
 
         TRACE("[modloader] Indexed %u files under '%s' (%u ignored mods, %u ignored file rules)",
@@ -276,6 +277,33 @@ namespace CLEO
             return true;
         }
 
+        // 3) Fuzzy fallback: the mod folder does not have to reproduce CLEO's
+        //    leading path components. A file the script asks for as
+        //    "cleo/audio/GANG_CASH.mp3" is found even when the mod ships it as
+        //    "audio/GANG_CASH.mp3" (or ".../audio/GANG_CASH.mp3"). Among the
+        //    entries sharing the file name, the longest matching trailing path
+        //    wins, so the most specific hit is preferred.
+        const std::string queryName = ModLoaderPaths::FileName(query);
+        if (auto it = m_byFileName.find(queryName); it != m_byFileName.end())
+        {
+            const Entry* best = nullptr;
+            size_t bestLen = 0;
+            for (const Entry* e : it->second)
+            {
+                const size_t len = ModLoaderPaths::LongestSuffixMatch(query, e->modPath);
+                if (len > bestLen)
+                {
+                    bestLen = len;
+                    best = e;
+                }
+            }
+            if (best)
+            {
+                out = best->absPath;
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -292,13 +320,30 @@ namespace CLEO
         if (dir.empty())
             return false;
 
+        // Exact mod-relative match first, then a folder-agnostic fallback so a
+        // directory the script names "cleo/audio" is found even when the mod
+        // ships it as "audio" (leading components dropped).
+        const Entry* fuzzy = nullptr;
+        size_t fuzzyLen = 0;
         for (const Entry& e : m_entries)
         {
-            if (DirName(e.modPath) == dir)
+            const std::string modDir = DirName(e.modPath);
+            if (modDir == dir)
             {
                 out = m_baseDir + "\\" + DirName(e.relPath);
                 return true;
             }
+            const size_t len = ModLoaderPaths::LongestSuffixMatch(dir, modDir);
+            if (len > fuzzyLen)
+            {
+                fuzzyLen = len;
+                fuzzy = &e;
+            }
+        }
+        if (fuzzy)
+        {
+            out = m_baseDir + "\\" + DirName(fuzzy->relPath);
+            return true;
         }
         return false;
     }
@@ -325,10 +370,12 @@ namespace CLEO
 
         for (const Entry& e : m_entries)
         {
+            const std::string modDir = DirName(e.modPath);
             const bool dirMatches =
                 patDir == DirName(e.relPath) ||        // full game-relative dir
-                patDirInRoot == DirName(e.modPath) ||  // mod-relative dir
-                patDir == DirName(e.modPath);          // bare dir, no mod prefix
+                patDirInRoot == modDir ||              // mod-relative dir
+                patDir == modDir ||                    // bare dir, no mod prefix
+                ModLoaderPaths::LongestSuffixMatch(patDirInRoot, modDir) > 0; // folder-agnostic
             if (!dirMatches)
                 continue;
 

@@ -49,6 +49,37 @@ namespace CLEO
             return pos == std::string::npos ? path : path.substr(pos + 1);
         }
 
+        // True when @path is exactly @suffix or ends with a whole-component
+        // match of it ("...\\" + @suffix). Both arguments are Normalize()d.
+        inline bool EndsWithComponentSuffix(const std::string& path, const std::string& suffix)
+        {
+            if (suffix.empty() || path.size() < suffix.size())
+                return false;
+            if (path.size() == suffix.size())
+                return path == suffix;
+            const size_t start = path.size() - suffix.size();
+            return path.compare(start, suffix.size(), suffix) == 0 && path[start - 1] == '\\';
+        }
+
+        // Length of the longest trailing component-suffix of @query that
+        // @target ends with, or 0 when none matches. Used to find a file when
+        // a mod folder does not reproduce the leading path components CLEO
+        // uses (e.g. query "cleo\\audio\\x.mp3" vs target "audio\\x.mp3").
+        inline size_t LongestSuffixMatch(const std::string& query, const std::string& target)
+        {
+            size_t pos = 0;
+            while (true)
+            {
+                const std::string suffix = query.substr(pos);
+                if (EndsWithComponentSuffix(target, suffix))
+                    return suffix.size();
+                const size_t next = query.find('\\', pos);
+                if (next == std::string::npos)
+                    return 0;
+                pos = next + 1;
+            }
+        }
+
         // Same wildcard rules as Mod Loader (src/core/wildcard.cpp): case
         // insensitive, '\\' or '/' separate path components, a '*' with no
         // directory component matches across subdirectories, '**' always does,
