@@ -450,6 +450,9 @@ namespace CLEO
 		DWORD	varId,
 			value;
 		*thread >> varId >> value;
+		// Reject out-of-range shared-variable writes instead of corrupting memory.
+		if (varId >= _countof(GetInstance().ScriptEngine.CleoVariables))
+			return OR_CONTINUE;
 		GetInstance().ScriptEngine.CleoVariables[varId].dwParam = value;
 		return OR_CONTINUE;
 	}
@@ -459,7 +462,11 @@ namespace CLEO
 	{
 		DWORD varId;
 		*thread >> varId;
-		*thread << GetInstance().ScriptEngine.CleoVariables[varId].dwParam;
+		// Keep reads in bounds; unsupported indices evaluate to zero.
+		if (varId >= _countof(GetInstance().ScriptEngine.CleoVariables))
+			*thread << (DWORD)0;
+		else
+			*thread << GetInstance().ScriptEngine.CleoVariables[varId].dwParam;
 		return OR_CONTINUE;
 	}
 
