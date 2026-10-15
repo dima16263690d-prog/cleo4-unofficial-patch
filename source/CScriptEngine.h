@@ -42,7 +42,8 @@ namespace CLEO
         void UpdateDrawableScript(CCustomScript* script, bool drawable);
 
     public:
-        static SCRIPT_VAR			CleoVariables[0x400];
+        // Supports community shared-variable indices up to 4095 (inclusive).
+        static SCRIPT_VAR			CleoVariables[0x1000];
 
         // Script lifecycle, following the useful CLEO 5 engine separation.
         void							GameBegin(bool bLoadMode = false);

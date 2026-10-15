@@ -109,8 +109,12 @@ namespace CLEO
             UnloadAllStreams();
             if (initialized)
             {
-                TRACE("Freeing BASS library");
-                BASS_Free();
+                // Do NOT call BASS_Free() here. BASS shares the process audio
+                // device with GTA SA and ModLoader; freeing it from CLEO's
+                // shutdown path deadlocks (the DLL stays resident until process
+                // exit anyway). CLEO 5 removed this call for the same reason:
+                // see cleolibrary/CLEO5 commit a66999582 "Fix deadlock inside
+                // BASS library finalization" ("causes deadlock with ModLoader").
                 initialized = false;
             }
             TRACE("SoundSystem closed!");

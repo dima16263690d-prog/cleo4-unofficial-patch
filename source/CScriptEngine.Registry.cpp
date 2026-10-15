@@ -89,11 +89,13 @@ namespace CLEO
         if (scriptName == nullptr)
             return nullptr;
 
-        CCustomScript *parent = fromThread ? reinterpret_cast<CCustomScript*>(fromThread) : nullptr;
+        // Never inspect CLEO-only fields through an unchecked cast: native
+        // GTA threads have the same base pointer type but not CCustomScript state.
+        CCustomScript *parent = label != 0 ? FindCustomScriptByPtr(fromThread) : nullptr;
 
         if (label != 0 && (parent == nullptr || !parent->IsCustom()))
         {
-            TRACE("[engine] CreateCustomScript rejected: label child requires a custom parent");
+            TRACE("[engine] CreateCustomScript rejected: label child requires a registered custom parent");
             if (fromThread)
                 SetScriptCondResult(fromThread, false);
             if (fromThread)

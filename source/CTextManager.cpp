@@ -3,9 +3,13 @@
 #include "CTextManager.h"
 #include "cleo.h"
 #include "FileEnumerator.h"
+#include "CModLoaderCompat.h"
+#include "CModLoaderPaths.h"
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <direct.h>
+#include <vector>
 
 namespace CLEO
 {
@@ -123,8 +127,7 @@ namespace CLEO
         _getcwd(cwd, sizeof(cwd));
         _chdir(fxt_dir);
 
-        // parse FXT files
-        FilesWalk(fxt_mask, [this](const char *fname) {
+        auto parseFxt = [this](const char *fname) {
             TRACE("Parsing FXT file %s", fname);
             try
             {
@@ -138,7 +141,25 @@ namespace CLEO
                 ss << ex.what();
                 Warning(ss.str().c_str());
             }
+        };
+
+        // A mod file shadows a same-named game file (Mod Loader precedence), so
+        // collect both keyed by name; the mod pass overwrites the game entry.
+        std::map<std::string, std::string> fxts;
+        FilesWalk(fxt_mask, [&fxts](const char *fname) {
+            fxts[ModLoaderPaths::ToLower(fname)] = fname;
         });
+
+        // FXT files a mod ships under modloader/<mod>/cleo/cleo_text/ are not
+        // seen by the scan above, so add them explicitly.
+        std::vector<std::string> modFxts;
+        CModLoaderCompat::Get().MatchFiles("cleo/cleo_text/*.fxt", modFxts);
+        for (const std::string& file : modFxts)
+            fxts[ModLoaderPaths::ToLower(ModLoaderPaths::FileName(file))] = file;
+
+        for (const auto& entry : fxts)
+            parseFxt(entry.second.c_str());
+
         _chdir(cwd);
     }
 

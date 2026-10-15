@@ -4,9 +4,13 @@
 #include "ScmFunction.h"
 #include "CScriptEngine.Internal.h"
 #include "CScriptEngine.State.h"
+#include "CModLoaderCompat.h"
+#include "CModLoaderPaths.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -29,7 +33,15 @@ namespace CLEO
     std::vector<ScmFunctionSaveInfo> pendingScmFunctionSaves;
     std::vector<bool> safeInfoUsed;
 
-    SCRIPT_VAR CScriptEngine::CleoVariables[0x400];
+    SCRIPT_VAR CScriptEngine::CleoVariables[0x1000];
+
+    // Preserve the legacy csN.sav layout (1024 shared variables) and store
+    // the additional variables in a versioned sidecar file.
+    static constexpr size_t kSavedCleoVarCount = 0x400;
+    static constexpr size_t kTotalCleoVarCount = 0x1000;
+    static constexpr size_t kExtendedCleoVarCount = kTotalCleoVarCount - kSavedCleoVarCount;
+    static constexpr uint32_t kSharedVarsSaveSignature = 0x31565343; // "CSV1"
+    static constexpr uint32_t kSharedVarsSaveVersion = 1;
 
 template<typename T>
     void inline ReadBinary(std::istream& stream, T& value);
@@ -169,6 +181,10 @@ template<typename T>
     void CScriptEngine::LoadCustomScripts(bool load_mode)
     {
         char safe_name[MAX_PATH];
+        bool baseSaveLoaded = false;
+
+        // Never let extended shared variables leak across save slots or reloads.
+        memset(CleoVariables, 0, sizeof(CleoVariables));
 
         // steam offset is different, so get it manually for now
         CGameVersionManager& gvm = GetInstance().VersionManager;
@@ -200,14 +216,15 @@ template<typename T>
                     safe_info_utilizer.reset(safe_info);
                     stopped_info = new unsigned long[safe_header.n_stopped_threads];
                     stopped_info_utilizer.reset(stopped_info);
-                    ReadBinary(ss, CleoVariables, 0x400);
+                    ReadBinary(ss, CleoVariables, kSavedCleoVarCount);
                     ReadBinary(ss, safe_info, safe_header.n_saved_threads);
                     ReadBinary(ss, stopped_info, safe_header.n_stopped_threads);
                     safeInfoUsed.assign(safe_header.n_saved_threads, false);
                     for (size_t i = 0; i < safe_header.n_stopped_threads; ++i)
                         InactiveScriptHashes.insert(stopped_info[i]);
+                    baseSaveLoaded = true;
                     TRACE("Finished. Loaded %u cleo variables, %u saved threads info, %u stopped threads info",
-                        0x400, safe_header.n_saved_threads, safe_header.n_stopped_threads);
+                        (unsigned)kSavedCleoVarCount, safe_header.n_saved_threads, safe_header.n_stopped_threads);
                 }
                 else
                 {
@@ -224,6 +241,45 @@ template<typename T>
         else
         {
             memset(CleoVariables, 0, sizeof(CleoVariables));
+        }
+
+        // Load extended shared variables only when the matching legacy save loaded
+        // successfully. Old versions have no sidecar, so the already-cleared tail stays zero.
+        if (load_mode && baseSaveLoaded)
+        {
+            char vars_safe_name[MAX_PATH];
+            _snprintf_s(vars_safe_name, sizeof(vars_safe_name), _TRUNCATE,
+                "./cleo/cleo_saves/cs%d.vars.sav", nSlot);
+            try
+            {
+                std::ifstream varsFile(vars_safe_name, std::ios::binary);
+                if (varsFile.is_open())
+                {
+                    varsFile.exceptions(std::ios::eofbit | std::ios::badbit | std::ios::failbit);
+                    uint32_t signature = 0;
+                    uint32_t version = 0;
+                    uint32_t count = 0;
+                    ReadBinary(varsFile, signature);
+                    ReadBinary(varsFile, version);
+                    ReadBinary(varsFile, count);
+                    if (signature != kSharedVarsSaveSignature ||
+                        version != kSharedVarsSaveVersion || count != kExtendedCleoVarCount)
+                        throw std::runtime_error("Invalid extended shared-variable save format");
+
+                    std::array<SCRIPT_VAR, kExtendedCleoVarCount> extendedVariables{};
+                    ReadBinary(varsFile, extendedVariables.data(), extendedVariables.size());
+                    std::copy(extendedVariables.begin(), extendedVariables.end(),
+                        CleoVariables + kSavedCleoVarCount);
+                    TRACE("Loaded %u extended CLEO shared variables from %s",
+                        (unsigned)kExtendedCleoVarCount, vars_safe_name);
+                }
+            }
+            catch (std::exception& ex)
+            {
+                memset(CleoVariables + kSavedCleoVarCount, 0,
+                    sizeof(CleoVariables) - kSavedCleoVarCount * sizeof(CleoVariables[0]));
+                TRACE("Loading extended shared variables %s failed: %s", vars_safe_name, ex.what());
+            }
         }
 
         if (load_mode)
@@ -333,27 +389,38 @@ template<typename T>
 
         TRACE("Searching for cleo scripts");
 
-        FilesWalk(cs_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
-                RestorePendingChildTree(cs);
-        });
-        FilesWalk(cs4_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
+        // Load the scripts the real cleo/ folder holds, then overlay the ones a
+        // mod ships under modloader/<mod>/cleo/. Mod Loader gives a mod file
+        // precedence over a same-named game file, so a mod script with the same
+        // name replaces (does not duplicate) the game one. CLEO.asi is not one
+        // of the modules Mod Loader patches, hence the explicit overlay here.
+        auto loadScripts = [this](const char *gameMask, const char *modMask, CLEO_Version compatVer, bool setCompat)
+        {
+            std::map<std::string, std::string> scripts;
+
+            FilesWalk(gameMask, [&scripts](const char *filename) {
+                scripts[ModLoaderPaths::ToLower(filename)] = filename;
+            });
+
+            std::vector<std::string> modFiles;
+            CModLoaderCompat::Get().MatchFiles(modMask, modFiles);
+            for (const std::string& file : modFiles)
+                scripts[ModLoaderPaths::ToLower(ModLoaderPaths::FileName(file))] = file;
+
+            for (const auto& entry : scripts)
             {
-                cs->SetCompatibility(CLEO_VER_4);
+                auto cs = LoadScript(entry.second.c_str());
+                if (!cs)
+                    continue;
+                if (setCompat)
+                    cs->SetCompatibility(compatVer);
                 RestorePendingChildTree(cs);
             }
-        });
-        FilesWalk(cs3_mask, [this](const char *filename) {
-            auto cs = LoadScript(filename);
-            if (cs)
-            {
-                cs->SetCompatibility(CLEO_VER_3);
-                RestorePendingChildTree(cs);
-            }
-        });
+        };
+
+        loadScripts(cs_mask, "cleo/*.cs", CLEO_VER_4, false);
+        loadScripts(cs4_mask, "cleo/*.cs4", CLEO_VER_4, true);
+        loadScripts(cs3_mask, "cleo/*.cs3", CLEO_VER_3, true);
 
         _chdir(cwd);
     }
@@ -468,21 +535,26 @@ template<typename T>
             int nSlot = gvm.GetGameVersion() != GV_STEAM ? *(BYTE*)&MenuManager->m_nSelectedSaveGame : *((BYTE*)MenuManager + 0x15B);
 
             char safe_name[MAX_PATH];
+            char vars_safe_name[MAX_PATH];
             char child_safe_name[MAX_PATH];
             sprintf(safe_name, "./cleo/cleo_saves/cs%d.sav", nSlot);
+            _snprintf_s(vars_safe_name, sizeof(vars_safe_name), _TRUNCATE,
+                "./cleo/cleo_saves/cs%d.vars.sav", nSlot);
             _snprintf_s(child_safe_name, sizeof(child_safe_name), _TRUNCATE,
                 "./cleo/cleo_saves/cs%d.children.sav", nSlot);
             TRACE("Saving script engine state to the file %s", safe_name);
 
             CreateDirectory("cleo", NULL);
             CreateDirectory("cleo/cleo_saves", NULL);
+
+            bool baseSaveWritten = false;
             std::ofstream ss(safe_name, std::ios::binary);
             if (ss.is_open())
             {
                 ss.exceptions(std::ios::failbit | std::ios::badbit);
 
                 WriteBinary(ss, header);
-                WriteBinary(ss, CleoVariables, 0x400);
+                WriteBinary(ss, CleoVariables, kSavedCleoVarCount);
 
                 std::for_each(savedThreads.begin(), savedThreads.end(), [&savedThreads, &ss](CCustomScript *cs)
                 {
@@ -494,12 +566,56 @@ template<typename T>
                     WriteBinary(ss, hash);
                 });
 
+                // Flush and close before saving the companion file; never load an updated
+                // extended-variable sidecar alongside an unsuccessful base save.
+                ss.flush();
+                ss.close();
+                baseSaveWritten = true;
                 TRACE("Done. Saved %u cleo variables, %u saved threads, %u stopped threads",
-                    0x400, header.n_saved_threads, header.n_stopped_threads);
+                    (unsigned)kSavedCleoVarCount, header.n_saved_threads, header.n_stopped_threads);
             }
             else
             {
                 TRACE("Failed to write save file '%s'!", safe_name);
+            }
+
+            if (baseSaveWritten)
+            {
+                // Save extended variables separately so the original csN.sav binary
+                // layout remains compatible with existing save files.
+                try
+                {
+                    std::ofstream varsFile(vars_safe_name, std::ios::binary);
+                    if (varsFile.is_open())
+                    {
+                        varsFile.exceptions(std::ios::failbit | std::ios::badbit);
+                        const uint32_t signature = kSharedVarsSaveSignature;
+                        const uint32_t version = kSharedVarsSaveVersion;
+                        const uint32_t count = static_cast<uint32_t>(kExtendedCleoVarCount);
+                        WriteBinary(varsFile, signature);
+                        WriteBinary(varsFile, version);
+                        WriteBinary(varsFile, count);
+                        WriteBinary(varsFile, CleoVariables + kSavedCleoVarCount, kExtendedCleoVarCount);
+                        TRACE("Saved %u extended CLEO shared variables to %s",
+                            (unsigned)kExtendedCleoVarCount, vars_safe_name);
+                    }
+                    else
+                    {
+                        DeleteFile(vars_safe_name);
+                        TRACE("Failed to write extended shared-variable file '%s'!", vars_safe_name);
+                    }
+                }
+                catch (std::exception& ex)
+                {
+                    DeleteFile(vars_safe_name);
+                    TRACE("Saving extended shared variables %s failed: %s", vars_safe_name, ex.what());
+                }
+            }
+            else
+            {
+                // Avoid accidentally loading an obsolete sidecar on a later session.
+                DeleteFile(vars_safe_name);
+                TRACE("Skipping extended shared-variable save because base save failed: %s", safe_name);
             }
 
             try

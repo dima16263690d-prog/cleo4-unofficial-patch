@@ -9,6 +9,7 @@
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
 #include "CDebugBridge.h"
+#include "CModLoaderCompat.h"
 #include "CCustomOpcodeSystem.Internal.h"
 #include "CScriptProfiler.h"
 #include "CScriptPluginSdk.h"
@@ -896,6 +897,14 @@ namespace CLEO {
 	bool is_legacy_handle(DWORD dwHandle) { return (dwHandle & 0x1) == 0; }
 	FILE * convert_handle_to_file(DWORD dwHandle) { return dwHandle ? reinterpret_cast<FILE*>(is_legacy_handle(dwHandle) ? dwHandle : dwHandle & ~(0x1)) : nullptr; }
 
+	// Resolve a game-relative path into the Mod Loader tree. Returns false
+	// when Mod Loader is not installed or the file is not present there, so
+	// callers can fall back to the original path.
+	bool ResolveModLoaderPath(const char *szPath, std::string& out)
+	{
+		return CModLoaderCompat::Get().ResolveFile(szPath, out);
+	}
+
 	DWORD open_file(const char * szPath, const char * szMode, bool bLegacy)
 	{
 		FILE * hFile = bLegacy ? legacy_fopen(szPath, szMode) : fopen(szPath, szMode);
@@ -1519,23 +1528,43 @@ extern "C"
 		{
 			TRACE("Starting new custom script %s", script_name);
 		}
+
+		// A label child must originate from a live CLEO custom script. Do not
+		// read the CLEO marker byte from an arbitrary native CRunningScript.
+		CCustomScript *parent = label != 0
+			? GetInstance().ScriptEngine.FindCustomScriptByPtr(fromThread)
+			: nullptr;
+		if (label != 0 && (!parent || !parent->IsCustom()))
+		{
+			TRACE("Rejected custom child creation: parent is not a registered CLEO script");
+			if (fromThread)
+			{
+				SetScriptCondResult(fromThread, false);
+				SkipUnusedParameters(fromThread);
+			}
+			return nullptr;
+		}
+
 		char cwd[MAX_PATH];
 		_getcwd(cwd, sizeof(cwd));
 		_chdir(cleo_dir);
 		// if "label == 0" then "script_name" need to be the file name
-		auto cs = new CCustomScript(script_name, false, reinterpret_cast<CCustomScript*>(fromThread), label);
+		auto cs = new CCustomScript(script_name, false, parent, label);
 		if (fromThread) SetScriptCondResult(fromThread, cs && cs->IsOK());
 		if (cs && cs->IsOK())
 		{
 			GetInstance().ScriptEngine.AddCustomScript(cs);
 			if (fromThread) TransmitScriptParams(fromThread, cs);
-			if (fromThread && label != 0)
-				GetInstance().ScriptEngine.RestorePendingChildScript(
-					reinterpret_cast<CCustomScript *>(fromThread), cs, label);
+			if (parent && label != 0)
+				GetInstance().ScriptEngine.RestorePendingChildScript(parent, cs, label);
 		}
 		else
 		{
-			if (cs) delete cs;
+			if (cs)
+			{
+				delete cs;
+				cs = nullptr;
+			}
 			if (fromThread) SkipUnusedParameters(fromThread);
 			TRACE("Failed to load script '%s'.", script_name);
 		}

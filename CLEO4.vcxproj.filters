@@ -35,6 +35,9 @@
     <ClCompile Include="source\CDebugBridge.cpp">
       <Filter>source</Filter>
     </ClCompile>
+    <ClCompile Include="source\CModLoaderCompat.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
       <Filter>Source Files</Filter>
     </ClCompile>
       <Filter>source</Filter>
@@ -108,6 +111,12 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CDebugBridge.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CModLoaderCompat.h">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\CModLoaderPaths.h">
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\CMemory.h">

@@ -173,6 +173,12 @@ CLEO 4.4.4 Legacy
 
 При этом CLEO 4 не запускает второй BASS engine: один существующий `CSoundSystem` остаётся владельцем stream handles.
 
+#### BASS и Mod Loader
+
+BASS делит аудиоустройство с самой GTA SA и с Mod Loader, поэтому завершение BASS (`BASS_Free`) из пути выключения CLEO приводит к deadlock — после этого пропадает весь игровой звук (совпадает с CLEO4 issue #87 «game without sound» и CLEO5 #223). CLEO 5 убрал этот вызов в коммите `a66999582` («Fix deadlock inside BASS library finalization», пометка «causes deadlock with ModLoader»).
+
+В этом патче `CSoundSystem::~CSoundSystem()` повторяет решение CLEO 5: `BASS_Free()` не вызывается, DLL остаётся загруженной до завершения процесса. Потоки (`streams`) по-прежнему освобождаются.
+
 ### Audio.cleo
 
 Добавлен отдельный plugin:
@@ -504,3 +510,53 @@ DebugUtils не пытается автоматически «чинить» GTA
 2. Проверить запуск GTA SA 1.0 US, загрузку `CLEO.asi` / `DebugUtils.cleo` и корректный старт без новых ключей в логах.
 3. Проверить opcode памяти `0AC8/0AC9`, профилировщик (`CLEO_SetProfilingEnabled`), Plugin SDK (`CLEO_RegisterOpcodeEx`) и освобождение ресурсов при выгрузке плагина.
 4. Проверить монитор времени кадра (`cleo_frametime.log`) и ключ `StreamLimitMB`.
+
+## Совместимость с Mod Loader (LINK/2012) — 15 октября 2026 г.
+
+**Ветка:** `modloader-compat`
+**Pull Request:** [#10 — Mod Loader compatibility: resolve CLEO files/audio under modloader/](https://github.com/dima16263690d-prog/cleo4-unofficial-patch/pull/10)
+**Базовая ветка:** `ks03`
+
+### Проблема
+
+С установленным [Mod Loader](https://github.com/thelink2012/modloader) опкоды CLEO не находили файлы, лежащие в `modloader/<mod>/`. Пример: `0AAB: file_exists "cleo/audio/GANG_CASH.mp3"` возвращал ложь, а аудио (`0AAC`, `0AC1`) не воспроизводилось, даже если файл реально был в моде.
+
+**Причина.** Mod Loader транслирует файловые вызовы (`GetFileAttributesA`, `CreateFileA`, `fopen`, `FindFirstFileA`, …) **только для тех модулей, которые он сам загружает**, подменяя их таблицу импорта (IAT). `CLEO.asi` в их число не входит, поэтому собственные вызовы CLEO идут напрямую в реальную файловую систему и файлы из `modloader/` не видят. Такое же поведение у CLEO 5 (issue [#223](https://github.com/cleolibrary/CLEO5/issues/223)) и у оригинального CLEO 4 (issue #87).
+
+### Что сделано
+
+**1. Резолвер путей Mod Loader** — `source/CModLoaderCompat.{h,cpp}` и чистые помощники `source/CModLoaderPaths.h`:
+
+- определение наличия Mod Loader (`modloader.asi` / `modloader.dll`); флаг не защёлкивается, пока модуль не найден, — безопасно при любом порядке загрузки ASI;
+- индексация `modloader/**` с учётом `modloader.ini` (`IgnoreMods`, `IgnoreFiles`) и точных правил wildcard из Mod Loader (`src/core/wildcard.cpp`, порт проверен — 0 расхождений);
+- разрешение игрового пути (`cleo/audio/x.mp3`) в реальный файл внутри папки мода; также принимается полный вид `modloader/<mod>/...`;
+- **поиск независимо от раскладки мода:** файл находится, даже если мод кладёт его без префикса `cleo/` — например, `cleo/audio/GANG_CASH.mp3` резолвится в `modloader/Cheat Menu RUS/audio/GANG_CASH.mp3`. Среди совпадающих по имени файлов побеждает самый длинный совпавший хвост пути; для скорости используется индекс по именам.
+
+**2. Приоритеты `modloader.ini`** (детерминированный выбор при конфликте):
+
+- читаются `[Folder.Config] Profile` и `PriorityLimit`, затем `[Profiles.<активный>.Priority]`;
+- приоритет по умолчанию — `50`, `Priority=0` отключает мод (больше не сворачивается в список игнора);
+- победитель конфликта: выше приоритет, при равенстве — позже имя мода (сравнение как в Mod Loader: сначала длина, затем лексикографически) — результат **не зависит от порядка обхода каталогов** (`WinsOver`);
+- `MatchFiles` сортирует победителя вперёд до дедупликации.
+
+**3. Точки входа CLEO, куда встроен резолвер:**
+
+- **`0AAB` file_exists**, **`0A9A` openfile**, **`0AE4` directory_exist** — откат к копии из Mod Loader, если файла нет рядом с игрой;
+- **`0AE6` / `0AE7` / `0AE8` find_first/next/close** — слияние нативных результатов с файлами мода (сначала нативные, регистронезависимая дедупликация). Псевдо-хендл поиска — адрес принадлежащего узла в реестре `unordered_map<void*, unique_ptr<...>>`, а не бит-маркер в `DWORD`, поэтому он не может столкнуться с настоящим хендлом `FindFirstFile`;
+- **Audio** (`0AAC` load_audiostream, `0AC1` 3D) — путь потока переводится в Mod Loader до открытия в BASS, поэтому `cleo/audio/*.mp3` из мода воспроизводится;
+- **поиск скриптов** (`LoadCustomScripts`) и **FXT** (`cleo_text/*.fxt`) — оверлей `modloader/<mod>/cleo/*.cs|cs3|cs4`; файл мода затеняет одноимённый файл игры (приоритет Mod Loader), без дублей;
+- **`0A92` create_custom_thread**, **`0A94` create_custom_mission** — имя скрипта резолвится через дерево Mod Loader;
+- **`0AA2` load_library** — DLL из `modloader/` загружается так же, как если бы путь перевёл сам Mod Loader.
+
+**4. Audio / BASS (Mod Loader):**
+
+- **`BASS_Free()` не вызывается при выключении.** CLEO 5 убрал этот вызов (коммит `a66999582`, issue #223: «causes deadlock with ModLoader»); освобождение BASS из пути выключения CLEO даёт deadlock, и игра теряет весь звук (совпадает с CLEO4 issue #87 «game without sound»). Потоки (`streams`) по-прежнему освобождаются, комплектный `bass.dll` не изменяется.
+- **Ослаблена проверка версии BASS.** Было жёсткое равенство `HIWORD(BASS_GetVersion()) == BASSVERSION`, из-за чего отклонялся любой `bass.dll`, кроме точной комплектной сборки. Теперь принимается любой интерфейс 2.4.x.
+
+### Статус проверки
+
+- Порт wildcard сверен с эталоном Mod Loader — 0 расхождений.
+- Хост-харнесс (POSIX-шим Win32 FS) на резолвер: все кейсы проходят — точный путь, победитель по приоритету (`80` бьёт `50`), исключение приоритета `0`, поиск независимо от раскладки, `MatchFiles` winner-first. Также покрыт кейс `cleo/audio/GANG_CASH.mp3` → `modloader/Cheat Menu RUS/audio/GANG_CASH.mp3`.
+- Синтаксическая проверка всех затронутых TU под mingw (`i686-w64-mingw32-g++`, `-fsyntax-only`): новых ошибок нет (только пре-существующий шум `_asm` / `__fastcall`).
+
+**В игре не проверялось** (сборка/запуск на Linux невозможны). Перед признанием стабильным нужно собрать Win32-конфигурацию в Visual Studio 2022 и проверить в GTA SA 1.0 US: `0AAB`/`0A9A`/`0AE4`, поиск файлов `0AE6`/`0AE7`/`0AE8`, аудио `0AAC`/`0AC1`, загрузку скриптов и FXT из `modloader/`, а также приоритеты двух модов с одинаковым путём.
