@@ -20,7 +20,11 @@ namespace CLEO
 
     HWND OnCreateMainWindow(HINSTANCE hinst)
     {
-        if (HIWORD(BASS_GetVersion()) != BASSVERSION)
+        // Accept any BASS with the same major interface (2.4.x) instead of
+        // requiring an exact build: the bundled DLL is the newest 2.4.18.3,
+        // but a user may keep an older bass.dll from an earlier CLEO install.
+        // CLEO 5 does the same relaxed check (#210 / #613).
+        if (HIWORD(BASS_GetVersion()) < BASSVERSION)
             Error("An incorrect version of bass.dll has been loaded");
 
         TRACE("Creating main window...");
