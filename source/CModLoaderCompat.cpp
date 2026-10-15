@@ -4,6 +4,8 @@
 #include "CDebugBridge.h"
 
 #include <fstream>
+#include <cstdlib>
+#include <algorithm>
 
 namespace CLEO
 {
@@ -120,9 +122,83 @@ namespace CLEO
                 m_ignoreMods.push_back(key);
             else if (kind == "ignorefiles")
                 m_ignoreFiles.push_back(key);
-            else if (kind == "priority" && value == "0")
-                m_ignoreMods.push_back(key); // priority 0 disables a mod
+            // Priority is read separately (LoadPriorities): priority 0 disables
+            // a mod, but it is still a priority (it wins/loses against others by
+            // value), so it must not be collapsed into the ignore list here.
         }
+    }
+
+    void CModLoaderCompat::LoadPriorities(const std::string& modloaderDir)
+    {
+        std::ifstream in(modloaderDir + "\\modloader.ini");
+        if (!in.is_open())
+            return;
+
+        std::string profile = "default";
+        std::string section;
+        std::string line;
+
+        while (std::getline(in, line))
+        {
+            line = Trim(line);
+            if (line.empty() || line[0] == ';' || line[0] == '#')
+                continue;
+
+            if (line.front() == '[' && line.back() == ']')
+            {
+                section = Trim(line.substr(1, line.size() - 2));
+                continue;
+            }
+
+            const size_t eq = line.find('=');
+            const std::string rawKey = Trim(eq == std::string::npos ? line : line.substr(0, eq));
+            const std::string value = Trim(eq == std::string::npos ? std::string() : line.substr(eq + 1));
+            const std::string normSection = ToLower(section);
+
+            if (normSection == "folder.config")
+            {
+                if (ToLower(rawKey) == "profile")
+                    profile = ToLower(value);
+                else if (ToLower(rawKey) == "prioritylimit")
+                {
+                    const long limit = std::strtol(value.c_str(), nullptr, 0);
+                    if (limit > 0)
+                        m_priorityLimit = static_cast<int>(limit);
+                }
+                continue;
+            }
+
+            if (normSection.rfind("profiles.", 0) != 0)
+                continue;
+
+            const size_t lastDot = normSection.find_last_of('.');
+            const std::string kind = normSection.substr(lastDot + 1);
+            const std::string name = section.substr(9, lastDot - 9); // strip "Profiles."
+            if (ToLower(name) != profile)
+                continue;
+
+            if (kind != "priority")
+                continue;
+
+            const std::string modKey = Normalize(rawKey);
+            if (modKey.empty())
+                continue;
+
+            long priority = std::strtol(value.c_str(), nullptr, 0);
+            if (priority < 0)
+                priority = 0;
+            if (priority > m_priorityLimit)
+                priority = m_priorityLimit;
+            m_modPriorities[modKey] = static_cast<int>(priority);
+        }
+    }
+
+    int CModLoaderCompat::GetPriority(const std::string& modName) const
+    {
+        // Mod Loader's default priority (loader.hpp default_priority).
+        const int defaultPriority = 50;
+        auto it = m_modPriorities.find(modName);
+        return it != m_modPriorities.end() ? it->second : defaultPriority;
     }
 
     bool CModLoaderCompat::IsModIgnored(const std::string& modName) const
@@ -142,7 +218,8 @@ namespace CLEO
     }
 
     void CModLoaderCompat::WalkMod(const std::string& absDir, const std::string& relDir,
-                                   const std::string& modPath)
+                                   const std::string& modPath, const std::string& modName,
+                                   int priority)
     {
         WIN32_FIND_DATAA ffd;
         const std::string mask = absDir + "\\*";
@@ -161,7 +238,7 @@ namespace CLEO
 
             if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
-                WalkMod(absDir + "\\" + name, childRel, childMod);
+                WalkMod(absDir + "\\" + name, childRel, childMod, modName, priority);
             }
             else if (!IsPathIgnored(childMod))
             {
@@ -169,6 +246,8 @@ namespace CLEO
                 e.relPath = Normalize(childRel);
                 e.modPath = childMod;
                 e.absPath = absDir + "\\" + name;
+                e.modName = modName;
+                e.priority = priority;
                 m_entries.push_back(std::move(e));
             }
         } while (FindNextFileA(h, &ffd));
@@ -194,7 +273,8 @@ namespace CLEO
                 continue;
 
             const std::string modName = Normalize(name);
-            if (IsModIgnored(modName))
+            const int priority = GetPriority(modName);
+            if (IsModIgnored(modName) || priority == 0)
             {
                 TRACE("[modloader] Ignoring mod '%s' (modloader.ini)", name.c_str());
                 continue;
@@ -202,7 +282,7 @@ namespace CLEO
 
             // relDir keeps the modloader folder prefix so that a script writing
             // the full "modloader/<mod>/..." path also resolves.
-            WalkMod(absML + "\\" + name, modloaderDir + "\\" + name, "");
+            WalkMod(absML + "\\" + name, modloaderDir + "\\" + name, "", modName, priority);
         } while (FindNextFileA(h, &ffd));
 
         FindClose(h);
@@ -219,8 +299,9 @@ namespace CLEO
         if (!IsActive())
             return;
 
-        m_indexed = true;
-
+        // NOTE: m_indexed is only latched after the root was found and the walk
+        // completed. A transient failure (root not present yet) leaves the flag
+        // clear so a later call can retry instead of failing for the session.
         if (!DetectGameRoot(m_baseDir))
             return;
 
@@ -233,14 +314,25 @@ namespace CLEO
 
         m_rootFolder = root;
         LoadIgnoreRules(m_baseDir + "\\" + root);
+        LoadPriorities(m_baseDir + "\\" + root);
         BuildIndex(m_baseDir, root);
 
         for (const Entry& e : m_entries)
         {
-            m_byModPath.emplace(e.modPath, &e);
-            m_byRelPath.emplace(e.relPath, &e);
+            m_byRelPath.emplace(e.relPath, &e);   // relPath embeds the mod name: unique
             m_byFileName[ModLoaderPaths::FileName(e.modPath)].push_back(&e);
+
+            // Two mods may provide the same mod-relative path; keep the one that
+            // Mod Loader would install (higher priority, else later name), so the
+            // result never depends on the directory-walk order.
+            auto it = m_byModPath.find(e.modPath);
+            if (it == m_byModPath.end())
+                m_byModPath.emplace(e.modPath, &e);
+            else if (WinsOver(e.priority, e.modName, it->second->priority, it->second->modName))
+                it->second = &e;
         }
+
+        m_indexed = true;
 
         TRACE("[modloader] Indexed %u files under '%s' (%u ignored mods, %u ignored file rules)",
             static_cast<unsigned>(m_entries.size()), root.c_str(),
@@ -296,6 +388,13 @@ namespace CLEO
                     bestLen = len;
                     best = e;
                 }
+                else if (len == bestLen && best != nullptr &&
+                         ModLoaderPaths::WinsOver(e->priority, e->modName, best->priority, best->modName))
+                {
+                    // Equal specificity: apply Mod Loader precedence so the pick
+                    // does not depend on the directory-walk order.
+                    best = e;
+                }
             }
             if (best)
             {
@@ -339,6 +438,11 @@ namespace CLEO
                 fuzzyLen = len;
                 fuzzy = &e;
             }
+            else if (len == fuzzyLen && len > 0 && fuzzy != nullptr &&
+                     ModLoaderPaths::WinsOver(e.priority, e.modName, fuzzy->priority, fuzzy->modName))
+            {
+                fuzzy = &e;
+            }
         }
         if (fuzzy)
         {
@@ -368,6 +472,10 @@ namespace CLEO
         if (patDirInRoot.rfind(rootNorm + "\\", 0) == 0)
             patDirInRoot = patDirInRoot.substr(rootNorm.size() + 1);
 
+        // Gather matches, then resolve to one winner per file name (Mod Loader
+        // installs a single file per path), sorted by precedence so the result
+        // is independent of the directory-walk order.
+        std::vector<const Entry*> hits;
         for (const Entry& e : m_entries)
         {
             const std::string modDir = DirName(e.modPath);
@@ -380,7 +488,23 @@ namespace CLEO
                 continue;
 
             if (MatchWildcard(patFile.c_str(), FileName(e.relPath).c_str()))
-                out.push_back(e.absPath);
+                hits.push_back(&e);
+        }
+
+        std::sort(hits.begin(), hits.end(), [](const Entry* a, const Entry* b) {
+            // Winner first, so de-duplication below keeps the Mod Loader winner.
+            return ModLoaderPaths::WinsOver(a->priority, a->modName, b->priority, b->modName);
+        });
+
+        out.clear();
+        for (const Entry* e : hits)
+        {
+            const std::string name = ModLoaderPaths::FileName(e->modPath);
+            const bool dup = std::any_of(out.begin(), out.end(), [&name](const std::string& p) {
+                return ModLoaderPaths::ToLower(ModLoaderPaths::FileName(p)) == name;
+            });
+            if (!dup)
+                out.push_back(e->absPath);
         }
     }
 }

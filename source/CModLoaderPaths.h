@@ -43,6 +43,29 @@ namespace CLEO
             return pos == std::string::npos ? std::string() : path.substr(0, pos);
         }
 
+        // Mod Loader's name comparison (util/container.hpp compare(str,str,true)):
+        // a shorter string sorts first, equal lengths compare lexicographically.
+        // Names are already Normalize()d, so this is effectively case-insensitive.
+        inline int CompareName(const std::string& a, const std::string& b)
+        {
+            if (a.size() != b.size())
+                return a.size() < b.size() ? -1 : 1;
+            return a.compare(b);
+        }
+
+        // Which of two mods wins a file they both provide. Mod Loader sorts mods
+        // by PriorityPred (priority ascending, then name ascending) and installs
+        // in that order with last-writer-wins, so the winner is the higher
+        // priority, or - on a tie - the later-sorting mod name. This is what
+        // makes the outcome independent of directory-walk order.
+        inline bool WinsOver(int priorityA, const std::string& nameA,
+                             int priorityB, const std::string& nameB)
+        {
+            if (priorityA != priorityB)
+                return priorityA > priorityB;
+            return CompareName(nameA, nameB) > 0;
+        }
+
         inline std::string FileName(const std::string& path)
         {
             const size_t pos = path.find_last_of('\\');

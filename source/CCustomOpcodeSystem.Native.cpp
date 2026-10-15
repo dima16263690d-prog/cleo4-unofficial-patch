@@ -8,6 +8,7 @@
 #include "CCleoMemoryManager.h"
 #include "CModelInfo.h"
 #include "CDebugCallbackSystem.h"
+#include "CModLoaderCompat.h"
 #include "CCustomOpcodeSystem.Internal.h"
 
 namespace CLEO
@@ -15,7 +16,13 @@ namespace CLEO
 	//0AA2=2,%2h% = load_library %1d% // IF and SET
 	OpcodeResult __stdcall opcode_0AA2(CRunningScript *thread)
 	{
-		auto libHandle = LoadLibrary(readString(thread));
+		const char *lib = readString(thread);
+		// A library a mod ships under modloader/ must be loadable, exactly as if
+		// Mod Loader had translated the path (CLEO.asi is not one of its patched
+		// modules). Resolve through the same tree as the file opcodes.
+		std::string resolved;
+		const char *loadPath = ResolveModLoaderPath(lib, resolved) ? resolved.c_str() : lib;
+		auto libHandle = LoadLibrary(loadPath);
 		*thread << libHandle;
 		SetScriptCondResult(thread, libHandle != nullptr);
 		if (libHandle) GetInstance().OpcodeSystem.m_hNativeLibs.insert(libHandle);

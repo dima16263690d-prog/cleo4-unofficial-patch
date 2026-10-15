@@ -57,6 +57,8 @@ namespace CLEO
             std::string relPath;    // game-relative, e.g. "modloader\\mod\\cleo\\x.cs"
             std::string modPath;    // relative to the mod root, e.g. "cleo\\x.cs"
             std::string absPath;    // absolute real path
+            std::string modName;    // normalized owning mod folder ("" for loose files)
+            int priority = 50;      // Mod Loader priority of the owning mod
         };
 
         void EnsureIndexed();
@@ -64,14 +66,19 @@ namespace CLEO
         bool DetectRoot(const std::string& baseDir, std::string& root);
         void BuildIndex(const std::string& baseDir, const std::string& modloaderDir);
         void WalkMod(const std::string& absDir, const std::string& relDir,
-                     const std::string& modPath);
+                     const std::string& modPath, const std::string& modName, int priority);
         void LoadIgnoreRules(const std::string& modloaderDir);
+        // Reads [Profiles.<active>.Priority] and [Folder.Config] PriorityLimit.
+        void LoadPriorities(const std::string& modloaderDir);
 
         bool IsModIgnored(const std::string& modName) const;
         bool IsPathIgnored(const std::string& modPath) const;
 
+        // Priority of @modName under the active profile (Mod Loader default 50).
+        int GetPriority(const std::string& modName) const;
+
         bool m_active = false;
-        bool m_indexed = false;
+        bool m_indexed = false;                 // index built successfully this session
         std::string m_baseDir;                  // absolute game root
         std::string m_rootFolder;               // "modloader" (game-relative)
         std::vector<Entry> m_entries;
@@ -84,5 +91,9 @@ namespace CLEO
         // modloader.ini derived filters (profile-aware subset).
         std::vector<std::string> m_ignoreMods;
         std::vector<std::string> m_ignoreFiles;
+        // normalized mod folder name -> priority (only explicit entries stored;
+        // absent names fall back to the Mod Loader default of 50).
+        std::unordered_map<std::string, int> m_modPriorities;
+        int m_priorityLimit = 100;
     };
 }

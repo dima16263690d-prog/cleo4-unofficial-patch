@@ -17,10 +17,6 @@
 
 namespace CLEO
 {
-	// Marker bit that flags an emulated Mod Loader file search. Real
-	// FindFirstFile handles never have the high bit set, so this cannot clash.
-	static const uintptr_t MODLOADER_FIND_MARKER = 0x80000000u;
-
 	// Writes a WIN32_FIND_DATA file name into the script output parameter of
 	// opcodes 0AE6/0AE7, honoring the parameter type (string / text label /
 	// pointer). Shared by the native and the Mod Loader search paths.
@@ -34,17 +30,18 @@ namespace CLEO
 		case DT_LVAR_STRING:
 		case DT_VAR_STRING_ARRAY:
 		case DT_LVAR_STRING_ARRAY:
+			// A string script variable is 16 bytes; copy at most 15 and
+			// terminate. ffd.cFileName is always NUL-terminated.
 			str = (char*)GetScriptParamPointer(thread);
-			memcpy(str, ffd.cFileName, 16);
-			str[15] = '\0';
+			strncpy_s(str, 16, ffd.cFileName, _TRUNCATE);
 			break;
 		case DT_VAR_TEXTLABEL:
 		case DT_LVAR_TEXTLABEL:
 		case DT_VAR_TEXTLABEL_ARRAY:
 		case DT_LVAR_TEXTLABEL_ARRAY:
+			// A text label is 8 bytes.
 			str = (char*)GetScriptParamPointer(thread);
-			memcpy(str, ffd.cFileName, 8);
-			str[7] = '\0';
+			strncpy_s(str, 8, ffd.cFileName, _TRUNCATE);
 			break;
 		default:
 			*thread >> str;
@@ -343,11 +340,15 @@ namespace CLEO
 				memset(&ffd, 0, sizeof(ffd));
 				strncpy_s(ffd.cFileName, MAX_PATH, names[0].c_str(), _TRUNCATE);
 
+				// The owned node's address is the pseudo-handle: unique, never
+				// reused after close, and identified by registry membership
+				// rather than by a bit pattern a real handle might also use.
 				auto& opcodeSystem = GetInstance().OpcodeSystem;
-				const DWORD handle = static_cast<DWORD>(MODLOADER_FIND_MARKER | (++opcodeSystem.m_modloaderSearchCounter));
-				auto& search = opcodeSystem.m_modloaderSearches[handle];
-				search.matches = std::move(names);
-				search.next = 1;
+				auto node = std::make_unique<CCustomOpcodeSystem::ModLoaderFileSearch>();
+				node->matches = std::move(names);
+				node->next = 1;
+				void* handle = node.get();
+				opcodeSystem.m_modloaderSearches.emplace(handle, std::move(node));
 
 				*thread << handle;
 				WriteFindDataToScript(thread, ffd);
@@ -383,15 +384,16 @@ namespace CLEO
 
 		// Emulated Mod Loader search: walk the precomputed match list.
 		auto& searches = GetInstance().OpcodeSystem.m_modloaderSearches;
-		if (auto it = searches.find(static_cast<DWORD>(reinterpret_cast<uintptr_t>(handle))); it != searches.end())
+		if (auto it = searches.find(reinterpret_cast<void*>(handle)); it != searches.end())
 		{
-			if (it->second.next < it->second.matches.size())
+			CCustomOpcodeSystem::ModLoaderFileSearch& search = *it->second;
+			if (search.next < search.matches.size())
 			{
 				WIN32_FIND_DATA ffd;
 				memset(&ffd, 0, sizeof(ffd));
 				strncpy_s(ffd.cFileName, MAX_PATH,
-					ModLoaderPaths::FileName(it->second.matches[it->second.next]).c_str(), _TRUNCATE);
-				++it->second.next;
+					ModLoaderPaths::FileName(search.matches[search.next]).c_str(), _TRUNCATE);
+				++search.next;
 
 				WriteFindDataToScript(thread, ffd);
 				SetScriptCondResult(thread, true);
@@ -427,9 +429,9 @@ namespace CLEO
 		*thread >> handle;
 
 		auto& searches = GetInstance().OpcodeSystem.m_modloaderSearches;
-		if (auto it = searches.find(static_cast<DWORD>(reinterpret_cast<uintptr_t>(handle))); it != searches.end())
+		if (auto it = searches.find(reinterpret_cast<void*>(handle)); it != searches.end())
 		{
-			searches.erase(it);
+			searches.erase(it); // unique_ptr frees the node
 			return OR_CONTINUE;
 		}
 

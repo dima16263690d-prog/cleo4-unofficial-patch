@@ -2,6 +2,7 @@
 #include "CCodeInjector.h"
 #include "CDebugBridge.h"
 #include <direct.h>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,14 +41,16 @@ namespace CLEO
 
         // Emulated file searches over the Mod Loader tree (opcodes 0AE6/0AE7).
         // Each entry carries the remaining matches so find_next_file can walk
-        // them without re-scanning modloader/.
+        // them without re-scanning modloader/. The map key IS the pseudo-handle
+        // returned to the script (the owned node's address), so a handle is
+        // identified by registry membership rather than by a bit pattern that a
+        // real handle might use. The unique_ptr keeps it alive and unique.
         struct ModLoaderFileSearch
         {
             std::vector<std::string> matches;
             size_t next = 0;
         };
-        std::unordered_map<DWORD, ModLoaderFileSearch> m_modloaderSearches;
-        DWORD m_modloaderSearchCounter = 0;
+        std::unordered_map<void*, std::unique_ptr<ModLoaderFileSearch>> m_modloaderSearches;
 
         void FinalizeScriptObjects()
         {
@@ -72,7 +75,7 @@ namespace CLEO
             // clean up file searches
             std::for_each(m_hFileSearches.begin(), m_hFileSearches.end(), FindClose);
             m_hFileSearches.clear();
-            m_modloaderSearches.clear();
+            m_modloaderSearches.clear(); // unique_ptr frees the nodes
 
             // clean up after opcode_0AB1
             ResetScmFunctionStore();
