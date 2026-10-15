@@ -515,7 +515,9 @@ DebugUtils не пытается автоматически «чинить» GTA
 
 **Ветка:** `modloader-compat`
 **Pull Request:** [#10 — Mod Loader compatibility: resolve CLEO files/audio under modloader/](https://github.com/dima16263690d-prog/cleo4-unofficial-patch/pull/10)
-**Базовая ветка:** `ks03`
+**Базовая ветка:** `main`
+**Коммит слияния:** `fe68aab645f3e8f51f4a33d9ea5f696f7fbce7ae` (merge-коммит, история ветки сохранена)
+**Результат:** GitHub подтвердил успешное слияние в `main`.
 
 ### Проблема
 
