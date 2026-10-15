@@ -173,6 +173,12 @@ CLEO 4.4.4 Legacy
 
 При этом CLEO 4 не запускает второй BASS engine: один существующий `CSoundSystem` остаётся владельцем stream handles.
 
+#### BASS и Mod Loader
+
+BASS делит аудиоустройство с самой GTA SA и с Mod Loader, поэтому завершение BASS (`BASS_Free`) из пути выключения CLEO приводит к deadlock — после этого пропадает весь игровой звук (совпадает с CLEO4 issue #87 «game without sound» и CLEO5 #223). CLEO 5 убрал этот вызов в коммите `a66999582` («Fix deadlock inside BASS library finalization», пометка «causes deadlock with ModLoader»).
+
+В этом патче `CSoundSystem::~CSoundSystem()` повторяет решение CLEO 5: `BASS_Free()` не вызывается, DLL остаётся загруженной до завершения процесса. Потоки (`streams`) по-прежнему освобождаются.
+
 ### Audio.cleo
 
 Добавлен отдельный plugin:
