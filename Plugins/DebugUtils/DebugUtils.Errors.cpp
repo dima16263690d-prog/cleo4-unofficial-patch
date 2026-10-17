@@ -245,8 +245,28 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
         if (name.empty() || name == "<unknown>")
             continue;
 
-        if (std::find(modules.begin(), modules.end(), name) == modules.end())
-            modules.push_back(name);
+        // Include the offset inside the module (mod.asi+0x1a2b) so the exact
+        // call site can be looked up when a matching build is available. Dedup
+        // by module name: the first frame in a given module is the useful one.
+        bool alreadySeen = false;
+        for (const auto& seen : modules)
+        {
+            if (seen == name || seen.compare(0, name.size() + 1, name + "+") == 0)
+            {
+                alreadySeen = true;
+                break;
+            }
+        }
+        if (alreadySeen)
+            continue;
+
+        const DWORD moduleBase = reinterpret_cast<DWORD>(module);
+        char label[260] = {};
+        _snprintf_s(
+            label, sizeof(label), _TRUNCATE, "%s+0x%X",
+            name.c_str(), static_cast<unsigned>(candidate - moduleBase));
+
+        modules.push_back(std::string(label));
 
         if (modules.size() >= maxModules)
             break;
@@ -368,6 +388,68 @@ namespace
     RwFopenFn g_rwFopenOriginal = nullptr;
 }
 
+namespace
+{
+    // Case-sensitive glob for already-lowercased input: '*' matches any run of
+    // characters (including none), '?' matches exactly one. Used for the
+    // FileWatchNames masks such as "*.txd" or "lunar.*".
+    bool GlobMatchImpl(const char* text, const char* pattern)
+    {
+        while (*pattern != '\0')
+        {
+            if (*pattern == '*')
+            {
+                // Collapse consecutive stars, then try to match the rest of the
+                // pattern at every remaining position of the text.
+                while (*pattern == '*')
+                    ++pattern;
+                if (*pattern == '\0')
+                    return true;
+                while (*text != '\0')
+                {
+                    if (GlobMatchImpl(text, pattern))
+                        return true;
+                    ++text;
+                }
+                return GlobMatchImpl(text, pattern);
+            }
+
+            if (*text == '\0')
+                return false;
+
+            if (*pattern != '?' && *pattern != *text)
+                return false;
+
+            ++text;
+            ++pattern;
+        }
+
+        return *text == '\0';
+    }
+
+    bool MatchGlob(const std::string& text, const std::string& pattern)
+    {
+        return GlobMatchImpl(text.c_str(), pattern.c_str());
+    }
+
+    // Absolute path the game actually looks in for a (possibly relative) name.
+    // A relative name is resolved against the process working directory, which
+    // for GTA SA is the folder holding gta_sa.exe - so this shows exactly where
+    // a missing file was expected.
+    std::string ResolveReportPath(const char* path)
+    {
+        if (path == nullptr)
+            return {};
+
+        char full[MAX_PATH] = {};
+        const DWORD length = GetFullPathNameA(path, MAX_PATH, full, nullptr);
+        if (length == 0 || length >= MAX_PATH)
+            return std::string(path);
+
+        return std::string(full);
+    }
+}
+
 void* __cdecl DebugUtils::FileOpenWatchFopen(const char* name, const char* mode)
 {
     RwFopenFn original = g_rwFopenOriginal;
@@ -401,9 +483,34 @@ bool DebugUtils::IsWatchedFileName(const char* path) const
     for (char& c : lower)
         c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
 
+    // Each entry may be a plain substring ("particle.txd"), a glob mask
+    // ("*.txd", "lunar.*"), or a bare name ("lunar"). A match on any entry
+    // watches the file.
     for (const auto& needle : m_fileWatchNames)
     {
-        if (!needle.empty() && lower.find(needle) != std::string::npos)
+        if (needle.empty())
+            continue;
+
+        // Glob: '*' matches any run of characters, '?' matches one. A pattern
+        // without a wildcard behaves exactly like the old substring test.
+        const bool hasWildcard =
+            needle.find('*') != std::string::npos || needle.find('?') != std::string::npos;
+
+        if (!hasWildcard)
+        {
+            if (lower.find(needle) != std::string::npos)
+                return true;
+            continue;
+        }
+
+        // Anchor the glob to the file name (after the last path separator), so
+        // "*.txd" means "any .txd file", not "any path ending in .txd".
+        std::string fileName = lower;
+        const size_t slash = fileName.find_last_of("\\/");
+        if (slash != std::string::npos)
+            fileName = fileName.substr(slash + 1);
+
+        if (MatchGlob(fileName, needle) || MatchGlob(lower, needle))
             return true;
     }
 
@@ -419,6 +526,7 @@ void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
     const DWORD now = GetTickCount();
     const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
     const std::string script = CurrentScriptName();
+    const std::string resolved = ResolveReportPath(path);
 
     std::lock_guard<std::mutex> lock(m_fileWatchRecordMutex);
 
@@ -431,6 +539,7 @@ void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
         record.lastUptimeSec = uptimeSec;
         record.failed = failed;
         record.lastScript = script;
+        record.resolvedPath = resolved;
 
         m_fileWatchRecordOrder.push_back(key);
         it = m_fileWatchRecords.emplace(key, std::move(record)).first;
@@ -442,6 +551,7 @@ void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
         record.lastUptimeSec = uptimeSec;
         record.failed = failed;
         record.lastScript = script;
+        record.resolvedPath = resolved;
     }
 
     FileOpenRecord& stored = it->second;
@@ -515,6 +625,9 @@ void DebugUtils::WriteWatchedOpenReport(bool forceAll)
             }
             WriteFrameTime("      requested by: %s", chain.c_str());
         }
+
+        if (!record.resolvedPath.empty())
+            WriteFrameTime("      looked in: %s", record.resolvedPath.c_str());
     }
 
     WriteFrameTime(
@@ -623,6 +736,7 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
     const DWORD now = GetTickCount();
     const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
     const std::string script = CurrentScriptName();
+    const std::string resolved = ResolveReportPath(path);
 
     std::lock_guard<std::mutex> lock(m_fileOpenMutex);
 
@@ -634,6 +748,7 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
         failure.firstUptimeSec = uptimeSec;
         failure.lastUptimeSec = uptimeSec;
         failure.lastScript = script;
+        failure.resolvedPath = resolved;
 
         m_fileOpenOrder.push_back(key);
         it = m_fileOpenFailures.emplace(key, std::move(failure)).first;
@@ -644,6 +759,7 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
         ++failure.count;
         failure.lastUptimeSec = uptimeSec;
         failure.lastScript = script;
+        failure.resolvedPath = resolved;
     }
 
     // Walk the stack once per distinct path, at the moment of the failed open:
@@ -699,7 +815,6 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
         // Keep the row readable when a path is very long.
         if (path.size() > 52)
             path = std::string("...") + path.substr(path.size() - 49);
-
         WriteFrameTime(
             "%-3zu %-52s %8u %5u %5u %-16s",
             index,
@@ -724,6 +839,11 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
             }
             WriteFrameTime("      requested by: %s", chain.c_str());
         }
+
+        // The absolute path the game looked in, so the exact folder to put the
+        // file into is unambiguous.
+        if (!failure.resolvedPath.empty())
+            WriteFrameTime("      looked in: %s", failure.resolvedPath.c_str());
 
         // A bare name (no directory) is resolved against the game's working
         // directory (the GTA SA folder), which is the usual reason a file a mod

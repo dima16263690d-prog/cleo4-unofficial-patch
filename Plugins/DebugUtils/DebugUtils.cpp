@@ -485,14 +485,14 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  трогается. Только GTA SA 1.0 US."
             : "  modified. GTA SA 1.0 US only.");
     kv("DebugUtils.Errors", "FileWatch", "0");
-    desc(ru ? "FileWatchNames: список через запятую (подстроки пути). Каждое"
-            : "FileWatchNames: comma-separated path substrings. Every open of a");
-    desc(ru ? "  открытие такого файла пишется в лог (успех или ошибка) - так"
-            : "  matching file is logged (success or failure), so 'who loads");
-    desc(ru ? "  видно, какой мод/плагин грузит файл, даже если файл есть."
-            : "  particle.txd' is answered even when the file exists.");
-    desc(ru ? "  Пример: FileWatchNames=particle.txd,lunar.png"
-            : "  Example: FileWatchNames=particle.txd,lunar.png");
+    desc(ru ? "FileWatchNames: список через запятую (подстроки пути или маски)."
+            : "FileWatchNames: comma-separated path substrings or glob masks.");
+    desc(ru ? "  Каждое открытие подходящего файла пишется в лог (успех или"
+            : "  Every open of a matching file is logged (success or failure), so");
+    desc(ru ? "  ошибка) - видно, какой мод/плагин грузит файл, даже если файл"
+            : "  'who loads particle.txd' is answered even when the file exists.");
+    desc(ru ? "  есть. Маски: * и ?. Пример: particle.txd,*.txd,*.png"
+            : "  Masks: * and ?. Example: particle.txd,*.txd,*.png");
     kv("DebugUtils.Errors", "FileWatchNames", "");
     line("");
 

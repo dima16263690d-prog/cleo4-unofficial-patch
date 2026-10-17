@@ -218,29 +218,46 @@ executable code (a wrong-layout guard). Off by default.
 ### Finding who loads a specific file (FileWatchNames)
 
 `E_RW_BADOPEN` only fires when a file is *missing*. To answer "which script or
-`.asi` loads `particle.txd`" when the file does exist, list the name(s) in
-`[DebugUtils.Errors] FileWatchNames` (comma-separated substrings, case
-insensitive). Every open of a matching file is recorded whether it succeeded or
-failed:
+`.asi` loads `particle.txd`" — or to pin down a missing `lunar.png` — list the
+name(s) in `[DebugUtils.Errors] FileWatchNames` (comma-separated). Each entry is
+a plain substring, a glob mask (`*`, `?`), or a bare name, so you can watch one
+file, a whole kind, or several at once:
 
 ```
 [DebugUtils.Errors] FileWatch=1
-[DebugUtils.Errors] FileWatchNames=particle.txd
+[DebugUtils.Errors] FileWatchNames=particle.txd,*.png
 ```
+
+Every open of a matching file is recorded whether it succeeded or failed:
 
 ```
 ================= watched file opens =================
 #   path                           count first  last result script
 1   models\particle.txd                1    12    12 ok     plg-sdk
-      requested by: mymod.asi
-[filewatch] watchlist: 1 path(s) matched (FileWatchNames)
+      requested by: mymod.asi+0x1a2b
+      looked in: C:\GTA San Andreas\models\particle.txd
+2   lunar.png                          1    40    40 FAILED plg-sdk
+      requested by: mymod.asi+0x2f10
+      looked in: C:\GTA San Andreas\lunar.png
+[filewatch] watchlist: 2 path(s) matched (FileWatchNames)
 ```
 
-The `requested by:` line (needs `ModuleScan=1`) names the module on the stack at
-the open — the concrete `.asi`/plugin. The `script` column is the CLEO script
-active then (`plg-sdk` means a plugin called a game command through the
-plugin-sdk bridge). This is the direct way to attribute a resource to the mod
-that requests it.
+- `result` is `ok` (opened) or `FAILED` (missing — this is what raises
+  `E_RW_BADOPEN` / `E_RW_READTEXMASK`).
+- `requested by:` (needs `ModuleScan=1`) names the module on the stack at the
+  open, with the offset inside it (`mymod.asi+0x1a2b`) — the concrete `.asi`
+  plugin that asked for the file.
+- `looked in:` is the absolute path the game tried — the exact folder to place a
+  missing file into, or the path a mod got wrong.
+- `script` is the CLEO script active then (`plg-sdk` means a plugin called a game
+  command through the plugin-sdk bridge).
+
+The same `requested by:` / `looked in:` lines are added to the *failed file
+opens* block, so a missing file (as with `lunar.png`) comes with both its exact
+path and the mod that requested it.
+
+Masks are matched against the file name and the full path: `*.txd` watches every
+texture dictionary, `*.png` every PNG, `lunar.*` a specific basename.
 
 Note: files read from inside IMG archives are not opened through RenderWare's
 file functions (the IMG is opened once and seeked), so this watch sees loose
