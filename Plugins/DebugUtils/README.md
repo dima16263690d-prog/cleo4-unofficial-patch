@@ -246,7 +246,9 @@ Every open of a matching file is recorded whether it succeeded or failed:
   `E_RW_BADOPEN` / `E_RW_READTEXMASK`).
 - `requested by:` (needs `ModuleScan=1`) names the module on the stack at the
   open, with the offset inside it (`mymod.asi+0x1a2b`) — the concrete `.asi`
-  plugin that asked for the file.
+  plugin that asked for the file. The chain is captured with a real stack unwind
+  (`RtlCaptureStackBackTrace`) at the moment of the open, so the nearest frame is
+  the actual caller; a bounded stack scan is used only as a fallback.
 - `looked in:` is the absolute path the game tried — the exact folder to place a
   missing file into, or the path a mod got wrong.
 - `script` is the CLEO script active then (`plg-sdk` means a plugin called a game

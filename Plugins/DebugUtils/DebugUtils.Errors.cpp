@@ -152,6 +152,236 @@ namespace
     }
 }
 
+namespace
+{
+    // Case-sensitive glob for already-lowercased input: '*' matches any run of
+    // characters (including none), '?' matches exactly one. Used for the
+    // FileWatchNames masks such as "*.txd" or "lunar.*".
+    bool GlobMatchImpl(const char* text, const char* pattern)
+    {
+        while (*pattern != '\0')
+        {
+            if (*pattern == '*')
+            {
+                // Collapse consecutive stars, then try to match the rest of the
+                // pattern at every remaining position of the text.
+                while (*pattern == '*')
+                    ++pattern;
+                if (*pattern == '\0')
+                    return true;
+                while (*text != '\0')
+                {
+                    if (GlobMatchImpl(text, pattern))
+                        return true;
+                    ++text;
+                }
+                return GlobMatchImpl(text, pattern);
+            }
+
+            if (*text == '\0')
+                return false;
+
+            if (*pattern != '?' && *pattern != *text)
+                return false;
+
+            ++text;
+            ++pattern;
+        }
+
+        return *text == '\0';
+    }
+
+    bool MatchGlob(const std::string& text, const std::string& pattern)
+    {
+        return GlobMatchImpl(text.c_str(), pattern.c_str());
+    }
+
+    // Absolute path the game actually looks in for a (possibly relative) name.
+    // A relative name is resolved against the process working directory, which
+    // for GTA SA is the folder holding gta_sa.exe - so this shows exactly where
+    // a missing file was expected.
+    std::string ResolveReportPath(const char* path)
+    {
+        if (path == nullptr)
+            return {};
+
+        char full[MAX_PATH] = {};
+        const DWORD length = GetFullPathNameA(path, MAX_PATH, full, nullptr);
+        if (length == 0 || length >= MAX_PATH)
+            return std::string(path);
+
+        return std::string(full);
+    }
+
+    // True for the game, CLEO and DebugUtils itself: modules that are never the
+    // interesting answer when looking for "which mod did this".
+    bool IsIgnoredModuleHandle(HMODULE module)
+    {
+        if (module == nullptr)
+            return true;
+
+        const DWORD base = reinterpret_cast<DWORD>(module);
+        if (base == reinterpret_cast<DWORD>(GetModuleHandleA(nullptr)))
+            return true;
+        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("CLEO.asi")))
+            return true;
+        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.cleo")))
+            return true;
+        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.dll")))
+            return true;
+
+        // This module's own base, resolved once by address so it works whatever
+        // the loaded file is called.
+        static const DWORD selfBase = []() -> DWORD
+        {
+            HMODULE self = nullptr;
+            GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&IsIgnoredModuleHandle),
+                &self);
+            return reinterpret_cast<DWORD>(self);
+        }();
+
+        return base == selfBase;
+    }
+
+    // "mod.asi+0x1a2b" - the module plus the offset inside it.
+    std::string FormatFrameLabel(DWORD address)
+    {
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(address),
+                &module) || module == nullptr)
+        {
+            return {};
+        }
+
+        const std::string name = DebugUtils::ModuleNameForAddress(address);
+        if (name.empty() || name == "<unknown>")
+            return {};
+
+        char label[260] = {};
+        _snprintf_s(
+            label, sizeof(label), _TRUNCATE, "%s+0x%X",
+            name.c_str(),
+            static_cast<unsigned>(address - reinterpret_cast<DWORD>(module)));
+
+        return std::string(label);
+    }
+
+    // Append a frame label to the list unless the module is already listed, so
+    // one DLL is not repeated at several offsets.
+    void PushUniqueFrame(std::vector<std::string>& modules, DWORD address)
+    {
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(address),
+                &module) || module == nullptr)
+        {
+            return;
+        }
+
+        const std::string name = DebugUtils::ModuleNameForAddress(address);
+        if (name.empty() || name == "<unknown>")
+            return;
+
+        for (const auto& seen : modules)
+        {
+            if (seen == name || seen.compare(0, name.size() + 1, name + "+") == 0)
+                return;
+        }
+
+        const std::string label = FormatFrameLabel(address);
+        if (!label.empty())
+            modules.push_back(label);
+    }
+
+    typedef USHORT(WINAPI* RtlCaptureStackBackTraceFn)(
+        ULONG FramesToSkip, ULONG FramesToCapture, PVOID* BackTrace, PULONG BackTraceHash);
+
+    // RtlCaptureStackBackTrace lives in kernel32 on modern Windows and ntdll on
+    // XP; resolved dynamically so no import is needed and the mingw syntax check
+    // stays happy.
+    RtlCaptureStackBackTraceFn ResolveCaptureBackTrace()
+    {
+        static RtlCaptureStackBackTraceFn cached = []() -> RtlCaptureStackBackTraceFn
+        {
+            HMODULE kernel = GetModuleHandleA("kernel32.dll");
+            if (kernel != nullptr)
+            {
+                if (auto fn = reinterpret_cast<RtlCaptureStackBackTraceFn>(
+                        reinterpret_cast<void*>(
+                            GetProcAddress(kernel, "RtlCaptureStackBackTrace"))))
+                {
+                    return fn;
+                }
+            }
+
+            HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+            if (ntdll != nullptr)
+            {
+                return reinterpret_cast<RtlCaptureStackBackTraceFn>(
+                    reinterpret_cast<void*>(
+                        GetProcAddress(ntdll, "RtlCaptureStackBackTrace")));
+            }
+
+            return nullptr;
+        }();
+
+        return cached;
+    }
+
+    // Module chain of the callers of this function, nearest first, ignoring the
+    // game, CLEO and DebugUtils itself. Prefers RtlCaptureStackBackTrace (a real
+    // unwind, so it does not pick up stale stack words); falls back to the
+    // E8-return-address heuristic when the unwind is unavailable or empty.
+    std::vector<std::string> CaptureRequesterChain(size_t maxFrames)
+    {
+        std::vector<std::string> modules;
+
+        const auto capture = ResolveCaptureBackTrace();
+        if (capture != nullptr)
+        {
+            PVOID frames[32] = {};
+            const USHORT count = capture(0, 32, frames, nullptr);
+
+            for (USHORT i = 0; i < count && modules.size() < maxFrames; ++i)
+            {
+                const DWORD address = reinterpret_cast<DWORD>(frames[i]);
+                if (address < 0x10000)
+                    continue;
+
+                HMODULE module = nullptr;
+                if (!GetModuleHandleExA(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCSTR>(address),
+                        &module))
+                {
+                    continue;
+                }
+
+                if (IsIgnoredModuleHandle(module))
+                    continue;
+
+                PushUniqueFrame(modules, address);
+            }
+        }
+
+        if (!modules.empty())
+            return modules;
+
+        // Fallback: the same stack scan the error report uses.
+        return DebugUtils::ScanErrorModules(maxFrames);
+    }
+}
+
+
 std::string DebugUtils::CurrentScriptName()
 {
     CLEO_CrashSnapshot snapshot{};
@@ -191,28 +421,6 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
 {
     std::vector<std::string> modules;
 
-    const DWORD gameBase = reinterpret_cast<DWORD>(GetModuleHandleA(nullptr));
-    const DWORD cleoBase = reinterpret_cast<DWORD>(GetModuleHandleA("CLEO.asi"));
-    const DWORD debugBase = reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.cleo"));
-    const DWORD debugBaseDll = reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.dll"));
-
-    // The module containing this function is DebugUtils itself; filter it by
-    // address so the result does not depend on the exact loaded file name.
-    HMODULE self = nullptr;
-    GetModuleHandleExA(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCSTR>(&DebugUtils::ScanErrorModules),
-        &self);
-
-    auto isIgnored = [&](DWORD base)
-    {
-        return base != 0 &&
-            (base == gameBase || base == cleoBase ||
-             base == debugBase || base == debugBaseDll ||
-             base == reinterpret_cast<DWORD>(self));
-    };
-
     // Anchor on a local; on x86 the stack grows down, so higher addresses hold
     // older (caller) frames. Scan a bounded window upward.
     const DWORD anchor = reinterpret_cast<DWORD>(&modules);
@@ -225,7 +433,8 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
                 reinterpret_cast<const void*>(anchor + offset), candidate))
             break;
 
-        if (candidate < 0x10000 || !IsExecutableAddress(reinterpret_cast<const void*>(candidate)))
+        if (candidate < 0x10000 ||
+            !IsExecutableAddress(reinterpret_cast<const void*>(candidate)))
             continue;
 
         HMODULE module = nullptr;
@@ -238,35 +447,10 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
             continue;
         }
 
-        if (isIgnored(reinterpret_cast<DWORD>(module)))
+        if (IsIgnoredModuleHandle(module))
             continue;
 
-        const std::string name = ModuleNameForAddress(candidate);
-        if (name.empty() || name == "<unknown>")
-            continue;
-
-        // Include the offset inside the module (mod.asi+0x1a2b) so the exact
-        // call site can be looked up when a matching build is available. Dedup
-        // by module name: the first frame in a given module is the useful one.
-        bool alreadySeen = false;
-        for (const auto& seen : modules)
-        {
-            if (seen == name || seen.compare(0, name.size() + 1, name + "+") == 0)
-            {
-                alreadySeen = true;
-                break;
-            }
-        }
-        if (alreadySeen)
-            continue;
-
-        const DWORD moduleBase = reinterpret_cast<DWORD>(module);
-        char label[260] = {};
-        _snprintf_s(
-            label, sizeof(label), _TRUNCATE, "%s+0x%X",
-            name.c_str(), static_cast<unsigned>(candidate - moduleBase));
-
-        modules.push_back(std::string(label));
+        PushUniqueFrame(modules, candidate);
 
         if (modules.size() >= maxModules)
             break;
@@ -387,69 +571,6 @@ namespace
     // Assigned during InstallFileOpenWatch, read on every intercepted open.
     RwFopenFn g_rwFopenOriginal = nullptr;
 }
-
-namespace
-{
-    // Case-sensitive glob for already-lowercased input: '*' matches any run of
-    // characters (including none), '?' matches exactly one. Used for the
-    // FileWatchNames masks such as "*.txd" or "lunar.*".
-    bool GlobMatchImpl(const char* text, const char* pattern)
-    {
-        while (*pattern != '\0')
-        {
-            if (*pattern == '*')
-            {
-                // Collapse consecutive stars, then try to match the rest of the
-                // pattern at every remaining position of the text.
-                while (*pattern == '*')
-                    ++pattern;
-                if (*pattern == '\0')
-                    return true;
-                while (*text != '\0')
-                {
-                    if (GlobMatchImpl(text, pattern))
-                        return true;
-                    ++text;
-                }
-                return GlobMatchImpl(text, pattern);
-            }
-
-            if (*text == '\0')
-                return false;
-
-            if (*pattern != '?' && *pattern != *text)
-                return false;
-
-            ++text;
-            ++pattern;
-        }
-
-        return *text == '\0';
-    }
-
-    bool MatchGlob(const std::string& text, const std::string& pattern)
-    {
-        return GlobMatchImpl(text.c_str(), pattern.c_str());
-    }
-
-    // Absolute path the game actually looks in for a (possibly relative) name.
-    // A relative name is resolved against the process working directory, which
-    // for GTA SA is the folder holding gta_sa.exe - so this shows exactly where
-    // a missing file was expected.
-    std::string ResolveReportPath(const char* path)
-    {
-        if (path == nullptr)
-            return {};
-
-        char full[MAX_PATH] = {};
-        const DWORD length = GetFullPathNameA(path, MAX_PATH, full, nullptr);
-        if (length == 0 || length >= MAX_PATH)
-            return std::string(path);
-
-        return std::string(full);
-    }
-}
-
 void* __cdecl DebugUtils::FileOpenWatchFopen(const char* name, const char* mode)
 {
     RwFopenFn original = g_rwFopenOriginal;
@@ -559,7 +680,7 @@ void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
     {
         stored.modulesScanned = true;
         if (m_errorModuleScanEnabled)
-            stored.modules = ScanErrorModules(4);
+            stored.modules = CaptureRequesterChain(4);
     }
 }
 
@@ -770,7 +891,7 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
     {
         stored.modulesScanned = true;
         if (m_errorModuleScanEnabled)
-            stored.modules = ScanErrorModules(4);
+            stored.modules = CaptureRequesterChain(4);
     }
 }
 
