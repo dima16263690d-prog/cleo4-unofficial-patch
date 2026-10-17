@@ -491,7 +491,7 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
         failure.lastScript = script;
 
         m_fileOpenOrder.push_back(key);
-        m_fileOpenFailures.emplace(key, std::move(failure));
+        it = m_fileOpenFailures.emplace(key, std::move(failure)).first;
     }
     else
     {
@@ -499,6 +499,17 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
         ++failure.count;
         failure.lastUptimeSec = uptimeSec;
         failure.lastScript = script;
+    }
+
+    // Walk the stack once per distinct path, at the moment of the failed open:
+    // the caller chain is the mod/plugin that asked RenderWare for the file. Done
+    // under the lock only on first sight so the scan cost is paid once per path.
+    FileOpenFailure& stored = it->second;
+    if (!stored.modulesScanned)
+    {
+        stored.modulesScanned = true;
+        if (m_errorModuleScanEnabled)
+            stored.modules = ScanErrorModules(4);
     }
 }
 
@@ -553,6 +564,32 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
             static_cast<unsigned>(failure.lastUptimeSec),
             failure.lastScript.empty() ? "?" : failure.lastScript.c_str()
         );
+
+        // Name the module(s) that requested the file: this is the concrete
+        // "which mod" answer (e.g. a .asi plugin), more specific than the
+        // script bridge in the script column.
+        if (!failure.modules.empty())
+        {
+            std::string chain;
+            for (const auto& module : failure.modules)
+            {
+                if (!chain.empty())
+                    chain += " <- ";
+                chain += module;
+            }
+            WriteFrameTime("      requested by: %s", chain.c_str());
+        }
+
+        // A bare name (no directory) is resolved against the game's working
+        // directory (the GTA SA folder), which is the usual reason a file a mod
+        // ships "goes missing": it was put in the wrong place.
+        if (key.find('\\') == std::string::npos && key.find('/') == std::string::npos)
+        {
+            WriteFrameTime(
+                "      hint: bare name - it is looked up in the game folder "
+                "(where gta_sa.exe is); put the file there or fix the mod's path"
+            );
+        }
     }
 
     WriteFrameTime(

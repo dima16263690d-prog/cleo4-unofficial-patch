@@ -200,7 +200,11 @@ file open and reports the exact paths that failed:
 The path is taken from the argument RenderWare passes to its own file-open
 function, so it is exactly what the game tried to load. When a plugin triggered
 the load through plugin-sdk's script bridge, the script column shows `plg-sdk`
-(the bridge), which is the same attribution the error report uses.
+(the bridge), which is the same attribution the error report uses. With
+`ModuleScan=1` each failed path also gets a `requested by:` line naming the
+module(s) on the stack at the failed open — the concrete `.asi`/plugin that
+asked for the file — and a bare filename (no directory) is flagged with a hint
+that it is looked up in the game folder.
 
 This is a *data-only* patch: RenderWare reaches the OS through a file-function
 table (`RwFileFunctions`, from `RwOsGetFileInterface`), and DebugUtils swaps that

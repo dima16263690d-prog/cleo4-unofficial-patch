@@ -368,6 +368,10 @@ private:
         DWORD lastUptimeSec = 0;
         DWORD lastReportedCount = 0;
         std::string lastScript;
+        // Modules on the stack at the first failed open (the plugin/mod that
+        // asked RenderWare to load the file), when ModuleScan is on.
+        std::vector<std::string> modules;
+        bool modulesScanned = false;
     };
     std::map<std::string, FileOpenFailure> m_fileOpenFailures; // keyed by path
     std::vector<std::string> m_fileOpenOrder;                  // first-seen order
