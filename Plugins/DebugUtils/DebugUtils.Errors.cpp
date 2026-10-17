@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -282,6 +283,39 @@ bool DebugUtils::IsIgnoredModuleHandle(HMODULE module)
     return base == selfBase;
 }
 
+// True when the module's file lives under the Windows directory (or is one of
+// the known system images). A requester chain that passes through user32/kernel32
+// or a system-supplied d3d9 is describing Windows' own call plumbing, not the mod
+// that asked for the file, so those frames are dropped. A mod that ships its own
+// d3d9.dll sits in the game folder, so its path does not match and it is kept.
+bool DebugUtils::IsSystemModuleHandle(HMODULE module)
+{
+    if (module == nullptr)
+        return true;
+
+    char path[MAX_PATH] = {};
+    const DWORD len = GetModuleFileNameA(module, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return false; // unknown path: keep it rather than silently dropping
+
+    // Normalize to lowercase for the prefix comparison.
+    for (DWORD i = 0; i < len; ++i)
+        path[i] = static_cast<char>(tolower(static_cast<unsigned char>(path[i])));
+
+    static const char* kSystemDirs[] =
+    {
+        "c:\\windows\\", "c:\\winnt\\", "\\system32\\", "\\syswow64\\",
+        "\\winsxs\\"
+    };
+    for (const char* dir : kSystemDirs)
+    {
+        if (strstr(path, dir) != nullptr)
+            return true;
+    }
+
+    return false;
+}
+
 // "mod.asi+0x1a2b" - the module plus the offset inside it.
 std::string DebugUtils::FormatFrameLabel(DWORD address)
 {
@@ -367,7 +401,7 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames)
                 continue;
             }
 
-            if (IsIgnoredModuleHandle(module))
+            if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
                 continue;
 
             PushUniqueFrame(modules, address);
@@ -447,7 +481,7 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
             continue;
         }
 
-        if (IsIgnoredModuleHandle(module))
+        if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
             continue;
 
         PushUniqueFrame(modules, candidate);
@@ -850,6 +884,9 @@ void DebugUtils::RemoveFileOpenWatch()
 
 void DebugUtils::RecordFileOpenFailure(const char* path)
 {
+    if (!m_fileWatchFailuresEnabled)
+        return;
+
     if (path == nullptr || path[0] == '\0')
         return;
 

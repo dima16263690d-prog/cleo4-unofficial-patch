@@ -348,6 +348,10 @@ private:
     // no code is modified). This is what turns E_RW_BADOPEN / E_RW_READTEXMASK
     // from "some texture failed" into "models\foo.txd failed". Opt-in.
     bool m_fileWatchEnabled = false;
+    // Report failed opens (E_RW_BADOPEN/E_RW_READTEXMASK sources). Separate from
+    // FileWatchNames: an empty watchlist still lets failures through, so this is
+    // the switch that actually turns the failed-open report off.
+    bool m_fileWatchFailuresEnabled = true;
 
     struct ErrorRecord
     {
@@ -454,6 +458,10 @@ private:
 
     // Module attribution shared by the error report and the file watch.
     static bool IsIgnoredModuleHandle(HMODULE module);
+    // True for modules loaded from the Windows directory (user32, kernel32,
+    // system d3d9, ...). Such a frame is OS noise in a requester chain; a mod
+    // that ships its own d3d9.dll lives in the game folder and is kept.
+    static bool IsSystemModuleHandle(HMODULE module);
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
     static std::vector<std::string> CaptureRequesterChain(size_t maxFrames);

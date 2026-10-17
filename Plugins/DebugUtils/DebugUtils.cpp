@@ -507,6 +507,11 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  трогается. Только GTA SA 1.0 US."
             : "  modified. GTA SA 1.0 US only.");
     kv("DebugUtils.Errors", "FileWatch", "0");
+    desc(ru ? "FileWatchFailures: 1 = печатать блок 'failed file opens' (0 = выкл)."
+            : "FileWatchFailures: 1 = print the 'failed file opens' block (0 = off).");
+    desc(ru ? "  Пустой FileWatchNames НЕ отключает этот блок; выключай здесь."
+            : "  An empty FileWatchNames does NOT silence it; turn it off here.");
+    kv("DebugUtils.Errors", "FileWatchFailures", "1");
     desc(ru ? "FileWatchNames: список через запятую (подстроки пути или маски)."
             : "FileWatchNames: comma-separated path substrings or glob masks.");
     desc(ru ? "  Каждое открытие подходящего файла пишется в лог (успех или"
@@ -923,6 +928,16 @@ void DebugUtils::LoadConfig()
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "FileWatch",
             0,
+            path.c_str()
+        ) != 0;
+
+    // Failed-open report. Default 1: when FileWatch is on, naming the file that
+    // failed is the whole point. Set 0 to keep the rwfopen hook but stop the
+    // "failed file opens" block (an empty FileWatchNames does NOT silence it).
+    m_fileWatchFailuresEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatchFailures",
+            1,
             path.c_str()
         ) != 0;
 

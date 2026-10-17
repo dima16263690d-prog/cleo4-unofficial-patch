@@ -532,14 +532,29 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         const double metPct = judged != 0
             ? 100.0 * static_cast<double>(m_frameTimeBudgetMet) / static_cast<double>(judged)
             : 0.0;
+        const double targetFps = 1000.0 / m_frameTimeBudgetMs;
         WriteFrameTime(
-            "[fps] budget <=%.2f ms met by %llu/%llu frames (%.2f%%), missed %llu",
+            "[fps] budget <=%.2f ms (%.0f FPS) met by %llu/%llu frames (%.2f%%), missed %llu",
             m_frameTimeBudgetMs,
+            targetFps,
             m_frameTimeBudgetMet,
             judged,
             metPct,
             m_frameTimeBudgetMissed
         );
+
+        // Guard against a config typo: a budget under ~4 ms asks for a target no
+        // 60 Hz build can meet, so "0% met" is the setting talking, not a fault.
+        if (m_frameTimeBudgetMs < 4.0 && m_frameTimeBudgetMet == 0)
+        {
+            WriteFrameTime(
+                "[fps] note: FrameBudgetMs=%.2f asks for %.0f FPS, which no build at "
+                "this frame rate can meet - set it to your real target (16.67 for 60 "
+                "FPS, 8.33 for 120) or 0 to disable",
+                m_frameTimeBudgetMs,
+                targetFps
+            );
+        }
     }
 
     // Sustained-low detection: count consecutive intervals whose average FPS was
