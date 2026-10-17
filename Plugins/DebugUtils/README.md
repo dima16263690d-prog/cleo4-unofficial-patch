@@ -215,6 +215,37 @@ pointer is restored on game end and on unload. The table address is GTA SA 1.0 U
 only, and the wrapper refuses to install if the pointer it would replace is not
 executable code (a wrong-layout guard). Off by default.
 
+### Finding who loads a specific file (FileWatchNames)
+
+`E_RW_BADOPEN` only fires when a file is *missing*. To answer "which script or
+`.asi` loads `particle.txd`" when the file does exist, list the name(s) in
+`[DebugUtils.Errors] FileWatchNames` (comma-separated substrings, case
+insensitive). Every open of a matching file is recorded whether it succeeded or
+failed:
+
+```
+[DebugUtils.Errors] FileWatch=1
+[DebugUtils.Errors] FileWatchNames=particle.txd
+```
+
+```
+================= watched file opens =================
+#   path                           count first  last result script
+1   models\particle.txd                1    12    12 ok     plg-sdk
+      requested by: mymod.asi
+[filewatch] watchlist: 1 path(s) matched (FileWatchNames)
+```
+
+The `requested by:` line (needs `ModuleScan=1`) names the module on the stack at
+the open — the concrete `.asi`/plugin. The `script` column is the CLEO script
+active then (`plg-sdk` means a plugin called a game command through the
+plugin-sdk bridge). This is the direct way to attribute a resource to the mod
+that requests it.
+
+Note: files read from inside IMG archives are not opened through RenderWare's
+file functions (the IMG is opened once and seeked), so this watch sees loose
+files only.
+
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
   address (GTA SA 1.0 US). The monitor polls it once per frame and reports any

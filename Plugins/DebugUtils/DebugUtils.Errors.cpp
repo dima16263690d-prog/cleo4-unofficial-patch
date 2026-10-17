@@ -376,12 +376,157 @@ void* __cdecl DebugUtils::FileOpenWatchFopen(const char* name, const char* mode)
 
     void* handle = original(name, mode);
 
-    // A null handle is a failed open, which is what RenderWare turns into
-    // E_RW_BADOPEN. Anything else opened fine and is not interesting.
-    if (handle == nullptr && name != nullptr && name[0] != '\0' && s_instance != nullptr)
-        s_instance->RecordFileOpenFailure(name);
+    if (name != nullptr && name[0] != '\0' && s_instance != nullptr)
+    {
+        // A null handle is a failed open, which is what RenderWare turns into
+        // E_RW_BADOPEN. Anything else opened fine and is not interesting.
+        if (handle == nullptr)
+            s_instance->RecordFileOpenFailure(name);
+
+        // Files named on the watchlist are recorded whether or not the open
+        // succeeded, so "who loads particle.txd" can be answered even when the
+        // file exists.
+        s_instance->RecordWatchedOpen(name, handle == nullptr);
+    }
 
     return handle;
+}
+
+bool DebugUtils::IsWatchedFileName(const char* path) const
+{
+    if (path == nullptr || m_fileWatchNames.empty())
+        return false;
+
+    std::string lower(path);
+    for (char& c : lower)
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+
+    for (const auto& needle : m_fileWatchNames)
+    {
+        if (!needle.empty() && lower.find(needle) != std::string::npos)
+            return true;
+    }
+
+    return false;
+}
+
+void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
+{
+    if (!IsWatchedFileName(path))
+        return;
+
+    const std::string key(path);
+    const DWORD now = GetTickCount();
+    const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
+    const std::string script = CurrentScriptName();
+
+    std::lock_guard<std::mutex> lock(m_fileWatchRecordMutex);
+
+    auto it = m_fileWatchRecords.find(key);
+    if (it == m_fileWatchRecords.end())
+    {
+        FileOpenRecord record;
+        record.count = 1;
+        record.firstUptimeSec = uptimeSec;
+        record.lastUptimeSec = uptimeSec;
+        record.failed = failed;
+        record.lastScript = script;
+
+        m_fileWatchRecordOrder.push_back(key);
+        it = m_fileWatchRecords.emplace(key, std::move(record)).first;
+    }
+    else
+    {
+        FileOpenRecord& record = it->second;
+        ++record.count;
+        record.lastUptimeSec = uptimeSec;
+        record.failed = failed;
+        record.lastScript = script;
+    }
+
+    FileOpenRecord& stored = it->second;
+    if (!stored.modulesScanned)
+    {
+        stored.modulesScanned = true;
+        if (m_errorModuleScanEnabled)
+            stored.modules = ScanErrorModules(4);
+    }
+}
+
+void DebugUtils::WriteWatchedOpenReport(bool forceAll)
+{
+    std::map<std::string, FileOpenRecord> records;
+    std::vector<std::string> order;
+    {
+        std::lock_guard<std::mutex> lock(m_fileWatchRecordMutex);
+        records = m_fileWatchRecords;
+        order = m_fileWatchRecordOrder;
+    }
+
+    if (records.empty())
+        return;
+
+    size_t changed = 0;
+    for (const auto& entry : records)
+    {
+        if (entry.second.count != entry.second.lastReportedCount)
+            ++changed;
+    }
+
+    if (!forceAll && changed == 0)
+        return;
+
+    WriteFrameTime("================= watched file opens =================");
+    WriteFrameTime("%-3s %-46s %6s %5s %5s %-6s %-14s", "#", "path", "count", "first", "last", "result", "script");
+
+    size_t index = 0;
+    for (const auto& key : order)
+    {
+        auto it = records.find(key);
+        if (it == records.end())
+            continue;
+
+        const FileOpenRecord& record = it->second;
+        ++index;
+
+        std::string path = key;
+        if (path.size() > 46)
+            path = std::string("...") + path.substr(path.size() - 43);
+
+        WriteFrameTime(
+            "%-3zu %-46s %6u %5u %5u %-6s %-14s",
+            index,
+            path.c_str(),
+            static_cast<unsigned>(record.count),
+            static_cast<unsigned>(record.firstUptimeSec),
+            static_cast<unsigned>(record.lastUptimeSec),
+            record.failed ? "FAILED" : "ok",
+            record.lastScript.empty() ? "?" : record.lastScript.c_str()
+        );
+
+        if (!record.modules.empty())
+        {
+            std::string chain;
+            for (const auto& module : record.modules)
+            {
+                if (!chain.empty())
+                    chain += " <- ";
+                chain += module;
+            }
+            WriteFrameTime("      requested by: %s", chain.c_str());
+        }
+    }
+
+    WriteFrameTime(
+        "[filewatch] watchlist: %zu path(s) matched (FileWatchNames)",
+        records.size()
+    );
+
+    {
+        std::lock_guard<std::mutex> lock(m_fileWatchRecordMutex);
+        for (auto& entry : m_fileWatchRecords)
+            entry.second.lastReportedCount = entry.second.count;
+    }
 }
 
 void DebugUtils::InstallFileOpenWatch()

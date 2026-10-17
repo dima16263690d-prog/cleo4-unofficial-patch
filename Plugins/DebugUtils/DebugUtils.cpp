@@ -129,10 +129,11 @@ DebugUtils::DebugUtils()
         {
             WriteFrameTime(
                 "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
-                "(reports CLEO/RenderWare errors and the suspect module)",
+                "watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
                 m_rwErrorWatchEnabled ? 1u : 0u,
                 m_errorModuleScanEnabled ? 1u : 0u,
-                m_fileWatchEnabled ? 1u : 0u
+                m_fileWatchEnabled ? 1u : 0u,
+                m_fileWatchNames.size()
             );
         }
     }
@@ -484,6 +485,15 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  трогается. Только GTA SA 1.0 US."
             : "  modified. GTA SA 1.0 US only.");
     kv("DebugUtils.Errors", "FileWatch", "0");
+    desc(ru ? "FileWatchNames: список через запятую (подстроки пути). Каждое"
+            : "FileWatchNames: comma-separated path substrings. Every open of a");
+    desc(ru ? "  открытие такого файла пишется в лог (успех или ошибка) - так"
+            : "  matching file is logged (success or failure), so 'who loads");
+    desc(ru ? "  видно, какой мод/плагин грузит файл, даже если файл есть."
+            : "  particle.txd' is answered even when the file exists.");
+    desc(ru ? "  Пример: FileWatchNames=particle.txd,lunar.png"
+            : "  Example: FileWatchNames=particle.txd,lunar.png");
+    kv("DebugUtils.Errors", "FileWatchNames", "");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -872,6 +882,41 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    // Comma-separated list of path substrings to record on every open (success or
+    // failure). Answers "which mod/plugin loads particle.txd" even when the file
+    // exists. Empty = disabled.
+    {
+        char buffer[512] = {};
+        GetPrivateProfileStringA(
+            "DebugUtils.Errors", "FileWatchNames", "",
+            buffer, sizeof(buffer), path.c_str());
+
+        m_fileWatchNames.clear();
+        std::string list(buffer);
+        size_t start = 0;
+        while (start <= list.size())
+        {
+            const size_t comma = list.find(',', start);
+            std::string token = list.substr(
+                start, comma == std::string::npos ? std::string::npos : comma - start);
+
+            // trim spaces and lowercase for case-insensitive matching
+            const size_t first = token.find_first_not_of(" \t");
+            const size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos)
+            {
+                token = token.substr(first, last - first + 1);
+                for (char& c : token)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                m_fileWatchNames.push_back(token);
+            }
+
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+    }
 
     // Per-script leak tracker (off by default: it allocates and samples).
     m_leakTrackerEnabled =

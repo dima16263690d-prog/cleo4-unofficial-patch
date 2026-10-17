@@ -167,6 +167,11 @@ void __stdcall DebugUtils::OnGameBegin()
         s_instance->m_fileOpenFailures.clear();
         s_instance->m_fileOpenOrder.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_fileWatchRecordMutex);
+        s_instance->m_fileWatchRecords.clear();
+        s_instance->m_fileWatchRecordOrder.clear();
+    }
     s_instance->InstallFileOpenWatch();
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
@@ -191,6 +196,7 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteFrameTimeReport("game_end");
     s_instance->WriteErrorReport("game_end");
     s_instance->WriteFileOpenReport(true);
+    s_instance->WriteWatchedOpenReport(true);
     s_instance->RemoveFileOpenWatch();
     s_instance->SampleScriptMemoryLeaks();
     s_instance->WriteLeakReport("game_end");

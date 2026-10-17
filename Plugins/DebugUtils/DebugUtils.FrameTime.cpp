@@ -305,6 +305,7 @@ void DebugUtils::EndFrameTimeFrame()
         WriteFrameTimeReport("interval");
         WriteErrorReport("interval");
         WriteFileOpenReport(false);
+        WriteWatchedOpenReport(false);
     }
 }
 

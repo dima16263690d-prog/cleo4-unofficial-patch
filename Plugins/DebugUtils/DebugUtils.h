@@ -380,6 +380,31 @@ private:
     void* m_fileWatchTable = nullptr;         // RwFileFunctions*
     void* m_fileWatchOriginalFopen = nullptr; // the rwfopen we replaced
 
+    // Optional comma-separated watchlist (FileWatchNames). A file whose path
+    // contains one of these substrings is recorded on EVERY open - success or
+    // failure - so "who loads particle.txd" can be answered even when the file
+    // exists. Matched case-insensitively against the requested path.
+    std::vector<std::string> m_fileWatchNames;
+
+    struct FileOpenRecord
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        bool failed = false;
+        std::string lastScript;
+        std::vector<std::string> modules;
+        bool modulesScanned = false;
+    };
+    std::map<std::string, FileOpenRecord> m_fileWatchRecords; // keyed by path
+    std::vector<std::string> m_fileWatchRecordOrder;
+    std::mutex m_fileWatchRecordMutex;
+
+    bool IsWatchedFileName(const char* path) const;
+    void RecordWatchedOpen(const char* path, bool failed);
+    void WriteWatchedOpenReport(bool forceAll);
+
     void InstallFileOpenWatch();
     void RemoveFileOpenWatch();
     void RecordFileOpenFailure(const char* path);
