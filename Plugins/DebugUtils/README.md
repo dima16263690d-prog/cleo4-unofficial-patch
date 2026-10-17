@@ -225,6 +225,15 @@ summary and module tables, so a flat arena is never misread as "no leak". The
 process baseline is taken at the first interval sample after the level has
 loaded, not at uptime 0, so load-time allocation is not counted as growth.
 
+A trend line separates a real leak from a pool/streaming fill that is simply
+filling up: `[leak] this interval +X MB (N B/s); average since first M B/s ->
+verdict`, where the verdict is `steady (leak-like)`, `decelerating (likely a
+pool/streaming fill, not a leak)`, `accelerating (worsening)`, or `shrinking`.
+A leak keeps up with (or exceeds) the average rate; a pool fill slows down as it
+saturates. To name the exact DLL behind process growth that is not in the CLEO
+arena, set `[DebugUtils.Logs] ModuleMemoryMap=1` — its per-module resident
+deltas point at the owner.
+
 The core log starts with a system header (GPU description, vendor/device id,
 driver string and version, desktop resolution/refresh, OS build, CPU count, RAM)
 queried from D3D9, so a stutter report says which card/driver it came from

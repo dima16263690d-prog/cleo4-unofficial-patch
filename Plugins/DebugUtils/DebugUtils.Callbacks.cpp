@@ -145,6 +145,8 @@ void __stdcall DebugUtils::OnGameBegin()
     // swings wildly and the load-time allocation would be miscounted as a leak.
     s_instance->m_leakFirstPrivateBytes = 0;
     s_instance->m_leakFirstPrivateUptimeSec = 0;
+    s_instance->m_leakLastPrivateBytes = 0;
+    s_instance->m_leakLastUptimeSec = 0;
     s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();

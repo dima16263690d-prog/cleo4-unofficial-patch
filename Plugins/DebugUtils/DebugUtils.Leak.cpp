@@ -204,7 +204,12 @@ void DebugUtils::WriteLeakReport(const char* reason)
     auto writeProcessGrowth = [&](unsigned long long totalArenaGrowth)
     {
         if (m_leakFirstPrivateBytes == 0 || privateBytes < m_leakFirstPrivateBytes)
+        {
+            // Still remember this report as the "previous" one for the next trend.
+            m_leakLastPrivateBytes = privateBytes;
+            m_leakLastUptimeSec = uptimeSeconds;
             return;
+        }
 
         const unsigned long long privateGrowth = privateBytes - m_leakFirstPrivateBytes;
         const unsigned long long windowSec =
@@ -234,15 +239,59 @@ void DebugUtils::WriteLeakReport(const char* reason)
             bytesPerSec
         );
 
+        // Interval-over-interval trend. Compare this interval's rate to the
+        // average rate since the first sample: a rate that keeps up with the
+        // average is a real leak, one that falls well below it is a pool or
+        // streaming fill that is plateauing (not a leak). Comparing to the
+        // average rather than to the previous interval avoids a false
+        // "accelerating" when the previous interval happened to be flat.
+        if (m_leakLastPrivateBytes != 0 && uptimeSeconds > m_leakLastUptimeSec)
+        {
+            const unsigned long long prevWindow =
+                uptimeSeconds - m_leakLastUptimeSec;
+            const long long deltaBytes =
+                static_cast<long long>(privateBytes) -
+                static_cast<long long>(m_leakLastPrivateBytes);
+            const double recentRate = static_cast<double>(deltaBytes) /
+                static_cast<double>(prevWindow);
+            const double avgRate = windowSec != 0
+                ? static_cast<double>(privateGrowth) / static_cast<double>(windowSec)
+                : 0.0;
+
+            const char* trend = "steady (leak-like)";
+            if (recentRate < 0.0)
+                trend = "shrinking (memory was freed)";
+            else if (avgRate > 0.0)
+            {
+                if (recentRate < avgRate * 0.5)
+                    trend = "decelerating (likely a pool/streaming fill, not a leak)";
+                else if (recentRate > avgRate * 1.5)
+                    trend = "accelerating (worsening)";
+            }
+
+            WriteMemory(
+                "[leak] this interval %+.2f MB (%.0f B/s); average since first "
+                "%.0f B/s -> %s",
+                static_cast<double>(deltaBytes) / (1024.0 * 1024.0),
+                recentRate,
+                avgRate,
+                trend
+            );
+        }
+
         if (privateGrowth >= m_leakMinGrowthBytes && totalArenaGrowth == 0)
         {
             WriteMemory(
                 "[leak] NOTE: the CLEO script arena did not grow, so this %s is NOT "
                 "a script allocate_memory leak; look at streaming pools / textures / "
-                "mods (see the memory summary and module tables).",
+                "mods (see the memory summary and the per-module map: set "
+                "[DebugUtils.Logs] ModuleMemoryMap=1 to name the DLL that grows).",
                 MemoryBytes(privateGrowth).c_str()
             );
         }
+
+        m_leakLastPrivateBytes = privateBytes;
+        m_leakLastUptimeSec = uptimeSeconds;
     };
 
     WriteMemory("==================== script memory leak report (%s) ====================",

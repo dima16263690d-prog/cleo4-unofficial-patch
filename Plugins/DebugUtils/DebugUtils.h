@@ -185,6 +185,12 @@ private:
     uint64_t m_leakFirstPrivateBytes = 0;
     DWORD m_leakFirstPrivateUptimeSec = 0;
 
+    // Previous report's process private bytes / uptime, so the report can show an
+    // interval-over-interval trend: a steady climb is a real leak, a decelerating
+    // one is a pool/streaming fill that is plateauing.
+    uint64_t m_leakLastPrivateBytes = 0;
+    DWORD m_leakLastUptimeSec = 0;
+
     struct LeakScriptState
     {
         std::string name;
