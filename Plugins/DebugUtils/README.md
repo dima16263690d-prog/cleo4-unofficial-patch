@@ -204,6 +204,15 @@ one of:
 A closing `[leak]` line gives the exact total growth and its percentage of the
 arena and of the process, which is the single "how much, in percent" answer.
 
+The report also states how much the *whole process* grew since the first sample
+(`[leak] process private X -> Y = +Z in Ns (+P%, +P%/min, ...)`). This matters
+because the script arena can be perfectly flat while the process still grows — a
+streaming-pool, texture, or GPU/driver leak. In that case a `[leak] NOTE:` line
+says the growth is NOT a script allocate_memory leak and points at the memory
+summary and module tables, so a flat arena is never misread as "no leak". The
+process baseline is taken at the first interval sample after the level has
+loaded, not at uptime 0, so load-time allocation is not counted as growth.
+
 The core log starts with a system header (GPU description, vendor/device id,
 driver string and version, desktop resolution/refresh, OS build, CPU count, RAM)
 queried from D3D9, so a stutter report says which card/driver it came from

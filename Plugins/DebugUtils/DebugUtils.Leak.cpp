@@ -94,6 +94,23 @@ void DebugUtils::SampleScriptMemoryLeaks()
     if (!m_leakTrackerEnabled || !m_memoryLogEnabled)
         return;
 
+    // Capture the process-private baseline once per session, so the report can
+    // state process-level growth even when the script arena never moves.
+    if (m_leakFirstPrivateBytes == 0)
+    {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                sizeof(pmc)))
+        {
+            m_leakFirstPrivateBytes = static_cast<uint64_t>(pmc.PrivateUsage);
+            m_leakFirstPrivateUptimeSec =
+                (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        }
+    }
+
     // Owner enumeration has the same game-thread affinity as the memory stats.
     DWORD ownerCount = CLEO_DebugGetScriptMemoryOwners(nullptr, 0);
     if (ownerCount == 0)
@@ -179,6 +196,55 @@ void DebugUtils::WriteLeakReport(const char* reason)
     const DWORD uptimeSeconds =
         (GetTickCount() - m_memorySessionStartTick) / 1000u;
 
+    // The script arena can be perfectly flat while the process still grows. That
+    // is the common case for a streaming/pool/GPU leak, so state the process
+    // growth explicitly and, when the arena did not move, say so: otherwise the
+    // "0 B" arena total reads as "no leak" and hides a real one. Printed on every
+    // report, including when no script holds memory.
+    auto writeProcessGrowth = [&](unsigned long long totalArenaGrowth)
+    {
+        if (m_leakFirstPrivateBytes == 0 || privateBytes < m_leakFirstPrivateBytes)
+            return;
+
+        const unsigned long long privateGrowth = privateBytes - m_leakFirstPrivateBytes;
+        const unsigned long long windowSec =
+            uptimeSeconds > m_leakFirstPrivateUptimeSec
+                ? uptimeSeconds - m_leakFirstPrivateUptimeSec
+                : 0;
+
+        const double pctOfStart = 100.0 * static_cast<double>(privateGrowth) /
+            static_cast<double>(m_leakFirstPrivateBytes);
+        const double bytesPerSec = windowSec != 0
+            ? static_cast<double>(privateGrowth) / static_cast<double>(windowSec)
+            : 0.0;
+        const double pctPerMin = windowSec != 0
+            ? pctOfStart * (60.0 / static_cast<double>(windowSec))
+            : 0.0;
+
+        WriteMemory(
+            "[leak] process private %s -> %s = +%s in %us (+%.2f%%, +%.2f%%/min, "
+            "%.2f MB/min, %.0f B/s)",
+            MemoryBytes(m_leakFirstPrivateBytes).c_str(),
+            MemoryBytes(privateBytes).c_str(),
+            MemoryBytes(privateGrowth).c_str(),
+            static_cast<unsigned>(windowSec),
+            pctOfStart,
+            pctPerMin,
+            bytesPerSec * 60.0 / (1024.0 * 1024.0),
+            bytesPerSec
+        );
+
+        if (privateGrowth >= m_leakMinGrowthBytes && totalArenaGrowth == 0)
+        {
+            WriteMemory(
+                "[leak] NOTE: the CLEO script arena did not grow, so this %s is NOT "
+                "a script allocate_memory leak; look at streaming pools / textures / "
+                "mods (see the memory summary and module tables).",
+                MemoryBytes(privateGrowth).c_str()
+            );
+        }
+    };
+
     WriteMemory("==================== script memory leak report (%s) ====================",
         reason ? reason : "interval");
     WriteMemory(
@@ -193,6 +259,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
     if (m_leakScripts.empty() && m_leakRetired.empty())
     {
         WriteMemory("[leak] no script currently holds allocate_memory blocks");
+        writeProcessGrowth(0);
         return;
     }
 
@@ -357,6 +424,12 @@ void DebugUtils::WriteLeakReport(const char* reason)
         totalPctArena,
         totalPctProcess
     );
+
+    // The script arena can be perfectly flat while the process still grows. That
+    // is the common case for a streaming/pool/GPU leak, so state the process
+    // growth explicitly and, when the arena did not move, say so: otherwise
+    // "0 B" above reads as "no leak" and hides a real one.
+    writeProcessGrowth(totalGrowth);
 
     WriteMemory(
         "[leak] verdict guide: LEAK = grew every sample and was never released; "

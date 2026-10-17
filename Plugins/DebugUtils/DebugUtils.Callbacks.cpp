@@ -139,6 +139,13 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_memoryWarnIssued = false;
     s_instance->m_memoryRotateActive = false;
     s_instance->m_memorySummaryHeaderWritten = false;
+    // Reset the leak tracker's process baseline for the new session; the first
+    // sample captures it. Also reset its timer: otherwise (defaulting to 0) the
+    // first sample fires at uptime 0-1s, during level loading, where memory
+    // swings wildly and the load-time allocation would be miscounted as a leak.
+    s_instance->m_leakFirstPrivateBytes = 0;
+    s_instance->m_leakFirstPrivateUptimeSec = 0;
+    s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();

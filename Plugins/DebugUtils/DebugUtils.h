@@ -179,6 +179,12 @@ private:
     DWORD m_leakMinGrowthBytes = 64u * 1024u;  // ignore growth below this
     DWORD m_lastLeakTick = 0;
 
+    // Process-private baseline for the leak report, so it can state how much the
+    // *whole process* grew (and the %/min) even when the growth is not in the
+    // CLEO script arena. Captured at the first sample.
+    uint64_t m_leakFirstPrivateBytes = 0;
+    DWORD m_leakFirstPrivateUptimeSec = 0;
+
     struct LeakScriptState
     {
         std::string name;
