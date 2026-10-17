@@ -371,6 +371,7 @@ void DebugUtils::RecordError(
         record.lastTick = record.firstTick;
         record.lastUptimeSec =
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        record.firstUptimeSec = record.lastUptimeSec;
         record.count = 1;
         record.lastScript = CurrentScriptName();
         record.lastOpcode = opcode;
@@ -451,8 +452,24 @@ void DebugUtils::WriteErrorReport(const char* reason)
         return;
     }
 
-    WriteFrameTime("%-3s %-22s %8s %10s %-9s %8s %-16s %s",
-        "#", "name", "count", "plugin", "code", "uptime", "script", "suspect module");
+    WriteFrameTime("%-3s %-22s %8s %10s %-9s %5s %5s %-16s %s",
+        "#", "name", "count", "plugin", "code", "first", "last", "script", "suspect module");
+
+    // Names whose meaning is "a file/resource could not be opened or read": a
+    // missing or corrupt texture/model, almost always a mod/script that loads it.
+    auto isFileResourceError = [](const ErrorRecord& record)
+    {
+        static const char* const kNames[] = {
+            "E_RW_BADOPEN", "E_RW_READTEXMASK", "E_RW_READ",
+            "E_RW_STREAMOPEN", "E_RW_BADFORMAT",
+        };
+        for (const char* name : kNames)
+        {
+            if (record.name == name)
+                return true;
+        }
+        return false;
+    };
 
     size_t index = 0;
     for (const auto& record : records)
@@ -467,12 +484,13 @@ void DebugUtils::WriteErrorReport(const char* reason)
             script = "~" + script;
 
         WriteFrameTime(
-            "%-3zu %-22s %8u 0x%06X 0x%08X %8u %-16s %s",
+            "%-3zu %-22s %8u 0x%06X 0x%08X %5u %5u %-16s %s",
             index,
             record.name.c_str(),
             static_cast<unsigned>(record.count),
             record.pluginId,
             record.errorCode,
+            static_cast<unsigned>(record.firstUptimeSec),
             static_cast<unsigned>(record.lastUptimeSec),
             script.c_str(),
             record.module.empty() ? "<none>" : record.module.c_str()
@@ -481,6 +499,17 @@ void DebugUtils::WriteErrorReport(const char* reason)
         if (!record.text.empty())
         {
             WriteFrameTime("      meaning: %s", record.text.c_str());
+        }
+
+        // Point the reader at the likely source for file/resource errors: this is
+        // the "which mod causes it" answer for a missing/corrupt texture or model.
+        if (isFileResourceError(record))
+        {
+            WriteFrameTime(
+                "      hint: file/resource error - a missing or corrupt texture/"
+                "model/.txd (or a mod loading it). Check the script/mod above and "
+                "its resource files."
+            );
         }
 
         // The opcode is only meaningful where the error was raised. For a

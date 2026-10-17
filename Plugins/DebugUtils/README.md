@@ -97,9 +97,10 @@ MinFps=0
 LowFpsWarn=0
 
 [DebugUtils.Errors]
-Enabled=1
-RenderWare=1
-ModuleScan=1
+; OFF by default (opt-in): the RenderWare poll runs every frame.
+Enabled=0
+RenderWare=0
+ModuleScan=0
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -154,8 +155,19 @@ streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
 ### Error diagnostics (RenderWare / CLEO)
 
 [DebugUtils.Errors] reports CLEO and RenderWare errors inside cleo_frametime.log,
-so an error can be tied to the frame it happened in. No game code is patched: the
-monitor only observes (and, for RenderWare, restores the error state it read).
+so an error can be tied to the frame it happened in. It is **off by default**
+(opt-in): the RenderWare poll runs every frame and the module scan walks the
+stack, so it costs a little even when nothing is wrong — set `Enabled=1` when
+hunting errors. No game code is patched: the monitor only observes (and, for
+RenderWare, restores the error state it read).
+
+The report's `first` / `last` columns are the uptime (seconds) when each error
+was first and most recently seen, so it is clear when an error started and
+whether it is still recurring (the old single `uptime` column showed only the
+last occurrence, which made a repeating error look like it moved). File/resource
+errors (E_RW_BADOPEN, E_RW_READTEXMASK, E_RW_READ, E_RW_STREAMOPEN,
+E_RW_BADFORMAT) also get a `hint:` line naming them as a missing or corrupt
+texture/model/.txd — the "which mod causes it" pointer.
 
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed

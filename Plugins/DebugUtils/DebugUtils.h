@@ -318,9 +318,12 @@ private:
     // and the game itself, which is the module (mod/plugin/script loader) that
     // raised it.
     // ---------------------------------------------------------------------
-    bool m_errorDiagEnabled = true;
-    bool m_rwErrorWatchEnabled = true;
-    bool m_errorModuleScanEnabled = true;
+    // Error diagnostics (RenderWare + CLEO). Off by default: the RenderWare poll
+    // runs every frame and the module scan walks the stack, so the feature costs
+    // a little even when nothing is wrong. Turn it on when hunting errors.
+    bool m_errorDiagEnabled = false;
+    bool m_rwErrorWatchEnabled = false;
+    bool m_errorModuleScanEnabled = false;
 
     struct ErrorRecord
     {
@@ -328,7 +331,8 @@ private:
         DWORD count = 0;               // occurrences since game begin
         DWORD firstTick = 0;           // GetTickCount of the first occurrence
         DWORD lastTick = 0;            // GetTickCount of the most recent
-        DWORD lastUptimeSec = 0;
+        DWORD firstUptimeSec = 0;      // uptime of the first occurrence
+        DWORD lastUptimeSec = 0;       // uptime of the most recent occurrence
         unsigned int pluginId = 0;     // RenderWare pluginID (rw errors)
         unsigned int errorCode = 0;    // raw RenderWare errorCode (rw errors)
         std::string name;              // resolved name when known

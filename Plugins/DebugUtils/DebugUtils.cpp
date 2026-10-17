@@ -457,17 +457,21 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     line("[DebugUtils.Errors]");
     desc(ru ? "Диагностика ошибок RenderWare и CLEO внутри cleo_frametime.log."
             : "RenderWare and CLEO error diagnostics, reported in cleo_frametime.log.");
+    desc(ru ? "ВЫКЛЮЧЕНО по умолчанию: опрос RenderWare идёт каждый кадр и даёт"
+            : "OFF by default: the RenderWare poll runs every frame and costs a");
+    desc(ru ? "  небольшую нагрузку. Включи (1), когда ищешь ошибки."
+            : "  little. Turn it on (1) when hunting errors.");
     desc(ru ? "Enabled: 1 = вести отчёт по ошибкам, 0 = выключить."
             : "Enabled: 1 = keep the error report, 0 = off.");
-    kv("DebugUtils.Errors", "Enabled", "1");
+    kv("DebugUtils.Errors", "Enabled", "0");
     desc(ru ? "RenderWare: 1 = опрашивать последнюю ошибку RenderWare раз в кадр"
             : "RenderWare: 1 = poll RenderWare's last error once per frame");
     desc(ru ? "  (только чтение, ничего не патчится; только GTA SA 1.0 US)."
             : "  (read-only, nothing is patched; GTA SA 1.0 US only).");
-    kv("DebugUtils.Errors", "RenderWare", "1");
+    kv("DebugUtils.Errors", "RenderWare", "0");
     desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
             : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
-    kv("DebugUtils.Errors", "ModuleScan", "1");
+    kv("DebugUtils.Errors", "ModuleScan", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -829,22 +833,23 @@ void DebugUtils::LoadConfig()
     );
 
     // Error diagnostics (RenderWare + CLEO), reported inside the frame-time log.
+    // Off by default (opt-in): the per-frame RenderWare poll costs a little.
     m_errorDiagEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "Enabled",
-            1,
+            0,
             path.c_str()
         ) != 0;
     m_rwErrorWatchEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "RenderWare",
-            1,
+            0,
             path.c_str()
         ) != 0;
     m_errorModuleScanEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "ModuleScan",
-            1,
+            0,
             path.c_str()
         ) != 0;
 
