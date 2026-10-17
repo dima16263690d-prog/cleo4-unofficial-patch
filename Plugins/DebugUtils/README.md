@@ -95,6 +95,9 @@ Histogram=1
 MaxLogMB=16
 MinFps=0
 LowFpsWarn=0
+LowFpsWarn01=0
+SustainedLowIntervals=0
+FrameBudgetMs=0
 
 [DebugUtils.Errors]
 ; OFF by default (opt-in): the RenderWare poll runs every frame.
@@ -130,9 +133,17 @@ Each report shows, for the interval:
   bands (how many frames fell below 30/20/10/4 FPS, with their share);
 - an interval-over-interval trend line (fps_prev vs fps_now and the delta), so a
   gradual slowdown is visible before it shows inside one interval;
-- MinFps / LowFpsWarn thresholds: when the interval's average FPS or its 1%-low
-  FPS drops below the configured value, a greppable `[fps] WARNING` line is
-  written (both default to 0 = off);
+- MinFps / LowFpsWarn / LowFpsWarn01 thresholds: when the interval's average FPS,
+  its 1%-low FPS, or its 0.1%-low FPS drops below the configured value, a
+  greppable `[fps] WARNING` line is written (all default to 0 = off). LowFpsWarn01
+  targets long hitches, which the 1%-low figure can hide;
+- SustainedLowIntervals: when MinFps is set and the average FPS stays below it for
+  this many consecutive intervals, a single `[fps] SUSTAINED LOW` line is written
+  (and a `[fps] recovered` line when it comes back). One slow interval is noise
+  (a load hitch, an alt-tab); a run is a real regression. 0 = off;
+- FrameBudgetMs: a frame budget in ms (0 = off). The report then states how many
+  frames met it and the share, the single number that answers "does this build
+  hold the target FPS?";
 - the worst frames of the interval, with their logic_ms, active scripts and
   uptime, so a hitch can be tied to a moment and a script count;
 - streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
@@ -300,14 +311,18 @@ ever grows can be named. It is off by default because it allocates and samples.
 
 For each script the report gives first/last live bytes, the growth, that growth
 as a percentage of the arena and of the process's private bytes, the growth rate
-(bytes/second and the equivalent percent-per-minute of the script's own first
-sample), the block count, the peak, and first/last-seen uptime. The verdict is
-one of:
+(bytes/second, the equivalent percent-per-minute of the script's own first
+sample, and the percent-per-minute of the whole arena), the block count, the
+peak, and first/last-seen uptime. The verdict is one of:
 
 - LEAK — grew on every sample and was never released (the strong signature);
 - SUSPECTED — net growth but not monotonic, or too few samples yet;
 - STABLE — normal churn (grew and shrank) or below LeakMinGrowthKB;
 - RELEASED — it held memory earlier and has since freed it.
+
+The report opens the per-script table with a single `[leak] TOP SUSPECT:` line
+naming the one script to look at first (the largest LEAK/SUSPECTED growth, or
+"none"), so the answer is one line rather than a table to scan.
 
 A closing `[leak]` line gives the exact total growth and its percentage of the
 arena and of the process, which is the single "how much, in percent" answer.

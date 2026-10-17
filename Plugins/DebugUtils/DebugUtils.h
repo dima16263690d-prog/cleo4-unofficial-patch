@@ -233,9 +233,20 @@ private:
     int  m_frameTimeStreamLimitMb = 0;       // request CStreaming budget: 0=off,-1=auto,>0=MB
     DWORD m_frameTimeMaxLogMegabytes = 16;
     // Frame-quality thresholds. MinFps warns when the interval's average FPS falls
-    // below it; LowFpsWarn warns when the 1%-low FPS falls below it (both 0 = off).
+    // below it; LowFpsWarn warns when the 1%-low FPS falls below it; LowFpsWarn01
+    // warns when the 0.1%-low FPS falls below it (all 0 = off).
     DWORD m_frameTimeMinFps = 0;
     DWORD m_frameTimeLowFpsWarn = 0;
+    DWORD m_frameTimeLowFpsWarn01 = 0;
+    // Sustained-low detection: warn when the average FPS is below MinFps for this
+    // many consecutive intervals. One slow interval is noise; a run of them is a
+    // real regression. 0 = off. Needs MinFps > 0.
+    DWORD m_frameTimeSustainedLowIntervals = 0;
+    DWORD m_frameTimeConsecutiveLowIntervals = 0; // running count since the last good interval
+    bool m_frameTimeSustainedLowReported = false;
+    // A frame budget in ms (0 = off). The report states what share of the
+    // interval's frames met it, so "does this build hold 60 FPS?" has one number.
+    double m_frameTimeBudgetMs = 0.0;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};
     bool m_frameTimeFreqReady = false;
@@ -266,6 +277,8 @@ private:
     unsigned long long m_frameTimeSpike50 = 0;  // period >= 50 ms   (< 20 FPS)
     unsigned long long m_frameTimeSpike100 = 0; // period >= 100 ms  (< 10 FPS)
     unsigned long long m_frameTimeSpike250 = 0; // period >= 250 ms  (< 4 FPS)
+    unsigned long long m_frameTimeBudgetMet = 0;    // frames within m_frameTimeBudgetMs
+    unsigned long long m_frameTimeBudgetMissed = 0; // frames over the budget
     double m_frameTimeWorstLogicMs = 0.0;       // slowest logic tick in the interval
     double m_frameTimeWorstLogicPeriodMs = 0.0; // its frame period, to split cause
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average

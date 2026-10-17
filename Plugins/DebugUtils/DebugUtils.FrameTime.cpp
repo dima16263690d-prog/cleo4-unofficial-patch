@@ -65,6 +65,8 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeSpike50 = 0;
     m_frameTimeSpike100 = 0;
     m_frameTimeSpike250 = 0;
+    m_frameTimeBudgetMet = 0;
+    m_frameTimeBudgetMissed = 0;
     m_frameTimeWorstLogicMs = 0.0;
     m_frameTimeWorstLogicPeriodMs = 0.0;
 }
@@ -195,6 +197,14 @@ void DebugUtils::BeginFrameTimeFrame()
         if (periodMs >= 50.0) ++m_frameTimeSpike50;
         if (periodMs >= 100.0) ++m_frameTimeSpike100;
         if (periodMs >= 250.0) ++m_frameTimeSpike250;
+
+        if (m_frameTimeBudgetMs > 0.0)
+        {
+            if (periodMs <= m_frameTimeBudgetMs)
+                ++m_frameTimeBudgetMet;
+            else
+                ++m_frameTimeBudgetMissed;
+        }
 
         if (periodMs >= static_cast<double>(m_frameTimeWarnMs))
         {
@@ -505,6 +515,70 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             low1Fps,
             static_cast<unsigned>(m_frameTimeLowFpsWarn)
         );
+    }
+    if (m_frameTimeLowFpsWarn01 > 0 && low01Fps < static_cast<double>(m_frameTimeLowFpsWarn01))
+    {
+        WriteFrameTime(
+            "[fps] WARNING 0.1%% low FPS %.1f is below LowFpsWarn01=%u (long hitches)",
+            low01Fps,
+            static_cast<unsigned>(m_frameTimeLowFpsWarn01)
+        );
+    }
+
+    // Frame-budget compliance: the single "does it hold the target FPS?" number.
+    if (m_frameTimeBudgetMs > 0.0)
+    {
+        const unsigned long long judged = m_frameTimeBudgetMet + m_frameTimeBudgetMissed;
+        const double metPct = judged != 0
+            ? 100.0 * static_cast<double>(m_frameTimeBudgetMet) / static_cast<double>(judged)
+            : 0.0;
+        WriteFrameTime(
+            "[fps] budget <=%.2f ms met by %llu/%llu frames (%.2f%%), missed %llu",
+            m_frameTimeBudgetMs,
+            m_frameTimeBudgetMet,
+            judged,
+            metPct,
+            m_frameTimeBudgetMissed
+        );
+    }
+
+    // Sustained-low detection: count consecutive intervals whose average FPS was
+    // below MinFps. One slow interval is noise (a load hitch, an alt-tab); a run
+    // of them is a real regression and worth a distinct, greppable warning.
+    if (m_frameTimeMinFps > 0 && m_frameTimeSustainedLowIntervals > 0)
+    {
+        if (avgFps < static_cast<double>(m_frameTimeMinFps))
+        {
+            ++m_frameTimeConsecutiveLowIntervals;
+            if (m_frameTimeConsecutiveLowIntervals >= m_frameTimeSustainedLowIntervals &&
+                !m_frameTimeSustainedLowReported)
+            {
+                m_frameTimeSustainedLowReported = true;
+                WriteFrameTime(
+                    "[fps] SUSTAINED LOW: average FPS has been below MinFps=%u for "
+                    "%u consecutive intervals (< %.1f FPS) - a steady regression, not "
+                    "a one-off hitch",
+                    static_cast<unsigned>(m_frameTimeMinFps),
+                    static_cast<unsigned>(m_frameTimeConsecutiveLowIntervals),
+                    static_cast<double>(m_frameTimeMinFps)
+                );
+            }
+        }
+        else
+        {
+            if (m_frameTimeSustainedLowReported)
+            {
+                WriteFrameTime(
+                    "[fps] recovered: average FPS %.1f is back at/above MinFps=%u "
+                    "after %u slow interval(s)",
+                    avgFps,
+                    static_cast<unsigned>(m_frameTimeMinFps),
+                    static_cast<unsigned>(m_frameTimeConsecutiveLowIntervals)
+                );
+            }
+            m_frameTimeConsecutiveLowIntervals = 0;
+            m_frameTimeSustainedLowReported = false;
+        }
     }
 
     if (m_frameTimeStreamSamples > 0)

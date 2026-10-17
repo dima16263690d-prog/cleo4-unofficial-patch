@@ -327,6 +327,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
         double growthPctSelf;
         double growthBytesPerSec;
         double growthPctSelfPerMin;
+        double growthPctArenaPerMin;   // leak rate as a share of the whole arena
         const char* verdict;
     };
 
@@ -403,6 +404,13 @@ void DebugUtils::WriteLeakReport(const char* reason)
                    static_cast<double>(state.firstBytes)) *
                   (60.0 / static_cast<double>(windowSec))
             : 0.0;
+        // Leak rate as a share of the whole arena per minute: the "how fast is
+        // this eating the arena" figure, independent of the script's own size.
+        row.growthPctArenaPerMin = arenaBytes != 0 && windowSec != 0
+            ? (100.0 * static_cast<double>(growth) /
+                   static_cast<double>(arenaBytes)) *
+                  (60.0 / static_cast<double>(windowSec))
+            : 0.0;
         row.verdict = verdict;
         rows.push_back(row);
     };
@@ -439,7 +447,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
 
         WriteMemory(
             "      growth %s = %.3f%% of process private (%s) | +%.1f%% vs first sample | "
-            "rate %.1f B/s (+%.2f%%/min of own) | "
+            "rate %.1f B/s (+%.2f%%/min of own, %.3f%%/min of arena) | "
             "blocks %llu -> %llu | peak %s | first_seen=%us last_seen=%us",
             MemoryBytes(row.growth).c_str(),
             row.growthPctProcess,
@@ -447,11 +455,49 @@ void DebugUtils::WriteLeakReport(const char* reason)
             row.growthPctSelf,
             row.growthBytesPerSec,
             row.growthPctSelfPerMin,
+            row.growthPctArenaPerMin,
             state.firstBlocks,
             state.lastBlocks,
             MemoryBytes(state.peakBytes).c_str(),
             static_cast<unsigned>(state.firstUptimeSec),
             static_cast<unsigned>(state.lastUptimeSec)
+        );
+    }
+
+    // Headline suspect: the single script to look at first. Rows are already
+    // sorted by growth, so the top non-trivial verdict is the answer.
+    const Row* suspect = nullptr;
+    for (const auto& row : rows)
+    {
+        if (row.growth < m_leakMinGrowthBytes)
+            continue;
+        if (std::strcmp(row.verdict, "LEAK") == 0 ||
+            std::strcmp(row.verdict, "SUSPECTED") == 0)
+        {
+            suspect = &row;
+            break;
+        }
+    }
+
+    if (suspect != nullptr)
+    {
+        WriteMemory(
+            "[leak] TOP SUSPECT: script '%s' grew %s (+%.1f%% of its own, "
+            "%.3f%%/min of arena) over %u samples - verdict %s",
+            suspect->state->name.empty() ? "?" : suspect->state->name.c_str(),
+            MemoryBytes(suspect->growth).c_str(),
+            suspect->growthPctSelf,
+            suspect->growthPctArenaPerMin,
+            static_cast<unsigned>(suspect->state->samples),
+            suspect->verdict
+        );
+    }
+    else
+    {
+        WriteMemory(
+            "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+            "LEAK/SUSPECTED verdict",
+            MemoryBytes(m_leakMinGrowthBytes).c_str()
         );
     }
 

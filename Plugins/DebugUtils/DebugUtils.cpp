@@ -114,7 +114,9 @@ DebugUtils::DebugUtils()
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d min_fps=%u low_fps_warn=%u target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u "
+            "streaming=%u stream_limit_mb=%d min_fps=%u low_fps_warn=%u "
+            "low_fps_warn_01=%u sustained_low=%u budget_ms=%.2f target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
@@ -122,7 +124,10 @@ DebugUtils::DebugUtils()
             m_frameTimeStreamingEnabled ? 1u : 0u,
             m_frameTimeStreamLimitMb,
             static_cast<unsigned>(m_frameTimeMinFps),
-            static_cast<unsigned>(m_frameTimeLowFpsWarn)
+            static_cast<unsigned>(m_frameTimeLowFpsWarn),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn01),
+            static_cast<unsigned>(m_frameTimeSustainedLowIntervals),
+            m_frameTimeBudgetMs
         );
 
         if (m_errorDiagEnabled)
@@ -456,6 +461,23 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "LowFpsWarn: предупреждать, если 1%-низкий FPS ниже (0 = выкл)."
             : "LowFpsWarn: warn when the 1%-low FPS is below this (0 = off).");
     kv("DebugUtils.FrameTime", "LowFpsWarn", "0");
+    desc(ru ? "LowFpsWarn01: предупреждать, если 0.1%-низкий FPS ниже (длинные"
+            : "LowFpsWarn01: warn when the 0.1%-low FPS is below this (long hitches;");
+    desc(ru ? "  лаги; 0 = выкл)."
+            : "  0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn01", "0");
+    desc(ru ? "SustainedLowIntervals: предупреждать, если средний FPS ниже MinFps"
+            : "SustainedLowIntervals: warn when the average FPS is below MinFps for");
+    desc(ru ? "  столько интервалов подряд (0 = выкл; нужен MinFps > 0). Один"
+            : "  this many consecutive intervals (0 = off; needs MinFps > 0). One slow");
+    desc(ru ? "  медленный интервал - шум, серия - реальная деградация."
+            : "  interval is noise, a run of them is a real regression.");
+    kv("DebugUtils.FrameTime", "SustainedLowIntervals", "0");
+    desc(ru ? "FrameBudgetMs: бюджет кадра в мс (0 = выкл). В отчёт добавляется"
+            : "FrameBudgetMs: frame budget in ms (0 = off). The report then states");
+    desc(ru ? "  доля кадров, уложившихся в бюджет (сколько держит целевой FPS)."
+            : "  the share of frames that met it (does it hold the target FPS?).");
+    kv("DebugUtils.FrameTime", "FrameBudgetMs", "0");
     line("");
 
     line("[DebugUtils.Errors]");
@@ -849,6 +871,27 @@ void DebugUtils::LoadConfig()
     m_frameTimeLowFpsWarn = static_cast<DWORD>(
         GetPrivateProfileIntA(
             "DebugUtils.FrameTime", "LowFpsWarn",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn01 = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn01",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeSustainedLowIntervals = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "SustainedLowIntervals",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeBudgetMs = static_cast<double>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "FrameBudgetMs",
             0,
             path.c_str()
         )
