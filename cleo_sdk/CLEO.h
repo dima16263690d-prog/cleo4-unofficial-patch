@@ -245,6 +245,13 @@ BOOL  WINAPI CLEO_SetProfilerOverheadEnabled(BOOL enabled);
 // number written. CLEO_OpcodeCount is declared in CLEO_Debug.h.
 DWORD WINAPI CLEO_GetTopOpcodes(CLEO_OpcodeCount* out, DWORD max);
 
+// Enumerates the per-script breakdown of CLEO's script-memory arena: one entry
+// per script currently holding live allocate_memory (0AC8) blocks, largest
+// first. CLEO_ScriptMemoryOwner is declared in CLEO_Debug.h. Returns the number
+// of entries written (or, with `out = NULL, max = 0`, the total owner count).
+// Game/script thread only, like CLEO_DebugGetMemoryStats.
+DWORD WINAPI CLEO_DebugGetScriptMemoryOwners(CLEO_ScriptMemoryOwner* out, DWORD max);
+
 // Unified plugin resource registry. Register any allocation whose lifetime
 // should end when the plugin is unloaded; `release` runs once, right before the
 // module is unmapped, and may be null for a resource that needs no cleanup.

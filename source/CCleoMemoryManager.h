@@ -66,6 +66,19 @@ namespace CLEO
         // Game-thread only (see THREAD AFFINITY above).
         Stats GetStats() const;
 
+        // One live allocation owner: the script pointer and how much it holds.
+        struct OwnerStats
+        {
+            CRunningScript* owner;
+            size_t blocks;
+            size_t bytes;
+        };
+
+        // Game-thread only. Fills `out` with one entry per script that currently
+        // owns at least one live block, largest first. Used to attribute a
+        // growing script-memory total to the script responsible for it.
+        void GetOwnerStats(std::vector<OwnerStats>& out) const;
+
     private:
         // Sizes up to kSmallMax use exact 16-byte classes; bigger requests use
         // 64-byte-granular single-block classes. Both are recycled.

@@ -69,3 +69,4 @@ EXPORTS
         _CLEO_SetProfilerOverheadEnabled@4      @66
         _CLEO_GetTopOpcodes@8                   @67
         _CLEO_SetStreamingMemoryLimit@4         @68
+        _CLEO_DebugGetScriptMemoryOwners@8      @69

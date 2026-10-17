@@ -81,6 +81,8 @@
     <ClCompile Include="DebugUtils.CrashReport.cpp" />
     <ClCompile Include="DebugUtils.Callbacks.cpp" />
     <ClCompile Include="DebugUtils.Opcodes.cpp" />
+    <ClCompile Include="DebugUtils.Errors.cpp" />
+    <ClCompile Include="DebugUtils.Leak.cpp" />
     <ResourceCompile Include="DebugUtils.rc" />
   </ItemGroup>
   <ItemGroup>
@@ -102,6 +104,7 @@
     <ClInclude Include="DebugUtils.h" />
     <ClInclude Include="DebugUtils.Internal.h" />
     <ClInclude Include="DebugUtils.OpcodeNames.h" />
+    <ClInclude Include="DebugUtils.RwErrorNames.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h" />

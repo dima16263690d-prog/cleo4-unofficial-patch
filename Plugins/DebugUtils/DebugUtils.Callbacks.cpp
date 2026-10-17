@@ -139,6 +139,40 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_memoryWarnIssued = false;
     s_instance->m_memoryRotateActive = false;
     s_instance->m_memorySummaryHeaderWritten = false;
+    // Reset the leak tracker's process baseline for the new session; the first
+    // sample captures it. Also reset its timer: otherwise (defaulting to 0) the
+    // first sample fires at uptime 0-1s, during level loading, where memory
+    // swings wildly and the load-time allocation would be miscounted as a leak.
+    s_instance->m_leakFirstPrivateBytes = 0;
+    s_instance->m_leakFirstPrivateUptimeSec = 0;
+    s_instance->m_leakLastPrivateBytes = 0;
+    s_instance->m_leakLastUptimeSec = 0;
+    s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
+    // Error records are cumulative for the session; clear them and the one-shot
+    // note flag so a new game starts from a clean error table.
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_errorMutex);
+        s_instance->m_errorRecords.clear();
+        s_instance->m_errorOrder.clear();
+        s_instance->m_errorModulesSeen.clear();
+    }
+    s_instance->m_errorNotePrinted = false;
+    s_instance->m_rwErrorPrimed = false;
+    s_instance->m_cleoErrorCount = 0;
+    s_instance->m_cleoWarningCount = 0;
+    s_instance->m_lastReportedCleoErrors = 0;
+    s_instance->m_lastReportedCleoWarnings = 0;
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_fileOpenMutex);
+        s_instance->m_fileOpenFailures.clear();
+        s_instance->m_fileOpenOrder.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_fileWatchRecordMutex);
+        s_instance->m_fileWatchRecords.clear();
+        s_instance->m_fileWatchRecordOrder.clear();
+    }
+    s_instance->InstallFileOpenWatch();
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
@@ -160,6 +194,12 @@ void __stdcall DebugUtils::OnGameEnd()
         s_instance->WriteCoreMemorySummary();
     s_instance->WriteProfilerReport("game_end");
     s_instance->WriteFrameTimeReport("game_end");
+    s_instance->WriteErrorReport("game_end");
+    s_instance->WriteFileOpenReport(true);
+    s_instance->WriteWatchedOpenReport(true);
+    s_instance->RemoveFileOpenWatch();
+    s_instance->SampleScriptMemoryLeaks();
+    s_instance->WriteLeakReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
@@ -250,6 +290,16 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     {
         s_instance->m_lastModuleMapTick = now;
         s_instance->WriteModuleMemoryMap();
+    }
+
+    // Per-script leak tracker: sample the script-memory arena on its own cadence
+    // and flush a report. Both calls are game-thread only, like this callback.
+    if (s_instance->m_leakTrackerEnabled &&
+        now - s_instance->m_lastLeakTick >= s_instance->m_leakIntervalSeconds * 1000u)
+    {
+        s_instance->m_lastLeakTick = now;
+        s_instance->SampleScriptMemoryLeaks();
+        s_instance->WriteLeakReport("interval");
     }
 }
 

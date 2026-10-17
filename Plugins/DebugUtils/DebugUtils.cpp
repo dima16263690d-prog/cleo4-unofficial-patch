@@ -114,13 +114,41 @@ DebugUtils::DebugUtils()
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u "
+            "streaming=%u stream_limit_mb=%d min_fps=%u low_fps_warn=%u "
+            "low_fps_warn_01=%u sustained_low=%u budget_ms=%.2f target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
             m_frameTimeHistogramEnabled ? 1u : 0u,
             m_frameTimeStreamingEnabled ? 1u : 0u,
-            m_frameTimeStreamLimitMb
+            m_frameTimeStreamLimitMb,
+            static_cast<unsigned>(m_frameTimeMinFps),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn01),
+            static_cast<unsigned>(m_frameTimeSustainedLowIntervals),
+            m_frameTimeBudgetMs
+        );
+
+        if (m_errorDiagEnabled)
+        {
+            WriteFrameTime(
+                "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
+                "watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
+                m_rwErrorWatchEnabled ? 1u : 0u,
+                m_errorModuleScanEnabled ? 1u : 0u,
+                m_fileWatchEnabled ? 1u : 0u,
+                m_fileWatchNames.size()
+            );
+        }
+    }
+
+    if (m_leakTrackerEnabled && m_memoryLogEnabled)
+    {
+        WriteMemory(
+            "[leak] enabled interval=%us min_growth_kb=%u (per-script leak tracker)",
+            static_cast<unsigned>(m_leakIntervalSeconds),
+            static_cast<unsigned>(m_leakMinGrowthBytes / 1024u)
         );
     }
 
@@ -183,6 +211,8 @@ DebugUtils::~DebugUtils()
         return;
 
     CLEO_DebugSetCrashSnapshotEnabled(FALSE);
+
+    RemoveFileOpenWatch();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -425,6 +455,72 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "MaxLogMB: ротация cleo_frametime.log после этого размера, МБ."
             : "MaxLogMB: rotate cleo_frametime.log when it grows past this many MB.");
     kv("DebugUtils.FrameTime", "MaxLogMB", "16");
+    desc(ru ? "MinFps: предупреждать, если средний FPS интервала ниже (0 = выкл)."
+            : "MinFps: warn when the interval's average FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "MinFps", "0");
+    desc(ru ? "LowFpsWarn: предупреждать, если 1%-низкий FPS ниже (0 = выкл)."
+            : "LowFpsWarn: warn when the 1%-low FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn", "0");
+    desc(ru ? "LowFpsWarn01: предупреждать, если 0.1%-низкий FPS ниже (длинные"
+            : "LowFpsWarn01: warn when the 0.1%-low FPS is below this (long hitches;");
+    desc(ru ? "  лаги; 0 = выкл)."
+            : "  0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn01", "0");
+    desc(ru ? "SustainedLowIntervals: предупреждать, если средний FPS ниже MinFps"
+            : "SustainedLowIntervals: warn when the average FPS is below MinFps for");
+    desc(ru ? "  столько интервалов подряд (0 = выкл; нужен MinFps > 0). Один"
+            : "  this many consecutive intervals (0 = off; needs MinFps > 0). One slow");
+    desc(ru ? "  медленный интервал - шум, серия - реальная деградация."
+            : "  interval is noise, a run of them is a real regression.");
+    kv("DebugUtils.FrameTime", "SustainedLowIntervals", "0");
+    desc(ru ? "FrameBudgetMs: бюджет кадра в мс (0 = выкл). В отчёт добавляется"
+            : "FrameBudgetMs: frame budget in ms (0 = off). The report then states");
+    desc(ru ? "  доля кадров, уложившихся в бюджет (сколько держит целевой FPS)."
+            : "  the share of frames that met it (does it hold the target FPS?).");
+    kv("DebugUtils.FrameTime", "FrameBudgetMs", "0");
+    line("");
+
+    line("[DebugUtils.Errors]");
+    desc(ru ? "Диагностика ошибок RenderWare и CLEO внутри cleo_frametime.log."
+            : "RenderWare and CLEO error diagnostics, reported in cleo_frametime.log.");
+    desc(ru ? "ВЫКЛЮЧЕНО по умолчанию: опрос RenderWare идёт каждый кадр и даёт"
+            : "OFF by default: the RenderWare poll runs every frame and costs a");
+    desc(ru ? "  небольшую нагрузку. Включи (1), когда ищешь ошибки."
+            : "  little. Turn it on (1) when hunting errors.");
+    desc(ru ? "Enabled: 1 = вести отчёт по ошибкам, 0 = выключить."
+            : "Enabled: 1 = keep the error report, 0 = off.");
+    kv("DebugUtils.Errors", "Enabled", "0");
+    desc(ru ? "RenderWare: 1 = опрашивать последнюю ошибку RenderWare раз в кадр"
+            : "RenderWare: 1 = poll RenderWare's last error once per frame");
+    desc(ru ? "  (только чтение, ничего не патчится; только GTA SA 1.0 US)."
+            : "  (read-only, nothing is patched; GTA SA 1.0 US only).");
+    kv("DebugUtils.Errors", "RenderWare", "0");
+    desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
+            : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
+    kv("DebugUtils.Errors", "ModuleScan", "0");
+    desc(ru ? "FileWatch: 1 = перехватывать открытия файлов RenderWare и печатать"
+            : "FileWatch: 1 = capture RenderWare file opens and print the exact");
+    desc(ru ? "  точный путь, который не удалось открыть (E_RW_BADOPEN)."
+            : "  path that failed to open (E_RW_BADOPEN).");
+    desc(ru ? "  Это патч только данных (подмена указателя в таблице), код не"
+            : "  Data-only patch (a table pointer is swapped), no code is");
+    desc(ru ? "  трогается. Только GTA SA 1.0 US."
+            : "  modified. GTA SA 1.0 US only.");
+    kv("DebugUtils.Errors", "FileWatch", "0");
+    desc(ru ? "FileWatchFailures: 1 = печатать блок 'failed file opens' (0 = выкл)."
+            : "FileWatchFailures: 1 = print the 'failed file opens' block (0 = off).");
+    desc(ru ? "  Пустой FileWatchNames НЕ отключает этот блок; выключай здесь."
+            : "  An empty FileWatchNames does NOT silence it; turn it off here.");
+    kv("DebugUtils.Errors", "FileWatchFailures", "1");
+    desc(ru ? "FileWatchNames: список через запятую (подстроки пути или маски)."
+            : "FileWatchNames: comma-separated path substrings or glob masks.");
+    desc(ru ? "  Каждое открытие подходящего файла пишется в лог (успех или"
+            : "  Every open of a matching file is logged (success or failure), so");
+    desc(ru ? "  ошибка) - видно, какой мод/плагин грузит файл, даже если файл"
+            : "  'who loads particle.txd' is answered even when the file exists.");
+    desc(ru ? "  есть. Маски: * и ?. Пример: particle.txd,*.txd,*.png"
+            : "  Masks: * and ?. Example: particle.txd,*.txd,*.png");
+    kv("DebugUtils.Errors", "FileWatchNames", "");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -467,6 +563,19 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "ModuleMemoryMapInterval: секунды между дампами памяти по модулям."
             : "ModuleMemoryMapInterval: seconds between module memory dumps.");
     kv("DebugUtils.Logs", "ModuleMemoryMapInterval", "30");
+    desc(ru ? "LeakTracker: 1 = отслеживать утечки памяти по скриптам (0 = выкл)."
+            : "LeakTracker: 1 = track per-script memory leaks (0 = off).");
+    desc(ru ? "  Сэмплирует арену памяти скриптов и показывает рост по скриптам,"
+            : "  Samples the script-memory arena and reports per-script growth, its");
+    desc(ru ? "  долю в % от арены/процесса и вердикт (LEAK/SUSPECTED/STABLE)."
+            : "  share of the arena/process in %, and a verdict (LEAK/SUSPECTED/STABLE).");
+    kv("DebugUtils.Logs", "LeakTracker", "0");
+    desc(ru ? "LeakInterval: секунды между сэмплами трекера утечек (>=5)."
+            : "LeakInterval: seconds between leak-tracker samples (>=5).");
+    kv("DebugUtils.Logs", "LeakInterval", "30");
+    desc(ru ? "LeakMinGrowthKB: рост меньше этого числа КБ игнорируется."
+            : "LeakMinGrowthKB: growth below this many KB is ignored.");
+    kv("DebugUtils.Logs", "LeakMinGrowthKB", "64");
     desc(ru ? "Diagnostic: 1 = писать диагностический лог, 0 = выключить."
             : "Diagnostic: 1 = write the diagnostic log, 0 = disable.");
     kv("DebugUtils.Logs", "Diagnostic", "0");
@@ -539,7 +648,7 @@ void DebugUtils::LoadConfig()
     // A config from an older build lacks keys added since; rewrite it so the new
     // options are documented without dropping the values already set.
     const bool missingNewKeys =
-        !fileMissing && raw.find("DebugUtils.Logs.ModuleMemoryMap") == raw.end();
+        !fileMissing && raw.find("DebugUtils.Errors.Enabled") == raw.end();
 
     if (fileMissing || languageMismatch || missingNewKeys)
     {
@@ -756,6 +865,139 @@ void DebugUtils::LoadConfig()
         )
     );
 
+    // Frame-quality thresholds (0 = off).
+    m_frameTimeMinFps = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "MinFps",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn01 = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn01",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeSustainedLowIntervals = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "SustainedLowIntervals",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeBudgetMs = static_cast<double>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "FrameBudgetMs",
+            0,
+            path.c_str()
+        )
+    );
+
+    // Error diagnostics (RenderWare + CLEO), reported inside the frame-time log.
+    // Off by default (opt-in): the per-frame RenderWare poll costs a little.
+    m_errorDiagEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "Enabled",
+            0,
+            path.c_str()
+        ) != 0;
+    m_rwErrorWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "RenderWare",
+            0,
+            path.c_str()
+        ) != 0;
+    m_errorModuleScanEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "ModuleScan",
+            0,
+            path.c_str()
+        ) != 0;
+    // Wrap RenderWare's rwfopen to name the exact file behind a failed open.
+    // Data-only patch (no code detour), so it is safe to leave on while hunting.
+    m_fileWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatch",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Failed-open report. Default 1: when FileWatch is on, naming the file that
+    // failed is the whole point. Set 0 to keep the rwfopen hook but stop the
+    // "failed file opens" block (an empty FileWatchNames does NOT silence it).
+    m_fileWatchFailuresEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatchFailures",
+            1,
+            path.c_str()
+        ) != 0;
+
+    // Comma-separated list of path substrings to record on every open (success or
+    // failure). Answers "which mod/plugin loads particle.txd" even when the file
+    // exists. Empty = disabled.
+    {
+        char buffer[512] = {};
+        GetPrivateProfileStringA(
+            "DebugUtils.Errors", "FileWatchNames", "",
+            buffer, sizeof(buffer), path.c_str());
+
+        m_fileWatchNames.clear();
+        std::string list(buffer);
+        size_t start = 0;
+        while (start <= list.size())
+        {
+            const size_t comma = list.find(',', start);
+            std::string token = list.substr(
+                start, comma == std::string::npos ? std::string::npos : comma - start);
+
+            // trim spaces and lowercase for case-insensitive matching
+            const size_t first = token.find_first_not_of(" \t");
+            const size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos)
+            {
+                token = token.substr(first, last - first + 1);
+                for (char& c : token)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                m_fileWatchNames.push_back(token);
+            }
+
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+    }
+
+    // Per-script leak tracker (off by default: it allocates and samples).
+    m_leakTrackerEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakTracker",
+            0,
+            path.c_str()
+        ) != 0;
+    m_leakIntervalSeconds = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakInterval",
+            30,
+            path.c_str()
+        )
+    );
+    m_leakMinGrowthBytes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakMinGrowthKB",
+            64,
+            path.c_str()
+        )
+    ) * 1024u;
+
     if (m_frameTimeIntervalSeconds < 1)
         m_frameTimeIntervalSeconds = 1;
     if (m_frameTimeWarnMs < 1)
@@ -766,6 +1008,8 @@ void DebugUtils::LoadConfig()
         m_frameTimeTopStutter = static_cast<DWORD>(kFrameTimeMaxWorst);
     if (m_frameTimeMaxLogMegabytes < 1)
         m_frameTimeMaxLogMegabytes = 1;
+    if (m_leakIntervalSeconds < 5)
+        m_leakIntervalSeconds = 5;
 
     m_crashEnabled =
         GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;

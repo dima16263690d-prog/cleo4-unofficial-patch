@@ -120,6 +120,17 @@ typedef struct CLEO_MemoryStats
     unsigned long long recyclableBytes;
 } CLEO_MemoryStats;
 
+// One script's live allocation, as tracked by the CLEO script-memory arena
+// (allocate_memory 0AC8 / free_allocated_memory 0AC9). Used to attribute a
+// growing script-memory total to the script that owns it.
+typedef struct CLEO_ScriptMemoryOwner
+{
+    uintptr_t scriptPtr;
+    char scriptName[9];
+    unsigned long long blocks;
+    unsigned long long bytes;
+} CLEO_ScriptMemoryOwner;
+
 typedef BOOL (__stdcall *CLEO_ScriptProcessBeforeCallback)(void* thread);
 typedef void (__stdcall *CLEO_ScriptProcessAfterCallback)(void* thread);
 typedef int (__stdcall *CLEO_ScriptOpcodeProcessBeforeCallback)(void* thread, DWORD opcode);
@@ -143,6 +154,13 @@ BOOL WINAPI CLEO_DebugSetCrashSnapshotEnabled(BOOL enabled);
 // (the same thread that runs opcodes). The counters are not locked, so calling
 // this from a plugin worker thread would race the allocator.
 BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats);
+
+// Enumerates the per-script breakdown behind CLEO_DebugGetMemoryStats: one entry
+// per script that currently holds live blocks, largest first. `max` is the
+// capacity of `out`; the return value is how many entries were written. Pass
+// `out = NULL, max = 0` to just get the owner count. Same thread affinity as
+// CLEO_DebugGetMemoryStats: game/script thread only.
+DWORD WINAPI CLEO_DebugGetScriptMemoryOwners(CLEO_ScriptMemoryOwner* out, DWORD max);
 void WINAPI CLEO_DebugRecordCrashOpcode(
     uintptr_t scriptPtr,
     const char* scriptName,
