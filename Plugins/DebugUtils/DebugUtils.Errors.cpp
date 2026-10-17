@@ -186,6 +186,7 @@ namespace
         if (pre[5] == 0xE8)                             return true; // call rel32
         if (pre[6] == 0xFF && pre[5] == 0x15)           return true; // call [abs32]
         if (pre[2] == 0xFF && (pre[1] & 0xF8) == 0xD0)  return true; // call reg
+        if (pre[2] == 0xFF && (pre[1] & 0xF8) == 0x10)  return true; // call [reg]
         if (pre[3] == 0xFF && (pre[2] & 0xF8) == 0x50)  return true; // call [reg+disp8]
         if (pre[6] == 0xFF && (pre[5] & 0xF8) == 0x90)  return true; // call [reg+disp32]
 
