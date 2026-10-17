@@ -106,6 +106,9 @@ RenderWare=0
 ModuleScan=0
 ; Name the exact file behind a failed open (data-only patch, no code detour).
 FileWatch=0
+; Print the "failed file opens" block (1 = on). An empty FileWatchNames does not
+; silence it; set FileWatchFailures=0 to stop the block while keeping the hook.
+FileWatchFailures=1
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -225,6 +228,19 @@ trampoline is used, so it carries none of the risk of a code detour; the origina
 pointer is restored on game end and on unload. The table address is GTA SA 1.0 US
 only, and the wrapper refuses to install if the pointer it would replace is not
 executable code (a wrong-layout guard). Off by default.
+
+The `failed file opens` block is gated by `FileWatch` and `FileWatchFailures`,
+not by `FileWatchNames`: emptying the watchlist silences the *watched* list but
+not the failed-open report. Set `FileWatchFailures=0` to keep the hook (and the
+watchlist) but stop the failed-open block, e.g. once you have named the culprit.
+
+Frames in a `requested by:` chain that come from the Windows directory
+(`user32.dll`, `kernel32.dll`, a system-supplied `d3d9.dll`, ...) are dropped as
+OS noise. A mod that ships its own `d3d9.dll` in the game folder is kept, since
+its path is not under `Windows`. So a chain like
+`d3d9.dll+0x5FE17 <- SilentPatchSA.asi+0xE104 <- modloader.asi+0x1F1F0`
+means a D3D9 proxy (`d3d9.dll`) asked RenderWare for the file, called from a mod
+loader — the `d3d9.dll` frame is the immediate requester, not a system DLL.
 
 ### Finding who loads a specific file (FileWatchNames)
 

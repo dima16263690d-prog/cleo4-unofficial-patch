@@ -1266,6 +1266,12 @@ void DebugUtils::WriteErrorReport(const char* reason)
                 "model/.txd (or a mod loading it). Check the script/mod above and "
                 "its resource files."
             );
+            WriteFrameTime(
+                "      hint: a rendering mod or D3D9/dinput proxy that replaces "
+                "RenderWare's texture reader (NativeTextureRead, SA 0x4CD820) is a "
+                "prime suspect - it can raise this for a texture the stock engine "
+                "would load fine."
+            );
         }
 
         // The opcode is only meaningful where the error was raised. For a
