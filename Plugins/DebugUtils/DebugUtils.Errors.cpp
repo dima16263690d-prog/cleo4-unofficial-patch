@@ -531,6 +531,12 @@ void DebugUtils::WriteErrorReport(const char* reason)
         if (record.renderWare)
             script = "~" + script;
 
+        // plugin-sdk builds a throwaway CRunningScript literally named "plg-sdk"
+        // whenever a plugin calls a game script command through CallCommandById
+        // (ScriptCommands.h). Seeing it here means the error surfaced inside such
+        // a call from a plugin, not from a user CLEO script.
+        const bool pluginBridge = script.find("plg-sdk") != std::string::npos;
+
         WriteFrameTime(
             "%-3zu %-22s %8u 0x%06X 0x%08X %5u %5u %-16s %s",
             index,
@@ -543,6 +549,15 @@ void DebugUtils::WriteErrorReport(const char* reason)
             script.c_str(),
             record.module.empty() ? "<none>" : record.module.c_str()
         );
+
+        if (pluginBridge && showDetail)
+        {
+            WriteFrameTime(
+                "      note: 'plg-sdk' is the plugin-sdk script-command bridge "
+                "(CallCommandById), not a user script; the error came from a "
+                "plugin calling a game command"
+            );
+        }
 
         if (!record.text.empty() && showDetail)
         {

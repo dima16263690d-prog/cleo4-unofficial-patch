@@ -176,6 +176,11 @@ one `[errors] unchanged since last report: ...` line, so a stable error does not
 re-print its explanation every interval. The `meaning:`/`hint:` details are shown
 once per record (and again in the final `game_end` dump).
 
+When the script active at the error is `plg-sdk`, the report adds a note that
+this is the plugin-sdk script-command bridge (`CallCommandById` builds a
+throwaway `CRunningScript` named `"plg-sdk"`), so the error came from a plugin
+calling a game command rather than from a user CLEO script.
+
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
   address (GTA SA 1.0 US). The monitor polls it once per frame and reports any
