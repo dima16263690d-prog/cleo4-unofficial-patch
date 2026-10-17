@@ -213,94 +213,6 @@ namespace
         return std::string(full);
     }
 
-    // True for the game, CLEO and DebugUtils itself: modules that are never the
-    // interesting answer when looking for "which mod did this".
-    bool IsIgnoredModuleHandle(HMODULE module)
-    {
-        if (module == nullptr)
-            return true;
-
-        const DWORD base = reinterpret_cast<DWORD>(module);
-        if (base == reinterpret_cast<DWORD>(GetModuleHandleA(nullptr)))
-            return true;
-        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("CLEO.asi")))
-            return true;
-        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.cleo")))
-            return true;
-        if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.dll")))
-            return true;
-
-        // This module's own base, resolved once by address so it works whatever
-        // the loaded file is called.
-        static const DWORD selfBase = []() -> DWORD
-        {
-            HMODULE self = nullptr;
-            GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(&IsIgnoredModuleHandle),
-                &self);
-            return reinterpret_cast<DWORD>(self);
-        }();
-
-        return base == selfBase;
-    }
-
-    // "mod.asi+0x1a2b" - the module plus the offset inside it.
-    std::string FormatFrameLabel(DWORD address)
-    {
-        HMODULE module = nullptr;
-        if (!GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(address),
-                &module) || module == nullptr)
-        {
-            return {};
-        }
-
-        const std::string name = DebugUtils::ModuleNameForAddress(address);
-        if (name.empty() || name == "<unknown>")
-            return {};
-
-        char label[260] = {};
-        _snprintf_s(
-            label, sizeof(label), _TRUNCATE, "%s+0x%X",
-            name.c_str(),
-            static_cast<unsigned>(address - reinterpret_cast<DWORD>(module)));
-
-        return std::string(label);
-    }
-
-    // Append a frame label to the list unless the module is already listed, so
-    // one DLL is not repeated at several offsets.
-    void PushUniqueFrame(std::vector<std::string>& modules, DWORD address)
-    {
-        HMODULE module = nullptr;
-        if (!GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(address),
-                &module) || module == nullptr)
-        {
-            return;
-        }
-
-        const std::string name = DebugUtils::ModuleNameForAddress(address);
-        if (name.empty() || name == "<unknown>")
-            return;
-
-        for (const auto& seen : modules)
-        {
-            if (seen == name || seen.compare(0, name.size() + 1, name + "+") == 0)
-                return;
-        }
-
-        const std::string label = FormatFrameLabel(address);
-        if (!label.empty())
-            modules.push_back(label);
-    }
-
     typedef USHORT(WINAPI* RtlCaptureStackBackTraceFn)(
         ULONG FramesToSkip, ULONG FramesToCapture, PVOID* BackTrace, PULONG BackTraceHash);
 
@@ -335,50 +247,138 @@ namespace
 
         return cached;
     }
+}
 
-    // Module chain of the callers of this function, nearest first, ignoring the
-    // game, CLEO and DebugUtils itself. Prefers RtlCaptureStackBackTrace (a real
-    // unwind, so it does not pick up stale stack words); falls back to the
-    // E8-return-address heuristic when the unwind is unavailable or empty.
-    std::vector<std::string> CaptureRequesterChain(size_t maxFrames)
+// True for the game, CLEO and DebugUtils itself: modules that are never the
+// interesting answer when looking for "which mod did this".
+bool DebugUtils::IsIgnoredModuleHandle(HMODULE module)
+{
+    if (module == nullptr)
+        return true;
+
+    const DWORD base = reinterpret_cast<DWORD>(module);
+    if (base == reinterpret_cast<DWORD>(GetModuleHandleA(nullptr)))
+        return true;
+    if (base == reinterpret_cast<DWORD>(GetModuleHandleA("CLEO.asi")))
+        return true;
+    if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.cleo")))
+        return true;
+    if (base == reinterpret_cast<DWORD>(GetModuleHandleA("DebugUtils.dll")))
+        return true;
+
+    // This module's own base, resolved once by address so it works whatever
+    // the loaded file is called.
+    static const DWORD selfBase = []() -> DWORD
     {
-        std::vector<std::string> modules;
+        HMODULE self = nullptr;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&DebugUtils::IsIgnoredModuleHandle),
+            &self);
+        return reinterpret_cast<DWORD>(self);
+    }();
 
-        const auto capture = ResolveCaptureBackTrace();
-        if (capture != nullptr)
-        {
-            PVOID frames[32] = {};
-            const USHORT count = capture(0, 32, frames, nullptr);
+    return base == selfBase;
+}
 
-            for (USHORT i = 0; i < count && modules.size() < maxFrames; ++i)
-            {
-                const DWORD address = reinterpret_cast<DWORD>(frames[i]);
-                if (address < 0x10000)
-                    continue;
-
-                HMODULE module = nullptr;
-                if (!GetModuleHandleExA(
-                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                        reinterpret_cast<LPCSTR>(address),
-                        &module))
-                {
-                    continue;
-                }
-
-                if (IsIgnoredModuleHandle(module))
-                    continue;
-
-                PushUniqueFrame(modules, address);
-            }
-        }
-
-        if (!modules.empty())
-            return modules;
-
-        // Fallback: the same stack scan the error report uses.
-        return DebugUtils::ScanErrorModules(maxFrames);
+// "mod.asi+0x1a2b" - the module plus the offset inside it.
+std::string DebugUtils::FormatFrameLabel(DWORD address)
+{
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(address),
+            &module) || module == nullptr)
+    {
+        return {};
     }
+
+    const std::string name = ModuleNameForAddress(address);
+    if (name.empty() || name == "<unknown>")
+        return {};
+
+    char label[260] = {};
+    _snprintf_s(
+        label, sizeof(label), _TRUNCATE, "%s+0x%X",
+        name.c_str(),
+        static_cast<unsigned>(address - reinterpret_cast<DWORD>(module)));
+
+    return std::string(label);
+}
+
+// Append a frame label to the list unless the module is already listed, so
+// one DLL is not repeated at several offsets.
+void DebugUtils::PushUniqueFrame(std::vector<std::string>& modules, DWORD address)
+{
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(address),
+            &module) || module == nullptr)
+    {
+        return;
+    }
+
+    const std::string name = ModuleNameForAddress(address);
+    if (name.empty() || name == "<unknown>")
+        return;
+
+    for (const auto& seen : modules)
+    {
+        if (seen == name || seen.compare(0, name.size() + 1, name + "+") == 0)
+            return;
+    }
+
+    const std::string label = FormatFrameLabel(address);
+    if (!label.empty())
+        modules.push_back(label);
+}
+
+// Module chain of the callers of this function, nearest first, ignoring the
+// game, CLEO and DebugUtils itself. Prefers RtlCaptureStackBackTrace (a real
+// unwind, so it does not pick up stale stack words); falls back to the
+// E8-return-address heuristic when the unwind is unavailable or empty.
+std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames)
+{
+    std::vector<std::string> modules;
+
+    const auto capture = ResolveCaptureBackTrace();
+    if (capture != nullptr)
+    {
+        PVOID frames[32] = {};
+        const USHORT count = capture(0, 32, frames, nullptr);
+
+        for (USHORT i = 0; i < count && modules.size() < maxFrames; ++i)
+        {
+            const DWORD address = reinterpret_cast<DWORD>(frames[i]);
+            if (address < 0x10000)
+                continue;
+
+            HMODULE module = nullptr;
+            if (!GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCSTR>(address),
+                    &module))
+            {
+                continue;
+            }
+
+            if (IsIgnoredModuleHandle(module))
+                continue;
+
+            PushUniqueFrame(modules, address);
+        }
+    }
+
+    if (!modules.empty())
+        return modules;
+
+    // Fallback: the same stack scan the error report uses.
+    return ScanErrorModules(maxFrames);
 }
 
 

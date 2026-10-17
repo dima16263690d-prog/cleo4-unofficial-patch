@@ -439,6 +439,12 @@ private:
     static DWORD CurrentScriptOpcode();
     static std::vector<std::string> ScanErrorModules(size_t maxModules);
 
+    // Module attribution shared by the error report and the file watch.
+    static bool IsIgnoredModuleHandle(HMODULE module);
+    static std::string FormatFrameLabel(DWORD address);
+    static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
+    static std::vector<std::string> CaptureRequesterChain(size_t maxFrames);
+
     std::set<uintptr_t> m_debugScripts;
 
     struct BreakpointInfo
