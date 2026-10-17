@@ -154,17 +154,23 @@ streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
 ### Error diagnostics (RenderWare / CLEO)
 
 [DebugUtils.Errors] reports CLEO and RenderWare errors inside cleo_frametime.log,
-so an error can be tied to the frame it happened in. Nothing is patched: the
-monitor only observes.
+so an error can be tied to the frame it happened in. No game code is patched: the
+monitor only observes (and, for RenderWare, restores the error state it read).
 
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
-  address (GTA SA 1.0 US). The monitor polls it once per frame, read-only, and
-  reports any *change* of the pair — the only way to see a RenderWare error that
-  did not (yet) crash the process. Common error codes (MSB set) are printed by
-  name (E_RW_NOMEM, E_RW_NULLP, ...); plugin errors are printed as
-  `RW_PLUGIN_ERR` with the raw pluginID + code. Set RenderWare=0 to disable the
-  poll; on non-1.0-US builds it disables itself and says so.
+  address (GTA SA 1.0 US). The monitor polls it once per frame and reports any
+  *change* of the pair — the only way to see a RenderWare error that did not
+  (yet) crash the process. `RwErrorGet` copies *and clears* the error, so the
+  monitor calls `RwErrorSet` right after to put the pair back: it is transparent
+  and the game's own error handling still sees the error. The report names common
+  errors (E_RW_NOMEM, E_RW_NULLP, ...) and the RenderWare core plugin's errors
+  (e.g. `E_RW_READTEXMASK` — "Unable to read Texture"), and prints each error's
+  meaning on a `meaning:` line; errors from other plugins are shown as
+  `RW_PLUGIN_ERR` with the raw pluginID + code. Because the error is noticed on
+  the next frame, the script column is prefixed with `~` to mark it approximate,
+  and no "last opcode" line is printed for RenderWare rows. Set RenderWare=0 to
+  disable the poll; on non-1.0-US builds it disables itself and says so.
 - CLEO: `CLEO_DEBUG_ERROR` / `CLEO_DEBUG_WARNING` messages are counted, and the
   stack at that moment is scanned (ModuleScan=1) for the first return address in
   a module that is neither the game, the core, nor DebugUtils. That module is the
@@ -316,7 +322,7 @@ The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated
 
 The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.
 
-The RenderWare error watch is a single read-only `RwErrorGet` call per frame while the frame-time monitor is on; it patches nothing. The stack scan that names the suspect module for a CLEO error runs only when an error/warning is actually logged, not per frame. The per-script leak tracker is off by default and, when on, only walks the script-memory owner map on its own interval.
+The RenderWare error watch is a single `RwErrorGet` + `RwErrorSet` pair per frame while the frame-time monitor is on; it patches no code and leaves the game's error state exactly as it found it. The stack scan that names the suspect module for a CLEO error runs only when an error/warning is actually logged, not per frame. The per-script leak tracker is off by default and, when on, only walks the script-memory owner map on its own interval.
 
 
 ### Language and CrashInfo localization

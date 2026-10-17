@@ -433,23 +433,41 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         m_frameTimeStutterLostMs
     );
 
-    // Cause split: if the slowest frame's logic tick consumed most of its period,
-    // the hitch is logic/script bound (a mod or script), otherwise it is render
-    // bound (GPU/driver/streaming). Stated as a hint, not proof.
+    // Cause split: if the slowest logic tick consumed most of its frame, the
+    // hitch is logic/script bound (a mod or script), otherwise it is render
+    // bound (GPU/driver/streaming). Stated as a hint, not proof. The logic tick
+    // can legitimately be longer than the frame period it was sampled in (a
+    // stall inside logic that the period sampling did not span), so the ratio is
+    // reported as a multiple past 100% instead of an impossible percentage.
     if (m_frameTimeWorstLogicPeriodMs > 0.0)
     {
-        const double share = 100.0 * m_frameTimeWorstLogicMs /
-            m_frameTimeWorstLogicPeriodMs;
-        const char* cause = share >= 80.0
+        const double ratio = m_frameTimeWorstLogicMs / m_frameTimeWorstLogicPeriodMs;
+        const char* cause = ratio >= 0.8
             ? "logic/script bound"
-            : (share >= 40.0 ? "mixed" : "render/streaming bound");
-        WriteFrameTime(
-            "worst_frame logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% cause=%s",
-            m_frameTimeWorstLogicMs,
-            m_frameTimeWorstLogicPeriodMs,
-            share,
-            cause
-        );
+            : (ratio >= 0.4 ? "mixed" : "render/streaming bound");
+
+        if (ratio > 1.0)
+        {
+            WriteFrameTime(
+                "worst_frame logic_ms=%.2f period_ms=%.2f cause=%s "
+                "(logic tick ran %.1fx the frame period; the two are from the same "
+                "frame but logic can overrun its own period)",
+                m_frameTimeWorstLogicMs,
+                m_frameTimeWorstLogicPeriodMs,
+                cause,
+                ratio
+            );
+        }
+        else
+        {
+            WriteFrameTime(
+                "worst_frame logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% cause=%s",
+                m_frameTimeWorstLogicMs,
+                m_frameTimeWorstLogicPeriodMs,
+                100.0 * ratio,
+                cause
+            );
+        }
     }
 
     // Interval-over-interval comparison: a falling average FPS across intervals

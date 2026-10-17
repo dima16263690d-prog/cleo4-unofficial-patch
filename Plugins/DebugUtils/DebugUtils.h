@@ -330,6 +330,8 @@ private:
         std::string lastScript;        // script active when last seen
         DWORD lastOpcode = 0xFFFFFFFFu;
         std::vector<std::string> modules; // modules seen in the stack for this error
+        bool renderWare = false;       // came from the RW poll (no raising stack)
+        std::string text;              // human-readable meaning when known
     };
 
     std::map<unsigned int, ErrorRecord> m_errorRecords; // keyed by record.key
@@ -350,7 +352,9 @@ private:
         const std::string& name,
         unsigned int pluginId,
         unsigned int errorCode,
-        const std::vector<std::string>& modules
+        const std::vector<std::string>& modules,
+        bool renderWare = false,
+        const char* text = nullptr
     );
     void WriteErrorReport(const char* reason);
     static std::string CurrentScriptName();

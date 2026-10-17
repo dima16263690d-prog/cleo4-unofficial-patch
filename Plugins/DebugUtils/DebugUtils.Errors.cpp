@@ -39,10 +39,14 @@ namespace
 {
     // plugin-sdk: RwError* RwErrorGet(RwError* code) at 0x00808880 (SA 1.0 US).
     // RenderWare is statically linked into gta_sa.exe, so this lives in the game
-    // module. The call copies the current global error into *code.
+    // module. RwErrorGet *copies and clears* the current global error (RenderWare
+    // resets it to E_RW_NOERROR once read), so the pair is restored afterwards
+    // with RwErrorSet to leave the game's own error handling untouched.
     typedef void* (__cdecl *RwErrorGetFn)(void* code);
+    typedef void* (__cdecl *RwErrorSetFn)(void* code);
 
     constexpr DWORD kGtaSa10RwErrorGet = 0x00808880;
+    constexpr DWORD kGtaSa10RwErrorSet = 0x00808820;
 
     struct RwErrorPair
     {
@@ -62,17 +66,46 @@ namespace
                (static_cast<unsigned int>(errorCode) & 0xFFFu);
     }
 
-    const char* RwCommonErrorName(unsigned int errorCode)
+    // Resolve a RenderWare error pair to a name and a human-readable text.
+    // Returns false when the code is not in either generated table (an unknown
+    // plugin error), in which case the caller reports the raw numbers.
+    bool RwResolveError(unsigned int pluginId, unsigned int errorCode,
+                        const char*& name, const char*& text)
     {
         using namespace DebugUtilsRwErrorNames;
 
-        // The table is tiny and sorted by code, so a linear scan is fine and
-        // avoids depending on the exact 0x80000000+i layout.
-        for (unsigned i = 0; i < kCount; ++i)
-            if (kNames[i].code == errorCode)
-                return kNames[i].name;
+        if ((errorCode & 0x80000000u) != 0)
+        {
+            for (unsigned i = 0; i < kCount; ++i)
+            {
+                if (kNames[i].code == errorCode)
+                {
+                    name = kNames[i].name;
+                    text = kNames[i].text;
+                    return true;
+                }
+            }
+            name = "RW_COMMON_?";
+            text = "";
+            return true;
+        }
 
-        return nullptr;
+        if (pluginId == kCorePluginId)
+        {
+            for (unsigned i = 0; i < kCoreCount; ++i)
+            {
+                if (kCoreNames[i].code == errorCode)
+                {
+                    name = kCoreNames[i].name;
+                    text = kCoreNames[i].text;
+                    return true;
+                }
+            }
+        }
+
+        name = "RW_PLUGIN_ERR";
+        text = "";
+        return false;
     }
 
     bool IsPageReadable(const void* address)
@@ -245,6 +278,13 @@ void DebugUtils::PollRenderWareError()
     RwErrorPair error{};
     rwErrorGet(&error);
 
+    // RwErrorGet clears the global error as a side effect. Put it straight back
+    // so the monitor is transparent: the game's own RwErrorGet still sees it.
+    // RwErrorSet only stores when the global is currently E_RW_NOERROR, which it
+    // now is, so this restores exactly the pair that was just read.
+    const auto rwErrorSet = reinterpret_cast<RwErrorSetFn>(kGtaSa10RwErrorSet);
+    rwErrorSet(&error);
+
     const unsigned int pluginId = static_cast<unsigned int>(error.pluginID);
     const unsigned int errorCode = static_cast<unsigned int>(error.errorCode);
 
@@ -264,23 +304,19 @@ void DebugUtils::PollRenderWareError()
     m_rwLastPluginId = pluginId;
     m_rwLastErrorCode = errorCode;
 
-    // errorCode 0 with pluginID 0 is the "no error" state; do not record it.
-    if (pluginId == 0 && errorCode == 0)
+    // RwErrorGet is a *consuming* read: once it has handed back a real error,
+    // RenderWare resets the global to E_RW_NOERROR, so that value is observed
+    // exactly once after every real error and is never itself an error. {0, 0}
+    // is the same "no error" state. Reporting either would turn each real error
+    // into a phantom E_RW_NOERROR record.
+    const bool noError =
+        (pluginId == 0 && errorCode == 0) || (errorCode == kRwCommonErrorBit);
+    if (noError)
         return;
 
-    std::string name;
-    if ((errorCode & kRwCommonErrorBit) != 0)
-    {
-        const char* resolved = RwCommonErrorName(errorCode);
-        if (resolved != nullptr)
-            name = resolved;
-        else
-            name = "RW_COMMON_?";
-    }
-    else
-    {
-        name = "RW_PLUGIN_ERR";
-    }
+    const char* resolvedName = nullptr;
+    const char* resolvedText = nullptr;
+    const bool known = RwResolveError(pluginId, errorCode, resolvedName, resolvedText);
 
     // RenderWare errors are noticed on the next frame's poll, not at the instant
     // they are raised, so the current call stack is not the raising stack and is
@@ -290,10 +326,12 @@ void DebugUtils::PollRenderWareError()
 
     RecordError(
         RwKey(error.pluginID, error.errorCode),
-        name,
+        known ? std::string(resolvedName) : std::string("RW_PLUGIN_ERR"),
         pluginId,
         errorCode,
-        modules
+        modules,
+        true,
+        known ? resolvedText : nullptr
     );
 }
 
@@ -302,12 +340,19 @@ void DebugUtils::RecordError(
     const std::string& name,
     unsigned int pluginId,
     unsigned int errorCode,
-    const std::vector<std::string>& modules
+    const std::vector<std::string>& modules,
+    bool renderWare,
+    const char* text
 )
 {
     // Bound the number of distinct records so a storm of unique messages cannot
     // grow the map without limit. Once full, only existing keys are counted.
     constexpr size_t kMaxDistinctErrors = 128;
+
+    // A RenderWare error is noticed on the next frame's poll, so the script and
+    // opcode active now are not the ones that raised it; leave the opcode unset
+    // so the report does not print a misleading "last opcode" line for it.
+    const DWORD opcode = renderWare ? 0xFFFFFFFFu : CurrentScriptOpcode();
 
     std::lock_guard<std::mutex> lock(m_errorMutex);
 
@@ -328,8 +373,10 @@ void DebugUtils::RecordError(
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
         record.count = 1;
         record.lastScript = CurrentScriptName();
-        record.lastOpcode = CurrentScriptOpcode();
+        record.lastOpcode = opcode;
         record.modules = modules;
+        record.renderWare = renderWare;
+        record.text = text ? text : "";
         if (!modules.empty())
             record.module = modules.front();
 
@@ -344,7 +391,7 @@ void DebugUtils::RecordError(
         record.lastUptimeSec =
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
         record.lastScript = CurrentScriptName();
-        record.lastOpcode = CurrentScriptOpcode();
+        record.lastOpcode = opcode;
         for (const auto& module : modules)
         {
             if (std::find(record.modules.begin(), record.modules.end(), module) ==
@@ -411,6 +458,14 @@ void DebugUtils::WriteErrorReport(const char* reason)
     for (const auto& record : records)
     {
         ++index;
+
+        // For a RenderWare row the script shown is the one active when the error
+        // was *noticed* (next frame's poll), so mark it approximate with a '~'
+        // instead of implying it raised the error.
+        std::string script = record.lastScript.empty() ? "?" : record.lastScript;
+        if (record.renderWare)
+            script = "~" + script;
+
         WriteFrameTime(
             "%-3zu %-22s %8u 0x%06X 0x%08X %8u %-16s %s",
             index,
@@ -419,11 +474,19 @@ void DebugUtils::WriteErrorReport(const char* reason)
             record.pluginId,
             record.errorCode,
             static_cast<unsigned>(record.lastUptimeSec),
-            record.lastScript.c_str(),
+            script.c_str(),
             record.module.empty() ? "<none>" : record.module.c_str()
         );
 
-        if (record.lastOpcode != 0xFFFFFFFFu)
+        if (!record.text.empty())
+        {
+            WriteFrameTime("      meaning: %s", record.text.c_str());
+        }
+
+        // The opcode is only meaningful where the error was raised. For a
+        // RenderWare row it is the poll-time opcode, not the raising one, so it
+        // is omitted rather than shown as if it caused the error.
+        if (!record.renderWare && record.lastOpcode != 0xFFFFFFFFu)
         {
             const DWORD opcode = record.lastOpcode & 0x7FFF;
             const char* opcodeName = OpcodeName(opcode);
