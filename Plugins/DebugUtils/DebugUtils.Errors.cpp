@@ -417,7 +417,9 @@ void DebugUtils::WriteErrorReport(const char* reason)
     // Snapshot the records and the module set under the lock, then format
     // outside it.
     std::vector<ErrorRecord> records;
+    std::vector<std::pair<unsigned int, DWORD>> reportedCounts;
     std::set<std::string> suspectModules;
+    size_t changedCount = 0;
     {
         std::lock_guard<std::mutex> lock(m_errorMutex);
         records.reserve(m_errorOrder.size());
@@ -425,21 +427,40 @@ void DebugUtils::WriteErrorReport(const char* reason)
         {
             auto it = m_errorRecords.find(key);
             if (it != m_errorRecords.end())
+            {
                 records.push_back(it->second);
+                reportedCounts.emplace_back(key, it->second.count);
+                if (it->second.count != it->second.lastReportedCount)
+                    ++changedCount;
+            }
         }
         suspectModules = m_errorModulesSeen;
     }
 
-    WriteFrameTime("================= errors (%s) =================",
-        reason ? reason : "interval");
+    const bool forceAll = reason != nullptr && strcmp(reason, "game_end") == 0;
+
     const unsigned long long cleoErrors =
         static_cast<unsigned long long>(InterlockedCompareExchange(
             const_cast<volatile LONG*>(&m_cleoErrorCount), 0, 0));
     const unsigned long long cleoWarnings =
         static_cast<unsigned long long>(InterlockedCompareExchange(
             const_cast<volatile LONG*>(&m_cleoWarningCount), 0, 0));
+    const bool cleoChanged =
+        cleoErrors != m_lastReportedCleoErrors ||
+        cleoWarnings != m_lastReportedCleoWarnings;
+
+    // Dedup: print nothing at all when there is no new error since the last
+    // report. A stable error is reported once (when it appears) instead of being
+    // re-printed in full every interval.
+    if (!forceAll && changedCount == 0 && !cleoChanged)
+    {
+        return;
+    }
+
+    WriteFrameTime("================= errors (%s) =================",
+        reason ? reason : "interval");
     WriteFrameTime(
-        "cleo errors=%llu warnings=%llu | rw distinct=%zu | suspect modules=%zu",
+        "cleo errors=%llu warnings=%llu | distinct=%zu | suspect modules=%zu",
         cleoErrors,
         cleoWarnings,
         records.size(),
@@ -449,11 +470,18 @@ void DebugUtils::WriteErrorReport(const char* reason)
     if (records.empty() && cleoErrors == 0 && cleoWarnings == 0)
     {
         WriteFrameTime("[errors] none: no CLEO error/warning and no RenderWare error seen");
+        m_lastReportedCleoErrors = cleoErrors;
+        m_lastReportedCleoWarnings = cleoWarnings;
         return;
     }
 
-    WriteFrameTime("%-3s %-22s %8s %10s %-9s %5s %5s %-16s %s",
-        "#", "name", "count", "plugin", "code", "first", "last", "script", "suspect module");
+    // Only print the table header when there is a row to show; a CLEO-only change
+    // with no new RenderWare record should not leave a dangling header.
+    if (changedCount > 0 || forceAll)
+    {
+        WriteFrameTime("%-3s %-22s %8s %10s %-9s %5s %5s %-16s %s",
+            "#", "name", "count", "plugin", "code", "first", "last", "script", "suspect module");
+    }
 
     // Names whose meaning is "a file/resource could not be opened or read": a
     // missing or corrupt texture/model, almost always a mod/script that loads it.
@@ -472,9 +500,29 @@ void DebugUtils::WriteErrorReport(const char* reason)
     };
 
     size_t index = 0;
+    std::string unchanged;
     for (const auto& record : records)
     {
+        // Dedup across intervals: a row that has not changed since it was last
+        // printed is collapsed into a single "unchanged" line, so a stable error
+        // is not re-printed in full (with its meaning/hint) every interval.
+        const bool changed = forceAll || record.count != record.lastReportedCount;
+        if (!changed)
+        {
+            if (!unchanged.empty())
+                unchanged += ", ";
+            unchanged += record.name;
+            unchanged += " x";
+            unchanged += std::to_string(record.count);
+            continue;
+        }
+
         ++index;
+
+        // Detail lines (meaning/hint) are only useful the first time a record is
+        // shown (or in the final game_end dump); a recurring error re-prints just
+        // its row, not the same explanation every interval.
+        const bool showDetail = forceAll || record.lastReportedCount == 0;
 
         // For a RenderWare row the script shown is the one active when the error
         // was *noticed* (next frame's poll), so mark it approximate with a '~'
@@ -496,14 +544,14 @@ void DebugUtils::WriteErrorReport(const char* reason)
             record.module.empty() ? "<none>" : record.module.c_str()
         );
 
-        if (!record.text.empty())
+        if (!record.text.empty() && showDetail)
         {
             WriteFrameTime("      meaning: %s", record.text.c_str());
         }
 
         // Point the reader at the likely source for file/resource errors: this is
         // the "which mod causes it" answer for a missing/corrupt texture or model.
-        if (isFileResourceError(record))
+        if (isFileResourceError(record) && showDetail)
         {
             WriteFrameTime(
                 "      hint: file/resource error - a missing or corrupt texture/"
@@ -539,6 +587,33 @@ void DebugUtils::WriteErrorReport(const char* reason)
         }
     }
 
+    if (index == 0)
+    {
+        WriteFrameTime("[errors] no new RenderWare errors this interval");
+    }
+
+    // Collapse the rows that did not change into one line so the table above is
+    // only the errors that actually happened (or grew) in this interval.
+    if (!unchanged.empty())
+    {
+        WriteFrameTime("[errors] unchanged since last report: %s", unchanged.c_str());
+    }
+
+    // Remember exactly what was printed (the snapshot counts) so the next report
+    // only shows changes. Use the snapshotted values, not the live counts: a
+    // record that grew after the snapshot must still count as changed next time.
+    {
+        std::lock_guard<std::mutex> lock(m_errorMutex);
+        for (const auto& entry : reportedCounts)
+        {
+            auto it = m_errorRecords.find(entry.first);
+            if (it != m_errorRecords.end())
+                it->second.lastReportedCount = entry.second;
+        }
+    }
+    m_lastReportedCleoErrors = cleoErrors;
+    m_lastReportedCleoWarnings = cleoWarnings;
+
     // Explicit "who to blame" summary, kept separate so it is easy to grep.
     if (!suspectModules.empty())
     {
@@ -555,10 +630,15 @@ void DebugUtils::WriteErrorReport(const char* reason)
         );
     }
 
-    // Module column note: attribution is by stack scan, so state it plainly.
-    WriteFrameTime(
-        "[errors] note: 'suspect module' is the first non-game/non-CLEO module on the "
-        "stack at the error, or the script active then; it points at the likely source, "
-        "not a proven root cause"
-    );
+    // Module column note: attribution is by stack scan, so state it plainly once
+    // per session rather than repeating it on every report.
+    if (!m_errorNotePrinted)
+    {
+        WriteFrameTime(
+            "[errors] note: 'suspect module' is the first non-game/non-CLEO module on the "
+            "stack at the error, or the script active then; it points at the likely source, "
+            "not a proven root cause"
+        );
+        m_errorNotePrinted = true;
+    }
 }

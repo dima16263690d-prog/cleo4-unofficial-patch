@@ -339,6 +339,7 @@ private:
         DWORD lastTick = 0;            // GetTickCount of the most recent
         DWORD firstUptimeSec = 0;      // uptime of the first occurrence
         DWORD lastUptimeSec = 0;       // uptime of the most recent occurrence
+        DWORD lastReportedCount = 0;   // count already printed by WriteErrorReport
         unsigned int pluginId = 0;     // RenderWare pluginID (rw errors)
         unsigned int errorCode = 0;    // raw RenderWare errorCode (rw errors)
         std::string name;              // resolved name when known
@@ -361,6 +362,9 @@ private:
     volatile LONG m_cleoErrorCount = 0;                 // CLEO error-level messages
     volatile LONG m_cleoWarningCount = 0;               // CLEO warning-level messages
     std::set<std::string> m_errorModulesSeen;           // distinct modules that raised errors
+    bool m_errorNotePrinted = false;                    // the "note:" line printed once/session
+    unsigned long long m_lastReportedCleoErrors = 0;    // CLEO error count at the last report
+    unsigned long long m_lastReportedCleoWarnings = 0;  // CLEO warning count at the last report
 
     void PollRenderWareError();
     void RecordError(

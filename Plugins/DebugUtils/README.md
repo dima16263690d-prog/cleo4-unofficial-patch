@@ -169,6 +169,13 @@ errors (E_RW_BADOPEN, E_RW_READTEXMASK, E_RW_READ, E_RW_STREAMOPEN,
 E_RW_BADFORMAT) also get a `hint:` line naming them as a missing or corrupt
 texture/model/.txd — the "which mod causes it" pointer.
 
+The report is deduplicated: an interval that produced no new error prints
+nothing, and a recurring error is shown in full (row + meaning + hint) only when
+it first appears or its count grows. Rows that did not change are collapsed into
+one `[errors] unchanged since last report: ...` line, so a stable error does not
+re-print its explanation every interval. The `meaning:`/`hint:` details are shown
+once per record (and again in the final `game_end` dump).
+
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
   address (GTA SA 1.0 US). The monitor polls it once per frame and reports any

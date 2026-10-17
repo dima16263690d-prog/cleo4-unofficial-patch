@@ -148,6 +148,20 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_leakLastPrivateBytes = 0;
     s_instance->m_leakLastUptimeSec = 0;
     s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
+    // Error records are cumulative for the session; clear them and the one-shot
+    // note flag so a new game starts from a clean error table.
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_errorMutex);
+        s_instance->m_errorRecords.clear();
+        s_instance->m_errorOrder.clear();
+        s_instance->m_errorModulesSeen.clear();
+    }
+    s_instance->m_errorNotePrinted = false;
+    s_instance->m_rwErrorPrimed = false;
+    s_instance->m_cleoErrorCount = 0;
+    s_instance->m_cleoWarningCount = 0;
+    s_instance->m_lastReportedCleoErrors = 0;
+    s_instance->m_lastReportedCleoWarnings = 0;
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
