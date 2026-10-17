@@ -43,9 +43,11 @@ cleo_script.log:
 
 cleo_memory.log:
 //////////////////////// memory ////////////////////////
+(plus a "script memory leak report" block when [DebugUtils.Logs] LeakTracker=1)
 
 cleo_frametime.log:
 //////////////////////// frame time ////////////////////////
+================= errors (interval) =================
 
 cleo_diagnostic.log:
 //////////////////////// diagnostic ////////////////////////
@@ -75,6 +77,9 @@ Deduplicate=1
 [DebugUtils.Logs]
 Memory=0
 MemoryTrace=0
+LeakTracker=0
+LeakInterval=30
+LeakMinGrowthKB=64
 Diagnostic=0
 
 [DebugUtils.Limits]
@@ -88,6 +93,13 @@ WarnMs=50
 TopStutter=15
 Histogram=1
 MaxLogMB=16
+MinFps=0
+LowFpsWarn=0
+
+[DebugUtils.Errors]
+Enabled=1
+RenderWare=1
+ModuleScan=1
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -109,6 +121,15 @@ Each report shows, for the interval:
   time points at the scripts (or CLEO opcodes);
 - stutter count/share/lost_ms — frames at or above WarnMs, and the time lost;
 - a period histogram with fixed edges (16.6/20/25/33.3/50/100/250 ms);
+- frame-quality statistics from a bounded ring of every period: p50/p95/p99/p99.9
+  percentiles, jitter_ms (standard deviation of the period), fps_1%low and
+  fps_0.1%low (the average FPS of the slowest 1% / 0.1% of frames), and spike
+  bands (how many frames fell below 30/20/10/4 FPS, with their share);
+- an interval-over-interval trend line (fps_prev vs fps_now and the delta), so a
+  gradual slowdown is visible before it shows inside one interval;
+- MinFps / LowFpsWarn thresholds: when the interval's average FPS or its 1%-low
+  FPS drops below the configured value, a greppable `[fps] WARNING` line is
+  written (both default to 0 = off);
 - the worst frames of the interval, with their logic_ms, active scripts and
   uptime, so a hitch can be tied to a moment and a script count;
 - streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
@@ -129,6 +150,53 @@ from this file, an A/B test needs no rebuild: run with 0, then with -1.
 Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or
 streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
+
+### Error diagnostics (RenderWare / CLEO)
+
+[DebugUtils.Errors] reports CLEO and RenderWare errors inside cleo_frametime.log,
+so an error can be tied to the frame it happened in. Nothing is patched: the
+monitor only observes.
+
+- RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
+  errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
+  address (GTA SA 1.0 US). The monitor polls it once per frame, read-only, and
+  reports any *change* of the pair — the only way to see a RenderWare error that
+  did not (yet) crash the process. Common error codes (MSB set) are printed by
+  name (E_RW_NOMEM, E_RW_NULLP, ...); plugin errors are printed as
+  `RW_PLUGIN_ERR` with the raw pluginID + code. Set RenderWare=0 to disable the
+  poll; on non-1.0-US builds it disables itself and says so.
+- CLEO: `CLEO_DEBUG_ERROR` / `CLEO_DEBUG_WARNING` messages are counted, and the
+  stack at that moment is scanned (ModuleScan=1) for the first return address in
+  a module that is neither the game, the core, nor DebugUtils. That module is the
+  mod/plugin/loader that raised the error. The report lists the error with its
+  count, the script and opcode active, and the suspect module (plus the call
+  chain when more than one module is seen).
+
+Attribution is deliberately conservative and labelled as such: a module seen on
+the error stack (or the script active then) is a strong suspect, not proof. The
+point is to point a human at the right DLL or .cs file, not to claim a root
+cause.
+
+### Per-script memory-leak tracker
+
+[DebugUtils.Logs] LeakTracker=1 samples CLEO's script-memory arena (the
+allocate_memory 0AC8 / free_allocated_memory 0AC9 blocks) per script on an
+interval and keeps a per-script history, so a script whose live allocation only
+ever grows can be named. It is off by default because it allocates and samples.
+
+For each script the report gives first/last live bytes, the growth, that growth
+as a percentage of the arena and of the process's private bytes, the growth rate
+(bytes/second and the equivalent percent-per-minute of the script's own first
+sample), the block count, the peak, and first/last-seen uptime. The verdict is
+one of:
+
+- LEAK — grew on every sample and was never released (the strong signature);
+- SUSPECTED — net growth but not monotonic, or too few samples yet;
+- STABLE — normal churn (grew and shrank) or below LeakMinGrowthKB;
+- RELEASED — it held memory earlier and has since freed it.
+
+A closing `[leak]` line gives the exact total growth and its percentage of the
+arena and of the process, which is the single "how much, in percent" answer.
 
 The core log starts with a system header (GPU description, vendor/device id,
 driver string and version, desktop resolution/refresh, OS build, CPU count, RAM)
@@ -247,6 +315,8 @@ runtime file I/O.
 The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
 
 The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.
+
+The RenderWare error watch is a single read-only `RwErrorGet` call per frame while the frame-time monitor is on; it patches nothing. The stack scan that names the suspect module for a CLEO error runs only when an error/warning is actually logged, not per frame. The per-script leak tracker is off by default and, when on, only walks the script-memory owner map on its own interval.
 
 
 ### Language and CrashInfo localization

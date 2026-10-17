@@ -7,6 +7,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <vector>
 #include <cmath>
 
 // Frame-time / stutter monitor.
@@ -54,6 +56,68 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeStreamReqBusy = 0;
     for (size_t i = 0; i < kFrameTimeHistogramBuckets; ++i)
         m_frameTimeHistogram[i] = 0;
+
+    // Frame-quality accumulators.
+    m_frameTimePeriodCount = 0;
+    m_frameTimePeriodNext = 0;
+    m_frameTimeSumPeriodSqMs = 0.0;
+    m_frameTimeSpike33 = 0;
+    m_frameTimeSpike50 = 0;
+    m_frameTimeSpike100 = 0;
+    m_frameTimeSpike250 = 0;
+    m_frameTimeWorstLogicMs = 0.0;
+    m_frameTimeWorstLogicPeriodMs = 0.0;
+}
+
+double DebugUtils::FrameTimePeriodPercentile(double p) const
+{
+    if (m_frameTimePeriodCount == 0)
+        return 0.0;
+
+    if (p < 0.0) p = 0.0;
+    if (p > 1.0) p = 1.0;
+
+    // Copy only the valid entries, then index the sorted order. Called at report
+    // time only, so the allocation and sort are not on the hot path.
+    std::vector<float> periods(
+        m_frameTimePeriodRing.begin(),
+        m_frameTimePeriodRing.begin() + static_cast<ptrdiff_t>(m_frameTimePeriodCount)
+    );
+    std::sort(periods.begin(), periods.end());
+
+    size_t index = static_cast<size_t>(p * static_cast<double>(periods.size() - 1) + 0.5);
+    if (index >= periods.size())
+        index = periods.size() - 1;
+
+    return static_cast<double>(periods[index]);
+}
+
+double DebugUtils::FrameTimeLowFps(double fraction) const
+{
+    if (m_frameTimePeriodCount == 0 || fraction <= 0.0 || fraction >= 1.0)
+        return 0.0;
+
+    // Sort descending (slowest first) and average the slowest `fraction` of the
+    // frames. This is the standard "1% low / 0.1% low" FPS measure.
+    std::vector<float> periods(
+        m_frameTimePeriodRing.begin(),
+        m_frameTimePeriodRing.begin() + static_cast<ptrdiff_t>(m_frameTimePeriodCount)
+    );
+    std::sort(periods.begin(), periods.end(), std::greater<float>());
+
+    size_t tail = static_cast<size_t>(
+        static_cast<double>(periods.size()) * fraction + 0.5);
+    if (tail == 0)
+        tail = 1;
+    if (tail > periods.size())
+        tail = periods.size();
+
+    double sum = 0.0;
+    for (size_t i = 0; i < tail; ++i)
+        sum += static_cast<double>(periods[i]);
+
+    const double avgPeriod = sum / static_cast<double>(tail);
+    return avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0;
 }
 
 void DebugUtils::InsertWorstTimeSample(const FrameTimeSample& sample)
@@ -117,6 +181,20 @@ void DebugUtils::BeginFrameTimeFrame()
 
         m_frameTimeSumPeriodMs += periodMs;
         m_frameTimeIntervalMs += periodMs;
+        m_frameTimeSumPeriodSqMs += periodMs * periodMs;
+
+        // Bounded ring of every period, so the report can compute true
+        // percentiles and 1%-low FPS instead of only min/avg/max.
+        m_frameTimePeriodRing[m_frameTimePeriodNext] = static_cast<float>(periodMs);
+        m_frameTimePeriodNext = (m_frameTimePeriodNext + 1) % kFrameTimePeriodSamples;
+        if (m_frameTimePeriodCount < kFrameTimePeriodSamples)
+            ++m_frameTimePeriodCount;
+
+        // Spike bands: how many frames fell below each FPS floor.
+        if (periodMs >= 33.3) ++m_frameTimeSpike33;
+        if (periodMs >= 50.0) ++m_frameTimeSpike50;
+        if (periodMs >= 100.0) ++m_frameTimeSpike100;
+        if (periodMs >= 250.0) ++m_frameTimeSpike250;
 
         if (periodMs >= static_cast<double>(m_frameTimeWarnMs))
         {
@@ -156,6 +234,15 @@ void DebugUtils::EndFrameTimeFrame()
     const double logicMs = FrameTimeMs(m_frameTimeLogicStart, now);
     if (logicMs > m_frameTimeMaxLogicMs)
         m_frameTimeMaxLogicMs = logicMs;
+
+    // Remember the slowest logic tick together with the frame period it sat in,
+    // so the report can say whether the worst frame was logic-bound or not.
+    if (logicMs > m_frameTimeWorstLogicMs)
+    {
+        m_frameTimeWorstLogicMs = logicMs;
+        m_frameTimeWorstLogicPeriodMs = m_frameTimeLastPeriodMs;
+    }
+
     m_frameTimeSumLogicMs += logicMs;
 
     // Active-script count for this frame, so a stutter can be correlated with a
@@ -207,11 +294,16 @@ void DebugUtils::EndFrameTimeFrame()
     m_frameTimeScriptsLast = scripts;
     ++m_frameTimeFrames;
 
+    // Observe RenderWare's last-error global once per frame (read-only). Any
+    // change is recorded and reported with the interval.
+    PollRenderWareError();
+
     const DWORD nowTick = GetTickCount();
     if (nowTick - m_lastFrameTimeReportTick >= m_frameTimeIntervalSeconds * 1000u)
     {
         m_lastFrameTimeReportTick = nowTick;
         WriteFrameTimeReport("interval");
+        WriteErrorReport("interval");
     }
 }
 
@@ -282,6 +374,19 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     const double avgLogic = m_frameTimeSumLogicMs / frames;
     const double avgFps = avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0;
 
+    // Frame-quality statistics from the period ring.
+    const double p50 = FrameTimePeriodPercentile(0.50);
+    const double p95 = FrameTimePeriodPercentile(0.95);
+    const double p99 = FrameTimePeriodPercentile(0.99);
+    const double p999 = FrameTimePeriodPercentile(0.999);
+    const double low1Fps = FrameTimeLowFps(0.01);
+    const double low01Fps = FrameTimeLowFps(0.001);
+
+    // Jitter = standard deviation of the frame period (variance = E[x^2]-E[x]^2).
+    const double meanSq = m_frameTimeSumPeriodSqMs / frames;
+    const double variance = meanSq - avgPeriod * avgPeriod;
+    const double jitterMs = variance > 0.0 ? std::sqrt(variance) : 0.0;
+
     WriteFrameTime("================= frame time (%s) =================", tag);
     WriteFrameTime(
         "frames=%llu span_s=%.1f fps_avg=%.1f period_ms min=%.2f avg=%.2f max=%.2f "
@@ -296,6 +401,28 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         m_frameTimeMaxLogicMs,
         m_frameTimeScriptsLast
     );
+
+    // Percentiles and low-FPS: the numbers that describe smoothness rather than
+    // raw average. low_1%_fps is the average of the slowest 1% of frames.
+    WriteFrameTime(
+        "period_ms p50=%.2f p95=%.2f p99=%.2f p99.9=%.2f | jitter_ms=%.2f (stddev) | "
+        "fps_1%%low=%.1f fps_0.1%%low=%.1f",
+        p50, p95, p99, p999, jitterMs, low1Fps, low01Fps
+    );
+
+    WriteFrameTime(
+        "spikes (frames below): 30fps=%llu (%.2f%%) 20fps=%llu (%.2f%%) "
+        "10fps=%llu (%.2f%%) 4fps=%llu (%.2f%%)",
+        m_frameTimeSpike33,
+        frames > 0.0 ? 100.0 * static_cast<double>(m_frameTimeSpike33) / frames : 0.0,
+        m_frameTimeSpike50,
+        frames > 0.0 ? 100.0 * static_cast<double>(m_frameTimeSpike50) / frames : 0.0,
+        m_frameTimeSpike100,
+        frames > 0.0 ? 100.0 * static_cast<double>(m_frameTimeSpike100) / frames : 0.0,
+        m_frameTimeSpike250,
+        frames > 0.0 ? 100.0 * static_cast<double>(m_frameTimeSpike250) / frames : 0.0
+    );
+
     WriteFrameTime(
         "stutter warn_ms=%u count=%llu (%.2f%% of frames) lost_ms=%.1f",
         static_cast<unsigned>(m_frameTimeWarnMs),
@@ -305,6 +432,60 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             : 0.0,
         m_frameTimeStutterLostMs
     );
+
+    // Cause split: if the slowest frame's logic tick consumed most of its period,
+    // the hitch is logic/script bound (a mod or script), otherwise it is render
+    // bound (GPU/driver/streaming). Stated as a hint, not proof.
+    if (m_frameTimeWorstLogicPeriodMs > 0.0)
+    {
+        const double share = 100.0 * m_frameTimeWorstLogicMs /
+            m_frameTimeWorstLogicPeriodMs;
+        const char* cause = share >= 80.0
+            ? "logic/script bound"
+            : (share >= 40.0 ? "mixed" : "render/streaming bound");
+        WriteFrameTime(
+            "worst_frame logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% cause=%s",
+            m_frameTimeWorstLogicMs,
+            m_frameTimeWorstLogicPeriodMs,
+            share,
+            cause
+        );
+    }
+
+    // Interval-over-interval comparison: a falling average FPS across intervals
+    // is the earliest sign of a slowdown that the in-interval stats cannot show.
+    if (m_frameTimeHaveLastInterval && m_frameTimeLastIntervalAvgPeriodMs > 0.0)
+    {
+        const double lastFps = 1000.0 / m_frameTimeLastIntervalAvgPeriodMs;
+        const double deltaPct = lastFps > 0.0
+            ? 100.0 * (avgFps - lastFps) / lastFps
+            : 0.0;
+        WriteFrameTime(
+            "trend fps_prev=%.1f fps_now=%.1f delta=%+.2f%% %s",
+            lastFps,
+            avgFps,
+            deltaPct,
+            deltaPct <= -10.0 ? "<-- FPS dropping" : ""
+        );
+    }
+
+    // Threshold warnings. Kept explicit so the log is greppable for [fps].
+    if (m_frameTimeMinFps > 0 && avgFps < static_cast<double>(m_frameTimeMinFps))
+    {
+        WriteFrameTime(
+            "[fps] WARNING average FPS %.1f is below MinFps=%u",
+            avgFps,
+            static_cast<unsigned>(m_frameTimeMinFps)
+        );
+    }
+    if (m_frameTimeLowFpsWarn > 0 && low1Fps < static_cast<double>(m_frameTimeLowFpsWarn))
+    {
+        WriteFrameTime(
+            "[fps] WARNING 1%% low FPS %.1f is below LowFpsWarn=%u (stuttery)",
+            low1Fps,
+            static_cast<unsigned>(m_frameTimeLowFpsWarn)
+        );
+    }
 
     if (m_frameTimeStreamSamples > 0)
     {
@@ -385,6 +566,10 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             );
         }
     }
+
+    // Remember this interval's average so the next report can show the trend.
+    m_frameTimeLastIntervalAvgPeriodMs = avgPeriod;
+    m_frameTimeHaveLastInterval = true;
 
     ResetFrameTimeInterval();
 }

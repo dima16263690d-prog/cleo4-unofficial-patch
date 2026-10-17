@@ -114,13 +114,34 @@ DebugUtils::DebugUtils()
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d min_fps=%u low_fps_warn=%u target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
             m_frameTimeHistogramEnabled ? 1u : 0u,
             m_frameTimeStreamingEnabled ? 1u : 0u,
-            m_frameTimeStreamLimitMb
+            m_frameTimeStreamLimitMb,
+            static_cast<unsigned>(m_frameTimeMinFps),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn)
+        );
+
+        if (m_errorDiagEnabled)
+        {
+            WriteFrameTime(
+                "[errors] enabled renderware_watch=%u module_scan=%u "
+                "(reports CLEO/RenderWare errors and the suspect module)",
+                m_rwErrorWatchEnabled ? 1u : 0u,
+                m_errorModuleScanEnabled ? 1u : 0u
+            );
+        }
+    }
+
+    if (m_leakTrackerEnabled && m_memoryLogEnabled)
+    {
+        WriteMemory(
+            "[leak] enabled interval=%us min_growth_kb=%u (per-script leak tracker)",
+            static_cast<unsigned>(m_leakIntervalSeconds),
+            static_cast<unsigned>(m_leakMinGrowthBytes / 1024u)
         );
     }
 
@@ -425,6 +446,28 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "MaxLogMB: ротация cleo_frametime.log после этого размера, МБ."
             : "MaxLogMB: rotate cleo_frametime.log when it grows past this many MB.");
     kv("DebugUtils.FrameTime", "MaxLogMB", "16");
+    desc(ru ? "MinFps: предупреждать, если средний FPS интервала ниже (0 = выкл)."
+            : "MinFps: warn when the interval's average FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "MinFps", "0");
+    desc(ru ? "LowFpsWarn: предупреждать, если 1%-низкий FPS ниже (0 = выкл)."
+            : "LowFpsWarn: warn when the 1%-low FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn", "0");
+    line("");
+
+    line("[DebugUtils.Errors]");
+    desc(ru ? "Диагностика ошибок RenderWare и CLEO внутри cleo_frametime.log."
+            : "RenderWare and CLEO error diagnostics, reported in cleo_frametime.log.");
+    desc(ru ? "Enabled: 1 = вести отчёт по ошибкам, 0 = выключить."
+            : "Enabled: 1 = keep the error report, 0 = off.");
+    kv("DebugUtils.Errors", "Enabled", "1");
+    desc(ru ? "RenderWare: 1 = опрашивать последнюю ошибку RenderWare раз в кадр"
+            : "RenderWare: 1 = poll RenderWare's last error once per frame");
+    desc(ru ? "  (только чтение, ничего не патчится; только GTA SA 1.0 US)."
+            : "  (read-only, nothing is patched; GTA SA 1.0 US only).");
+    kv("DebugUtils.Errors", "RenderWare", "1");
+    desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
+            : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
+    kv("DebugUtils.Errors", "ModuleScan", "1");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -467,6 +510,19 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "ModuleMemoryMapInterval: секунды между дампами памяти по модулям."
             : "ModuleMemoryMapInterval: seconds between module memory dumps.");
     kv("DebugUtils.Logs", "ModuleMemoryMapInterval", "30");
+    desc(ru ? "LeakTracker: 1 = отслеживать утечки памяти по скриптам (0 = выкл)."
+            : "LeakTracker: 1 = track per-script memory leaks (0 = off).");
+    desc(ru ? "  Сэмплирует арену памяти скриптов и показывает рост по скриптам,"
+            : "  Samples the script-memory arena and reports per-script growth, its");
+    desc(ru ? "  долю в % от арены/процесса и вердикт (LEAK/SUSPECTED/STABLE)."
+            : "  share of the arena/process in %, and a verdict (LEAK/SUSPECTED/STABLE).");
+    kv("DebugUtils.Logs", "LeakTracker", "0");
+    desc(ru ? "LeakInterval: секунды между сэмплами трекера утечек (>=5)."
+            : "LeakInterval: seconds between leak-tracker samples (>=5).");
+    kv("DebugUtils.Logs", "LeakInterval", "30");
+    desc(ru ? "LeakMinGrowthKB: рост меньше этого числа КБ игнорируется."
+            : "LeakMinGrowthKB: growth below this many KB is ignored.");
+    kv("DebugUtils.Logs", "LeakMinGrowthKB", "64");
     desc(ru ? "Diagnostic: 1 = писать диагностический лог, 0 = выключить."
             : "Diagnostic: 1 = write the diagnostic log, 0 = disable.");
     kv("DebugUtils.Logs", "Diagnostic", "0");
@@ -539,7 +595,7 @@ void DebugUtils::LoadConfig()
     // A config from an older build lacks keys added since; rewrite it so the new
     // options are documented without dropping the values already set.
     const bool missingNewKeys =
-        !fileMissing && raw.find("DebugUtils.Logs.ModuleMemoryMap") == raw.end();
+        !fileMissing && raw.find("DebugUtils.Errors.Enabled") == raw.end();
 
     if (fileMissing || languageMismatch || missingNewKeys)
     {
@@ -756,6 +812,64 @@ void DebugUtils::LoadConfig()
         )
     );
 
+    // Frame-quality thresholds (0 = off).
+    m_frameTimeMinFps = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "MinFps",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn",
+            0,
+            path.c_str()
+        )
+    );
+
+    // Error diagnostics (RenderWare + CLEO), reported inside the frame-time log.
+    m_errorDiagEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "Enabled",
+            1,
+            path.c_str()
+        ) != 0;
+    m_rwErrorWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "RenderWare",
+            1,
+            path.c_str()
+        ) != 0;
+    m_errorModuleScanEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "ModuleScan",
+            1,
+            path.c_str()
+        ) != 0;
+
+    // Per-script leak tracker (off by default: it allocates and samples).
+    m_leakTrackerEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakTracker",
+            0,
+            path.c_str()
+        ) != 0;
+    m_leakIntervalSeconds = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakInterval",
+            30,
+            path.c_str()
+        )
+    );
+    m_leakMinGrowthBytes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakMinGrowthKB",
+            64,
+            path.c_str()
+        )
+    ) * 1024u;
+
     if (m_frameTimeIntervalSeconds < 1)
         m_frameTimeIntervalSeconds = 1;
     if (m_frameTimeWarnMs < 1)
@@ -766,6 +880,8 @@ void DebugUtils::LoadConfig()
         m_frameTimeTopStutter = static_cast<DWORD>(kFrameTimeMaxWorst);
     if (m_frameTimeMaxLogMegabytes < 1)
         m_frameTimeMaxLogMegabytes = 1;
+    if (m_leakIntervalSeconds < 5)
+        m_leakIntervalSeconds = 5;
 
     m_crashEnabled =
         GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;

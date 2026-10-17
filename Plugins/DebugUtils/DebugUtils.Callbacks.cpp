@@ -160,6 +160,9 @@ void __stdcall DebugUtils::OnGameEnd()
         s_instance->WriteCoreMemorySummary();
     s_instance->WriteProfilerReport("game_end");
     s_instance->WriteFrameTimeReport("game_end");
+    s_instance->WriteErrorReport("game_end");
+    s_instance->SampleScriptMemoryLeaks();
+    s_instance->WriteLeakReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
@@ -250,6 +253,16 @@ void __stdcall DebugUtils::OnGameProcessAfter()
     {
         s_instance->m_lastModuleMapTick = now;
         s_instance->WriteModuleMemoryMap();
+    }
+
+    // Per-script leak tracker: sample the script-memory arena on its own cadence
+    // and flush a report. Both calls are game-thread only, like this callback.
+    if (s_instance->m_leakTrackerEnabled &&
+        now - s_instance->m_lastLeakTick >= s_instance->m_leakIntervalSeconds * 1000u)
+    {
+        s_instance->m_lastLeakTick = now;
+        s_instance->SampleScriptMemoryLeaks();
+        s_instance->WriteLeakReport("interval");
     }
 }
 

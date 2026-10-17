@@ -170,6 +170,44 @@ private:
     DWORD m_lastModuleMapTick = 0;
     std::map<std::string, unsigned long long> m_lastModuleResident;
 
+    // Per-script memory-leak tracker. Samples the CLEO script-memory arena per
+    // script (CLEO_DebugGetScriptMemoryOwners) and keeps a moving baseline, so a
+    // script whose live allocation only ever grows can be named and its share of
+    // the arena / of the process quantified. Off by default: it allocates.
+    bool m_leakTrackerEnabled = false;
+    DWORD m_leakIntervalSeconds = 30;
+    DWORD m_leakMinGrowthBytes = 64u * 1024u;  // ignore growth below this
+    DWORD m_lastLeakTick = 0;
+
+    struct LeakScriptState
+    {
+        std::string name;
+        unsigned long long firstBytes = 0;   // live bytes at the first sample
+        unsigned long long lastBytes = 0;    // live bytes at the most recent sample
+        unsigned long long peakBytes = 0;
+        unsigned long long firstBlocks = 0;
+        unsigned long long lastBlocks = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD samples = 0;                   // how many samples it was present in
+        DWORD growthStreak = 0;              // consecutive samples of net growth
+        DWORD flatStreak = 0;                // consecutive samples with no growth
+        bool releasedSince = false;          // it ever dropped back to zero
+    };
+
+    std::map<uintptr_t, LeakScriptState> m_leakScripts; // keyed by script pointer
+    std::map<std::string, LeakScriptState> m_leakRetired; // by name, after unload
+    std::set<uintptr_t> m_leakSeenThisSample;
+
+    void SampleScriptMemoryLeaks();
+    void WriteLeakReport(const char* reason);
+    void UpdateLeakEntry(
+        uintptr_t scriptPtr,
+        const std::string& name,
+        unsigned long long blocks,
+        unsigned long long bytes
+    );
+
     // Frame-time / stutter monitor. Samples the frame period and the logic-tick
     // duration with QueryPerformanceCounter and writes a dedicated log, so frame
     // hitches can be measured and attributed without cluttering the other logs.
@@ -182,6 +220,10 @@ private:
     bool m_frameTimeStreamingEnabled = true; // snapshot ms_memoryUsed per frame (SA 1.0)
     int  m_frameTimeStreamLimitMb = 0;       // request CStreaming budget: 0=off,-1=auto,>0=MB
     DWORD m_frameTimeMaxLogMegabytes = 16;
+    // Frame-quality thresholds. MinFps warns when the interval's average FPS falls
+    // below it; LowFpsWarn warns when the 1%-low FPS falls below it (both 0 = off).
+    DWORD m_frameTimeMinFps = 0;
+    DWORD m_frameTimeLowFpsWarn = 0;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};
     bool m_frameTimeFreqReady = false;
@@ -199,6 +241,23 @@ private:
     double m_frameTimeStutterLostMs = 0.0;  // time above the warning threshold
     double m_frameTimeIntervalMs = 0.0;     // wall-clock span of the interval
     size_t m_frameTimeScriptsLast = 0;
+
+    // Frame-quality accumulators. The period of every frame is kept in a bounded
+    // ring so the report can compute true percentiles / 1%-low FPS instead of
+    // only min/avg/max, and so jitter (standard deviation) is available.
+    static constexpr size_t kFrameTimePeriodSamples = 4096;
+    std::array<float, kFrameTimePeriodSamples> m_frameTimePeriodRing{};
+    size_t m_frameTimePeriodCount = 0;     // valid entries in the ring
+    size_t m_frameTimePeriodNext = 0;      // next write slot
+    double m_frameTimeSumPeriodSqMs = 0.0; // sum of period^2, for the stddev
+    unsigned long long m_frameTimeSpike33 = 0;  // period >= 33.3 ms (< 30 FPS)
+    unsigned long long m_frameTimeSpike50 = 0;  // period >= 50 ms   (< 20 FPS)
+    unsigned long long m_frameTimeSpike100 = 0; // period >= 100 ms  (< 10 FPS)
+    unsigned long long m_frameTimeSpike250 = 0; // period >= 250 ms  (< 4 FPS)
+    double m_frameTimeWorstLogicMs = 0.0;       // slowest logic tick in the interval
+    double m_frameTimeWorstLogicPeriodMs = 0.0; // its frame period, to split cause
+    double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
+    bool m_frameTimeHaveLastInterval = false;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction
@@ -238,6 +297,65 @@ private:
     std::mutex m_frameTimeMutex;
     size_t m_frameTimeBytes = 0;
     bool m_frameTimeLimitNoticeWritten = false;
+
+    // ---------------------------------------------------------------------
+    // RenderWare / CLEO error diagnostics (reported inside the frame-time log).
+    //
+    // RenderWare stores the last error as a small RwError {pluginID, errorCode}
+    // pair in a global; the plugin-sdk resolves RwErrorGet at a fixed address.
+    // Polling it once per frame is read-only and cheap, and it is the only way
+    // to see a RenderWare error that did not (yet) crash the process. Nothing is
+    // patched: the monitor observes, it never modifies game code.
+    //
+    // CLEO-side errors arrive synchronously through OnCoreLog; the stack at that
+    // moment is scanned for the first return address outside the core, DebugUtils
+    // and the game itself, which is the module (mod/plugin/script loader) that
+    // raised it.
+    // ---------------------------------------------------------------------
+    bool m_errorDiagEnabled = true;
+    bool m_rwErrorWatchEnabled = true;
+    bool m_errorModuleScanEnabled = true;
+
+    struct ErrorRecord
+    {
+        unsigned int key = 0;          // unique id for dedup (rw: plugin<<12 ^ code)
+        DWORD count = 0;               // occurrences since game begin
+        DWORD firstTick = 0;           // GetTickCount of the first occurrence
+        DWORD lastTick = 0;            // GetTickCount of the most recent
+        DWORD lastUptimeSec = 0;
+        unsigned int pluginId = 0;     // RenderWare pluginID (rw errors)
+        unsigned int errorCode = 0;    // raw RenderWare errorCode (rw errors)
+        std::string name;              // resolved name when known
+        std::string module;            // owning module when resolvable
+        std::string lastScript;        // script active when last seen
+        DWORD lastOpcode = 0xFFFFFFFFu;
+        std::vector<std::string> modules; // modules seen in the stack for this error
+    };
+
+    std::map<unsigned int, ErrorRecord> m_errorRecords; // keyed by record.key
+    std::vector<unsigned int> m_errorOrder;             // first-seen order
+    std::mutex m_errorMutex;
+    unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
+    unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
+    bool m_rwErrorPrimed = false;
+    // Counters may be bumped from any thread that logs through CLEO (the core
+    // debug callback is not game-thread bound), so they are interlocked.
+    volatile LONG m_cleoErrorCount = 0;                 // CLEO error-level messages
+    volatile LONG m_cleoWarningCount = 0;               // CLEO warning-level messages
+    std::set<std::string> m_errorModulesSeen;           // distinct modules that raised errors
+
+    void PollRenderWareError();
+    void RecordError(
+        unsigned int key,
+        const std::string& name,
+        unsigned int pluginId,
+        unsigned int errorCode,
+        const std::vector<std::string>& modules
+    );
+    void WriteErrorReport(const char* reason);
+    static std::string CurrentScriptName();
+    static DWORD CurrentScriptOpcode();
+    static std::vector<std::string> ScanErrorModules(size_t maxModules);
 
     std::set<uintptr_t> m_debugScripts;
 
@@ -336,6 +454,11 @@ private:
     void ResetFrameTimeInterval();
     void InsertWorstTimeSample(const FrameTimeSample& sample);
     double FrameTimeMs(LARGE_INTEGER from, LARGE_INTEGER to) const;
+    // Percentile of the frame-period ring, p in [0,1] (0.5 = median). Returns 0
+    // when the ring is empty. Sorts a copy, so it is only called at report time.
+    double FrameTimePeriodPercentile(double p) const;
+    // 1%-low / 0.1%-low average FPS, computed from the slowest tail of the ring.
+    double FrameTimeLowFps(double fraction) const;
 
     static void __cdecl OnCoreLog(int level, const char* format, va_list args);
 

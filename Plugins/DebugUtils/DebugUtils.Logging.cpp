@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <fstream>
 #include <sstream>
+#include <functional>
 #include <regex>
 #include <CTimer.h>
 #include <d3d9.h>
@@ -801,6 +802,34 @@ void __cdecl DebugUtils::OnCoreLog(int level, const char* format, va_list args)
     case CLEO_DEBUG_ERROR: levelName = "error"; break;
     case CLEO_DEBUG_DIAGNOSTIC: levelName = "diagnostic"; break;
     default: break;
+    }
+
+    // Error diagnostics: count CLEO errors/warnings and attribute them to the
+    // module on the stack that raised them, so the frame-time/error report can
+    // name the mod/plugin behind a CLEO error. The stack scan runs here, on the
+    // thread that raised the error, which is where the suspect frame lives.
+    if (level == CLEO_DEBUG_ERROR || level == CLEO_DEBUG_WARNING)
+    {
+        if (level == CLEO_DEBUG_ERROR)
+            InterlockedIncrement(&s_instance->m_cleoErrorCount);
+        else
+            InterlockedIncrement(&s_instance->m_cleoWarningCount);
+
+        if (s_instance->m_errorDiagEnabled && s_instance->m_frameTimeEnabled)
+        {
+            const std::vector<std::string> modules =
+                s_instance->m_errorModuleScanEnabled
+                    ? DebugUtils::ScanErrorModules(4)
+                    : std::vector<std::string>();
+
+            char name[96];
+            _snprintf_s(name, sizeof(name), _TRUNCATE, "CLEO %s: %s", levelName, message);
+            // Bound the dedup key by hashing the message, so repeated identical
+            // errors collapse into one record with a count.
+            const unsigned int key =
+                0x40000000u ^ (static_cast<unsigned int>(std::hash<std::string>()(message)) & 0x0FFFFFFFu);
+            s_instance->RecordError(key, name, 0, 0, modules);
+        }
     }
 
     if (level == CLEO_DEBUG_DIAGNOSTIC)

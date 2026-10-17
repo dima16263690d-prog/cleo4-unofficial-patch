@@ -400,6 +400,32 @@ namespace CLEO
         return result;
     }
 
+    void CCleoMemoryManager::GetOwnerStats(std::vector<OwnerStats>& out) const
+    {
+        out.clear();
+        out.reserve(m_owners.size());
+
+        // m_owners already carries the per-owner block count and byte total, so
+        // no list walk is needed here.
+        for (const auto& entry : m_owners)
+        {
+            OwnerStats stats;
+            stats.owner = entry.first;
+            stats.blocks = entry.second.blockCount;
+            stats.bytes = entry.second.size;
+            out.push_back(stats);
+        }
+
+        std::sort(
+            out.begin(),
+            out.end(),
+            [](const OwnerStats& a, const OwnerStats& b)
+            {
+                return a.bytes > b.bytes;
+            }
+        );
+    }
+
     CSmartMemoryEngine& GetSmartMemoryEngine()
     {
         static CSmartMemoryEngine engine;

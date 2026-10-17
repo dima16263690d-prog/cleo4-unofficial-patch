@@ -103,6 +103,46 @@ extern "C" BOOL WINAPI CLEO_DebugGetMemoryStats(CLEO_MemoryStats* stats)
     return TRUE;
 }
 
+extern "C" DWORD WINAPI CLEO_DebugGetScriptMemoryOwners(
+    CLEO_ScriptMemoryOwner* out,
+    DWORD max
+)
+{
+    std::vector<CLEO::CCleoMemoryManager::OwnerStats> owners;
+    CLEO::GetSmartMemoryEngine().Memory().GetOwnerStats(owners);
+
+    const DWORD count = static_cast<DWORD>(
+        owners.size() > 0xFFFFFFFFull ? 0xFFFFFFFFull : owners.size()
+    );
+
+    if (out == nullptr || max == 0)
+        return count;
+
+    const DWORD written = count < max ? count : max;
+    for (DWORD i = 0; i < written; ++i)
+    {
+        const auto& owner = owners[i];
+
+        out[i].scriptPtr = reinterpret_cast<uintptr_t>(owner.owner);
+        out[i].blocks = owner.blocks;
+        out[i].bytes = owner.bytes;
+
+        // Names are borrowed from the running script; copy defensively so a
+        // script that is torn down right after the call cannot invalidate them.
+        if (owner.owner != nullptr)
+        {
+            memcpy(out[i].scriptName, owner.owner->GetName(), 8);
+            out[i].scriptName[8] = '\0';
+        }
+        else
+        {
+            memcpy(out[i].scriptName, "none", 5);
+        }
+    }
+
+    return written;
+}
+
 extern "C" void WINAPI CLEO_DebugRecordCrashOpcode(
     uintptr_t scriptPtr,
     const char* scriptName,
