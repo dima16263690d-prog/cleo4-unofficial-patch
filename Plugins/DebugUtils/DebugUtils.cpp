@@ -128,10 +128,11 @@ DebugUtils::DebugUtils()
         if (m_errorDiagEnabled)
         {
             WriteFrameTime(
-                "[errors] enabled renderware_watch=%u module_scan=%u "
+                "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
                 "(reports CLEO/RenderWare errors and the suspect module)",
                 m_rwErrorWatchEnabled ? 1u : 0u,
-                m_errorModuleScanEnabled ? 1u : 0u
+                m_errorModuleScanEnabled ? 1u : 0u,
+                m_fileWatchEnabled ? 1u : 0u
             );
         }
     }
@@ -204,6 +205,8 @@ DebugUtils::~DebugUtils()
         return;
 
     CLEO_DebugSetCrashSnapshotEnabled(FALSE);
+
+    RemoveFileOpenWatch();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -472,6 +475,15 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
             : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
     kv("DebugUtils.Errors", "ModuleScan", "0");
+    desc(ru ? "FileWatch: 1 = перехватывать открытия файлов RenderWare и печатать"
+            : "FileWatch: 1 = capture RenderWare file opens and print the exact");
+    desc(ru ? "  точный путь, который не удалось открыть (E_RW_BADOPEN)."
+            : "  path that failed to open (E_RW_BADOPEN).");
+    desc(ru ? "  Это патч только данных (подмена указателя в таблице), код не"
+            : "  Data-only patch (a table pointer is swapped), no code is");
+    desc(ru ? "  трогается. Только GTA SA 1.0 US."
+            : "  modified. GTA SA 1.0 US only.");
+    kv("DebugUtils.Errors", "FileWatch", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -849,6 +861,14 @@ void DebugUtils::LoadConfig()
     m_errorModuleScanEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "ModuleScan",
+            0,
+            path.c_str()
+        ) != 0;
+    // Wrap RenderWare's rwfopen to name the exact file behind a failed open.
+    // Data-only patch (no code detour), so it is safe to leave on while hunting.
+    m_fileWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatch",
             0,
             path.c_str()
         ) != 0;

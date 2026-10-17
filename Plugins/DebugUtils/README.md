@@ -101,6 +101,8 @@ LowFpsWarn=0
 Enabled=0
 RenderWare=0
 ModuleScan=0
+; Name the exact file behind a failed open (data-only patch, no code detour).
+FileWatch=0
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -180,6 +182,34 @@ When the script active at the error is `plg-sdk`, the report adds a note that
 this is the plugin-sdk script-command bridge (`CallCommandById` builds a
 throwaway `CRunningScript` named `"plg-sdk"`), so the error came from a plugin
 calling a game command rather than from a user CLEO script.
+
+### Naming the exact file (FileWatch)
+
+`E_RW_BADOPEN` ("Error opening the file %s") does not record the filename in the
+error itself, so the log alone cannot say *which* texture or `.txd` is missing.
+Set `[DebugUtils.Errors] FileWatch=1` and DebugUtils captures every RenderWare
+file open and reports the exact paths that failed:
+
+```
+================= failed file opens =================
+#   path                                                   count first  last script
+1   ...\models\cutscene\something.txd                         12    45    186 plg-sdk
+[filewatch] 1 distinct path(s) failed to open; these are the files behind E_RW_BADOPEN / E_RW_READTEXMASK
+```
+
+The path is taken from the argument RenderWare passes to its own file-open
+function, so it is exactly what the game tried to load. When a plugin triggered
+the load through plugin-sdk's script bridge, the script column shows `plg-sdk`
+(the bridge), which is the same attribution the error report uses.
+
+This is a *data-only* patch: RenderWare reaches the OS through a file-function
+table (`RwFileFunctions`, from `RwOsGetFileInterface`), and DebugUtils swaps that
+table's `rwfopen` pointer for its own wrapper, which calls the original and
+records the name on a null result. No instruction is overwritten and no
+trampoline is used, so it carries none of the risk of a code detour; the original
+pointer is restored on game end and on unload. The table address is GTA SA 1.0 US
+only, and the wrapper refuses to install if the pointer it would replace is not
+executable code (a wrong-layout guard). Off by default.
 
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
   errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed

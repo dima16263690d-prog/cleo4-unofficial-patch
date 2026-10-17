@@ -335,6 +335,239 @@ void DebugUtils::PollRenderWareError()
     );
 }
 
+// ---------------------------------------------------------------------------
+// RenderWare file-open watch.
+//
+// E_RW_BADOPEN is raised inside RenderWare's stream-open-by-name path, which
+// reaches the OS through the file-function table returned by
+// RwOsGetFileInterface() (a RwFileFunctions* living in RenderWare's globals).
+// Replacing that table's rwfopen pointer with our own wrapper is a *data-only*
+// patch: no instruction is overwritten and no trampoline is needed, so it
+// carries none of the risk of a code detour. The wrapper calls the original and
+// records the name whenever it returns null, which is exactly the condition that
+// makes RenderWare raise E_RW_BADOPEN. This turns "some texture failed" into the
+// exact path, e.g. "models\cutscene\foo.txd".
+// ---------------------------------------------------------------------------
+namespace
+{
+    // plugin-sdk: RwFileFunctions* RwOsGetFileInterface(void) at 0x00804130.
+    constexpr DWORD kGtaSa10RwOsGetFileInterface = 0x00804130;
+
+    // Prefix of RwFileFunctions that we need. The real struct is
+    // { rwfexist, rwfopen, rwfclose, rwfread, ... }; only the first two matter.
+    struct RwFileFunctionsHead
+    {
+        void* rwfexist; // RwBool (*)(const RwChar* name)
+        void* rwfopen;  // void*  (*)(const RwChar* name, const RwChar* mode)
+    };
+
+    typedef RwFileFunctionsHead* (__cdecl *RwOsGetFileInterfaceFn)(void);
+    typedef void* (__cdecl *RwFopenFn)(const char* name, const char* mode);
+
+    // Assigned during InstallFileOpenWatch, read on every intercepted open.
+    RwFopenFn g_rwFopenOriginal = nullptr;
+}
+
+void* __cdecl DebugUtils::FileOpenWatchFopen(const char* name, const char* mode)
+{
+    RwFopenFn original = g_rwFopenOriginal;
+    if (original == nullptr)
+        return nullptr;
+
+    void* handle = original(name, mode);
+
+    // A null handle is a failed open, which is what RenderWare turns into
+    // E_RW_BADOPEN. Anything else opened fine and is not interesting.
+    if (handle == nullptr && name != nullptr && name[0] != '\0' && s_instance != nullptr)
+        s_instance->RecordFileOpenFailure(name);
+
+    return handle;
+}
+
+void DebugUtils::InstallFileOpenWatch()
+{
+    if (m_fileWatchInstalled || !m_fileWatchEnabled)
+        return;
+
+    // The table address is for the SA 1.0 US RenderWare build; refuse anything
+    // else rather than poke a wrong pointer.
+    if (CLEO_GetGameVersion() != GV_US10)
+    {
+        WriteFrameTime(
+            "[filewatch] disabled: RenderWare file interface address is SA 1.0 US only"
+        );
+        return;
+    }
+
+    const auto getFileInterface =
+        reinterpret_cast<RwOsGetFileInterfaceFn>(kGtaSa10RwOsGetFileInterface);
+
+    RwFileFunctionsHead* table = getFileInterface();
+    if (table == nullptr || table->rwfopen == nullptr)
+    {
+        WriteFrameTime("[filewatch] disabled: RenderWare file interface unavailable");
+        return;
+    }
+
+    // Guard against a wrong table layout: the pointer we are about to replace
+    // must be executable code inside the game image. Wrapping a data pointer and
+    // then calling it would crash, so refuse anything that is not executable.
+    {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(table->rwfopen, &info, sizeof(info)) == 0 ||
+            (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0)
+        {
+            WriteFrameTime(
+                "[filewatch] disabled: RenderWare rwfopen is not executable code"
+            );
+            return;
+        }
+    }
+
+    // Keep the original so our wrapper (and, on unload, the game) still opens
+    // files exactly as before.
+    g_rwFopenOriginal = reinterpret_cast<RwFopenFn>(table->rwfopen);
+    m_fileWatchOriginalFopen = table->rwfopen;
+    m_fileWatchTable = table;
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(&table->rwfopen, sizeof(void*), PAGE_READWRITE, &oldProtect))
+    {
+        g_rwFopenOriginal = nullptr;
+        WriteFrameTime("[filewatch] disabled: could not make the table writable");
+        return;
+    }
+
+    table->rwfopen = reinterpret_cast<void*>(&DebugUtils::FileOpenWatchFopen);
+    VirtualProtect(&table->rwfopen, sizeof(void*), oldProtect, &oldProtect);
+
+    m_fileWatchInstalled = true;
+    WriteFrameTime(
+        "[filewatch] enabled: RenderWare file opens are captured; failures are "
+        "reported with the exact path"
+    );
+}
+
+void DebugUtils::RemoveFileOpenWatch()
+{
+    if (!m_fileWatchInstalled || m_fileWatchTable == nullptr)
+        return;
+
+    auto* table = reinterpret_cast<RwFileFunctionsHead*>(m_fileWatchTable);
+
+    DWORD oldProtect = 0;
+    if (VirtualProtect(&table->rwfopen, sizeof(void*), PAGE_READWRITE, &oldProtect))
+    {
+        table->rwfopen = m_fileWatchOriginalFopen;
+        VirtualProtect(&table->rwfopen, sizeof(void*), oldProtect, &oldProtect);
+    }
+
+    m_fileWatchInstalled = false;
+    m_fileWatchTable = nullptr;
+    m_fileWatchOriginalFopen = nullptr;
+    g_rwFopenOriginal = nullptr;
+}
+
+void DebugUtils::RecordFileOpenFailure(const char* path)
+{
+    if (path == nullptr || path[0] == '\0')
+        return;
+
+    const std::string key(path);
+    const DWORD now = GetTickCount();
+    const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
+    const std::string script = CurrentScriptName();
+
+    std::lock_guard<std::mutex> lock(m_fileOpenMutex);
+
+    auto it = m_fileOpenFailures.find(key);
+    if (it == m_fileOpenFailures.end())
+    {
+        FileOpenFailure failure;
+        failure.count = 1;
+        failure.firstUptimeSec = uptimeSec;
+        failure.lastUptimeSec = uptimeSec;
+        failure.lastScript = script;
+
+        m_fileOpenOrder.push_back(key);
+        m_fileOpenFailures.emplace(key, std::move(failure));
+    }
+    else
+    {
+        FileOpenFailure& failure = it->second;
+        ++failure.count;
+        failure.lastUptimeSec = uptimeSec;
+        failure.lastScript = script;
+    }
+}
+
+void DebugUtils::WriteFileOpenReport(bool forceAll)
+{
+    std::map<std::string, FileOpenFailure> failures;
+    std::vector<std::string> order;
+    {
+        std::lock_guard<std::mutex> lock(m_fileOpenMutex);
+        failures = m_fileOpenFailures;
+        order = m_fileOpenOrder;
+    }
+
+    if (failures.empty())
+        return;
+
+    // Dedup like the error report: print only what changed since last time.
+    size_t changed = 0;
+    for (const auto& entry : failures)
+    {
+        if (entry.second.count != entry.second.lastReportedCount)
+            ++changed;
+    }
+
+    if (!forceAll && changed == 0)
+        return;
+
+    WriteFrameTime("================= failed file opens =================");
+    WriteFrameTime("%-3s %-52s %8s %5s %5s %-16s", "#", "path", "count", "first", "last", "script");
+
+    size_t index = 0;
+    for (const auto& key : order)
+    {
+        auto it = failures.find(key);
+        if (it == failures.end())
+            continue;
+
+        const FileOpenFailure& failure = it->second;
+        ++index;
+
+        std::string path = key;
+        // Keep the row readable when a path is very long.
+        if (path.size() > 52)
+            path = std::string("...") + path.substr(path.size() - 49);
+
+        WriteFrameTime(
+            "%-3zu %-52s %8u %5u %5u %-16s",
+            index,
+            path.c_str(),
+            static_cast<unsigned>(failure.count),
+            static_cast<unsigned>(failure.firstUptimeSec),
+            static_cast<unsigned>(failure.lastUptimeSec),
+            failure.lastScript.empty() ? "?" : failure.lastScript.c_str()
+        );
+    }
+
+    WriteFrameTime(
+        "[filewatch] %zu distinct path(s) failed to open; these are the files "
+        "behind E_RW_BADOPEN / E_RW_READTEXMASK",
+        failures.size()
+    );
+
+    {
+        std::lock_guard<std::mutex> lock(m_fileOpenMutex);
+        for (auto& entry : m_fileOpenFailures)
+            entry.second.lastReportedCount = entry.second.count;
+    }
+}
+
 void DebugUtils::RecordError(
     unsigned int key,
     const std::string& name,

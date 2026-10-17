@@ -330,6 +330,11 @@ private:
     bool m_errorDiagEnabled = false;
     bool m_rwErrorWatchEnabled = false;
     bool m_errorModuleScanEnabled = false;
+    // Capture the exact filename of every RenderWare file open by wrapping the
+    // rwfopen/rwfexist pointers in the RwFileFunctions table (data-only patch,
+    // no code is modified). This is what turns E_RW_BADOPEN / E_RW_READTEXMASK
+    // from "some texture failed" into "models\foo.txd failed". Opt-in.
+    bool m_fileWatchEnabled = false;
 
     struct ErrorRecord
     {
@@ -354,6 +359,28 @@ private:
     std::map<unsigned int, ErrorRecord> m_errorRecords; // keyed by record.key
     std::vector<unsigned int> m_errorOrder;             // first-seen order
     std::mutex m_errorMutex;
+
+    // Failed RenderWare file opens captured by the open watch (see below).
+    struct FileOpenFailure
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        std::string lastScript;
+    };
+    std::map<std::string, FileOpenFailure> m_fileOpenFailures; // keyed by path
+    std::vector<std::string> m_fileOpenOrder;                  // first-seen order
+    std::mutex m_fileOpenMutex;
+    bool m_fileWatchInstalled = false;
+    void* m_fileWatchTable = nullptr;         // RwFileFunctions*
+    void* m_fileWatchOriginalFopen = nullptr; // the rwfopen we replaced
+
+    void InstallFileOpenWatch();
+    void RemoveFileOpenWatch();
+    void RecordFileOpenFailure(const char* path);
+    void WriteFileOpenReport(bool forceAll);
+    static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;

@@ -304,6 +304,7 @@ void DebugUtils::EndFrameTimeFrame()
         m_lastFrameTimeReportTick = nowTick;
         WriteFrameTimeReport("interval");
         WriteErrorReport("interval");
+        WriteFileOpenReport(false);
     }
 }
 
