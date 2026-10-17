@@ -421,7 +421,7 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
     std::vector<std::string> modules;
 
     if (via != nullptr)
-        *via = "scan";
+        *via = "scan (no unwind)";
 
     const auto capture = ResolveCaptureBackTrace();
     if (capture != nullptr)
@@ -456,13 +456,24 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
 
             PushUniqueFrame(modules, address);
         }
-    }
 
-    if (!modules.empty())
-    {
+        if (!modules.empty())
+        {
+            if (via != nullptr)
+                *via = "unwind";
+            return modules;
+        }
+
+        // The unwind ran but nothing survived: on x86 it follows the frame
+        // pointer, and the game/mods are built without one (FPO), so it often
+        // stops inside the game EXE and never reaches the mod frame. Say which
+        // case it was so the reader knows how much to trust the chain.
         if (via != nullptr)
-            *via = "unwind";
-        return modules;
+        {
+            *via = count == 0
+                ? "scan (unwind empty)"
+                : "scan (unwind had no mod frame)";
+        }
     }
 
     // Fallback: the same stack scan the error report uses.
