@@ -389,6 +389,7 @@ private:
         // Modules on the stack at the first failed open (the plugin/mod that
         // asked RenderWare to load the file), when ModuleScan is on.
         std::vector<std::string> modules;
+        std::string chainVia; // "unwind" or "scan": how the chain was captured
         bool modulesScanned = false;
     };
     std::map<std::string, FileOpenFailure> m_fileOpenFailures; // keyed by path
@@ -414,6 +415,7 @@ private:
         std::string lastScript;
         std::string resolvedPath;
         std::vector<std::string> modules;
+        std::string chainVia; // "unwind" or "scan": how the chain was captured
         bool modulesScanned = false;
     };
     std::map<std::string, FileOpenRecord> m_fileWatchRecords; // keyed by path
@@ -464,7 +466,10 @@ private:
     static bool IsSystemModuleHandle(HMODULE module);
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
-    static std::vector<std::string> CaptureRequesterChain(size_t maxFrames);
+    // `via`, when non-null, receives "unwind" or "scan" - which mechanism
+    // produced the chain - so the log can say how trustworthy it is.
+    static std::vector<std::string> CaptureRequesterChain(
+        size_t maxFrames, const char** via = nullptr);
 
     std::set<uintptr_t> m_debugScripts;
 

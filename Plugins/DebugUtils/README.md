@@ -242,6 +242,17 @@ its path is not under `Windows`. So a chain like
 means a D3D9 proxy (`d3d9.dll`) asked RenderWare for the file, called from a mod
 loader — the `d3d9.dll` frame is the immediate requester, not a system DLL.
 
+Each chain also prints `chain via: unwind` or `chain via: scan`. On 32-bit
+Windows a stack walk follows the frame-pointer chain, and release builds omit the
+frame pointer, so a stale stack word can land inside a large DLL and be shown as
+a frame — which is why the innermost frame can change between runs
+(`d3d9.dll+0x5FE17` one launch, `OpenAL32.dll+0x1D6019` the next) for the same
+one-shot load. Frames whose address is outside its module image, or whose
+preceding bytes do not decode to a call, are now dropped; when those bytes cannot
+be read the frame is kept rather than guessed away. `chain via: scan` means the
+unwind returned nothing and the raw stack scan was used, so treat that chain as a
+hint rather than proof.
+
 ### Finding who loads a specific file (FileWatchNames)
 
 `E_RW_BADOPEN` only fires when a file is *missing*. To answer "which script or

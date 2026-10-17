@@ -151,6 +151,46 @@ namespace
 
         return (info.Protect & executable) != 0;
     }
+
+    // Only a return address may legitimately appear as a captured frame. On x86
+    // RtlCaptureStackBackTrace follows the frame-pointer chain, and release
+    // builds omit the frame pointer (FPO), so a stale stack word can land inside
+    // a large DLL and be reported as a frame - which is why the innermost frame
+    // of a requester chain flips between runs (d3d9.dll+0x5FE17 one launch,
+    // OpenAL32.dll+0x1D6019 the next) for the same one-shot load. Two cheap tests
+    // drop those words: the address must lie inside its module image, and the
+    // bytes just before it must decode to a call. When the preceding bytes cannot
+    // be read the frame is kept - never drop a frame on uncertainty alone.
+    bool IsPlausibleReturnAddress(DWORD address, HMODULE module)
+    {
+        if (module == nullptr || address < 0x10000)
+            return false;
+
+        MODULEINFO info{};
+        if (GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)) &&
+            info.SizeOfImage != 0 &&
+            address - reinterpret_cast<DWORD>(module) >= info.SizeOfImage)
+        {
+            return false;
+        }
+
+        BYTE pre[7] = {}; // pre[i] = byte at (address - i), 1-based
+        for (int i = 1; i <= 6; ++i)
+        {
+            const void* p = reinterpret_cast<const void*>(address - i);
+            if (!IsPageReadable(p))
+                return true; // cannot judge: keep the frame
+            pre[i] = *reinterpret_cast<const BYTE*>(p);
+        }
+
+        if (pre[5] == 0xE8)                             return true; // call rel32
+        if (pre[6] == 0xFF && pre[5] == 0x15)           return true; // call [abs32]
+        if (pre[2] == 0xFF && (pre[1] & 0xF8) == 0xD0)  return true; // call reg
+        if (pre[3] == 0xFF && (pre[2] & 0xF8) == 0x50)  return true; // call [reg+disp8]
+        if (pre[6] == 0xFF && (pre[5] & 0xF8) == 0x90)  return true; // call [reg+disp32]
+
+        return false;
+    }
 }
 
 namespace
@@ -375,9 +415,12 @@ void DebugUtils::PushUniqueFrame(std::vector<std::string>& modules, DWORD addres
 // game, CLEO and DebugUtils itself. Prefers RtlCaptureStackBackTrace (a real
 // unwind, so it does not pick up stale stack words); falls back to the
 // E8-return-address heuristic when the unwind is unavailable or empty.
-std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames)
+std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, const char** via)
 {
     std::vector<std::string> modules;
+
+    if (via != nullptr)
+        *via = "scan";
 
     const auto capture = ResolveCaptureBackTrace();
     if (capture != nullptr)
@@ -404,12 +447,22 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames)
             if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
                 continue;
 
+            // Drop stale stack words that the frame-pointer walk reports as
+            // frames: they land in large DLLs (d3d9/OpenAL) at offsets that are
+            // not the site of a call, and they change between runs.
+            if (!IsPlausibleReturnAddress(address, module))
+                continue;
+
             PushUniqueFrame(modules, address);
         }
     }
 
     if (!modules.empty())
+    {
+        if (via != nullptr)
+            *via = "unwind";
         return modules;
+    }
 
     // Fallback: the same stack scan the error report uses.
     return ScanErrorModules(maxFrames);
@@ -482,6 +535,9 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
         }
 
         if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
+            continue;
+
+        if (!IsPlausibleReturnAddress(candidate, module))
             continue;
 
         PushUniqueFrame(modules, candidate);
@@ -714,7 +770,11 @@ void DebugUtils::RecordWatchedOpen(const char* path, bool failed)
     {
         stored.modulesScanned = true;
         if (m_errorModuleScanEnabled)
-            stored.modules = CaptureRequesterChain(4);
+        {
+            const char* via = nullptr;
+            stored.modules = CaptureRequesterChain(4, &via);
+            stored.chainVia = via ? via : "";
+        }
     }
 }
 
@@ -779,6 +839,8 @@ void DebugUtils::WriteWatchedOpenReport(bool forceAll)
                 chain += module;
             }
             WriteFrameTime("      requested by: %s", chain.c_str());
+            if (!record.chainVia.empty())
+                WriteFrameTime("      chain via: %s", record.chainVia.c_str());
         }
 
         if (!record.resolvedPath.empty())
@@ -928,7 +990,11 @@ void DebugUtils::RecordFileOpenFailure(const char* path)
     {
         stored.modulesScanned = true;
         if (m_errorModuleScanEnabled)
-            stored.modules = CaptureRequesterChain(4);
+        {
+            const char* via = nullptr;
+            stored.modules = CaptureRequesterChain(4, &via);
+            stored.chainVia = via ? via : "";
+        }
     }
 }
 
@@ -996,6 +1062,8 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
                 chain += module;
             }
             WriteFrameTime("      requested by: %s", chain.c_str());
+            if (!failure.chainVia.empty())
+                WriteFrameTime("      chain via: %s", failure.chainVia.c_str());
         }
 
         // The absolute path the game looked in, so the exact folder to put the
