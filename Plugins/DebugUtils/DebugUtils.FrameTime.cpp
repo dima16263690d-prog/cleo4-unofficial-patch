@@ -546,12 +546,15 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
 
         // Guard against a config typo: a budget under ~4 ms asks for a target no
         // 60 Hz build can meet, so "0% met" is the setting talking, not a fault.
-        if (m_frameTimeBudgetMs < 4.0 && m_frameTimeBudgetMet == 0)
+        // Say it once per session - it is a config remark, not a per-interval event.
+        if (m_frameTimeBudgetMs < 4.0 && m_frameTimeBudgetMet == 0 &&
+            !m_frameTimeBudgetNoteLogged)
         {
+            m_frameTimeBudgetNoteLogged = true;
             WriteFrameTime(
                 "[fps] note: FrameBudgetMs=%.2f asks for %.0f FPS, which no build at "
                 "this frame rate can meet - set it to your real target (16.67 for 60 "
-                "FPS, 8.33 for 120) or 0 to disable",
+                "FPS, 8.33 for 120) or 0 to disable (this note is printed once)",
                 m_frameTimeBudgetMs,
                 targetFps
             );

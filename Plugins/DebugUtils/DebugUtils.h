@@ -286,6 +286,7 @@ private:
     unsigned long long m_frameTimeSpike250 = 0; // period >= 250 ms  (< 4 FPS)
     unsigned long long m_frameTimeBudgetMet = 0;    // frames within m_frameTimeBudgetMs
     unsigned long long m_frameTimeBudgetMissed = 0; // frames over the budget
+    bool m_frameTimeBudgetNoteLogged = false;       // the "impossible target" note, once
     double m_frameTimeWorstLogicMs = 0.0;       // slowest logic tick in the interval
     double m_frameTimeWorstLogicPeriodMs = 0.0; // its frame period, to split cause
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average

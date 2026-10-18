@@ -803,21 +803,25 @@ void DebugUtils::WriteWatchedOpenReport(bool forceAll)
     if (records.empty())
         return;
 
-    size_t changed = 0;
-    for (const auto& entry : records)
+    // Dedup like the failed-open report: print only what changed since last time.
+    std::vector<std::string> changedKeys;
+    for (const auto& key : order)
     {
-        if (entry.second.count != entry.second.lastReportedCount)
-            ++changed;
+        auto it = records.find(key);
+        if (it == records.end())
+            continue;
+        if (forceAll || it->second.count != it->second.lastReportedCount)
+            changedKeys.push_back(key);
     }
 
-    if (!forceAll && changed == 0)
+    if (changedKeys.empty())
         return;
 
     WriteFrameTime("================= watched file opens =================");
     WriteFrameTime("%-3s %-46s %6s %5s %5s %-6s %-14s", "#", "path", "count", "first", "last", "result", "script");
 
     size_t index = 0;
-    for (const auto& key : order)
+    for (const auto& key : changedKeys)
     {
         auto it = records.find(key);
         if (it == records.end())
@@ -1023,22 +1027,26 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
     if (failures.empty())
         return;
 
-    // Dedup like the error report: print only what changed since last time.
-    size_t changed = 0;
-    for (const auto& entry : failures)
+    // Dedup like the error report: print only what changed since last time (a new
+    // path, or one whose count grew), never the whole table again.
+    std::vector<std::string> changedKeys;
+    for (const auto& key : order)
     {
-        if (entry.second.count != entry.second.lastReportedCount)
-            ++changed;
+        auto it = failures.find(key);
+        if (it == failures.end())
+            continue;
+        if (forceAll || it->second.count != it->second.lastReportedCount)
+            changedKeys.push_back(key);
     }
 
-    if (!forceAll && changed == 0)
+    if (changedKeys.empty())
         return;
 
     WriteFrameTime("================= failed file opens =================");
     WriteFrameTime("%-3s %-52s %8s %5s %5s %-16s", "#", "path", "count", "first", "last", "script");
 
     size_t index = 0;
-    for (const auto& key : order)
+    for (const auto& key : changedKeys)
     {
         auto it = failures.find(key);
         if (it == failures.end())
@@ -1356,71 +1364,80 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
     if (failures.empty())
         return;
 
-    size_t changed = 0;
-    for (const auto& entry : failures)
-    {
-        if (entry.second.count != entry.second.lastReportedCount)
-            ++changed;
-    }
-
-    if (!forceAll && changed == 0)
-        return;
-
-    WriteFrameTime("================= failed texture reads =================");
-    WriteFrameTime("%-34s %6s %5s %5s %-16s", "texture", "count", "first", "last", "script");
-
-    size_t index = 0;
+    // Print only the rows that changed since the last report (a new texture, or
+    // one whose count grew). Printing the whole table every interval turned a
+    // handful of failures into thousands of identical lines.
+    std::vector<const std::pair<const std::string, TextureReadFailure>*> changed;
     for (const auto& key : order)
     {
         auto it = failures.find(key);
         if (it == failures.end())
             continue;
+        if (forceAll || it->second.count != it->second.lastReportedCount)
+            changed.push_back(&*it);
+    }
 
-        const TextureReadFailure& failure = it->second;
-        ++index;
+    if (changed.empty())
+        return;
 
-        std::string name = key;
-        if (name.size() > 34)
-            name = std::string("...") + name.substr(name.size() - 31);
-
-        WriteFrameTime(
-            "%-34s %6u %5u %5u %-16s",
-            name.c_str(),
-            static_cast<unsigned>(failure.count),
-            static_cast<unsigned>(failure.firstUptimeSec),
-            static_cast<unsigned>(failure.lastUptimeSec),
-            failure.lastScript.empty() ? "?" : failure.lastScript.c_str()
-        );
-
-        // Name the mod: this is the chain captured at the moment the read failed,
-        // which is exactly what the one-frame-later error poll cannot provide.
-        if (!failure.modules.empty())
+    // Group the changed rows by their requester chain: many textures are read by
+    // the same mod, so the chain is printed once and the textures listed under it
+    // instead of repeating the identical "requested by" line per texture.
+    std::vector<std::string> chainOrder;
+    std::map<std::string, std::vector<const std::pair<const std::string, TextureReadFailure>*>> byChain;
+    for (const auto* entry : changed)
+    {
+        std::string chain;
+        for (const auto& module : entry->second.modules)
         {
-            std::string chain;
-            for (const auto& module : failure.modules)
-            {
-                if (!chain.empty())
-                    chain += " <- ";
-                chain += module;
-            }
-            WriteFrameTime("      requested by: %s", chain.c_str());
-            if (!failure.chainVia.empty())
-                WriteFrameTime("      chain via: %s", failure.chainVia.c_str());
+            if (!chain.empty())
+                chain += " <- ";
+            chain += module;
         }
-        else
+        if (chain.empty())
+            chain = "(no mod frame captured - enable ModuleScan)";
+
+        auto it = byChain.find(chain);
+        if (it == byChain.end())
+            chainOrder.push_back(chain);
+        byChain[chain].push_back(entry);
+    }
+
+    WriteFrameTime("================= failed texture reads =================");
+    WriteFrameTime("%zu changed of %zu texture(s); grouped by the mod that read them",
+                   changed.size(), failures.size());
+
+    for (const auto& chain : chainOrder)
+    {
+        WriteFrameTime("  requested by: %s", chain.c_str());
+        // The chain method is the same for every texture under it, so it is stated
+        // once, from the first entry that has one.
+        const auto& group = byChain[chain];
+        for (const auto* entry : group)
         {
+            if (!entry->second.chainVia.empty())
+            {
+                WriteFrameTime("    chain via: %s", entry->second.chainVia.c_str());
+                break;
+            }
+        }
+
+        for (const auto* entry : group)
+        {
+            std::string name = entry->first;
+            if (name.size() > 34)
+                name = std::string("...") + name.substr(name.size() - 31);
+
             WriteFrameTime(
-                "      requested by: (no mod frame captured - enable ModuleScan "
-                "and check that the read failed inside a mod, not the game)"
+                "    %-34s count=%-5u first=%-5u last=%-5u script=%s",
+                name.c_str(),
+                static_cast<unsigned>(entry->second.count),
+                static_cast<unsigned>(entry->second.firstUptimeSec),
+                static_cast<unsigned>(entry->second.lastUptimeSec),
+                entry->second.lastScript.empty() ? "?" : entry->second.lastScript.c_str()
             );
         }
     }
-
-    WriteFrameTime(
-        "[texturewatch] %zu failed texture read(s); these are the textures behind "
-        "E_RW_READTEXMASK",
-        failures.size()
-    );
 
     {
         std::lock_guard<std::mutex> lock(m_textureReadMutex);
