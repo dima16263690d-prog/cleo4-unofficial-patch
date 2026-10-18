@@ -388,6 +388,7 @@ std::vector<std::string> DebugUtils::ScanErrorModules(
     std::vector<std::string> modules;
 
     size_t strict = 0;
+    size_t total = 0;
 
     // Anchor on a local; on x86 the stack grows down, so higher addresses hold
     // older (caller) frames. Scan a bounded window upward. The window is wide
@@ -423,6 +424,10 @@ std::vector<std::string> DebugUtils::ScanErrorModules(
         if (!IsPlausibleReturnAddress(candidate, module, &frameStrict))
             continue;
 
+        // Count FRAMES, not unique modules: `strict`/`total` is the share of
+        // examined frames that were E8-verified. Counting `strict` per frame but
+        // `total` per unique module let strict exceed total (e.g. "14/5").
+        ++total;
         if (frameStrict)
             ++strict;
 
@@ -435,7 +440,7 @@ std::vector<std::string> DebugUtils::ScanErrorModules(
     if (strictCount != nullptr)
         *strictCount = strict;
     if (totalCount != nullptr)
-        *totalCount = modules.size();
+        *totalCount = total;
 
     return modules;
 }

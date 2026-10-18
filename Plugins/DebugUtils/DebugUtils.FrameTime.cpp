@@ -469,9 +469,29 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             ? 100.0 * static_cast<double>(m_frameTimeStutterLogicBound) /
               static_cast<double>(m_frameTimeStutterCount)
             : 0.0;
-        const char* dominant = logicSharePct >= 50.0
-            ? "logic/script bound"
-            : (logicSharePct >= 20.0 ? "mixed" : "render/streaming bound");
+
+        // The dominant cause is decided by the STUTTERS when there are any (they
+        // are the frames that hurt), and only by the overall share when the
+        // interval was smooth. Otherwise a mostly-smooth interval with all its
+        // few hitches in logic would still be labelled "render bound" and send
+        // the reader after the wrong subsystem.
+        const char* dominant;
+        if (m_frameTimeStutterCount > 0)
+        {
+            if (stutterLogicPct >= 50.0)
+                dominant = "logic/script bound (most stutters)";
+            else if (stutterLogicPct >= 20.0)
+                dominant = "mixed";
+            else
+                dominant = "render/streaming bound (most stutters)";
+        }
+        else
+        {
+            dominant = logicSharePct >= 50.0
+                ? "logic/script bound"
+                : (logicSharePct >= 20.0 ? "mixed" : "render/streaming bound");
+        }
+
         WriteFrameTime(
             "[fps] cause: %llu/%llu frames logic-bound (%.1f%%), %llu/%llu stutters "
             "logic-bound (%.1f%%) -> overall %s",
@@ -522,24 +542,28 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     if (m_frameTimeWorstLogicPeriodMs > 0.0)
     {
         const double ratio = m_frameTimeWorstLogicMs / m_frameTimeWorstLogicPeriodMs;
-        const char* cause = ratio >= 0.8
-            ? "logic/script bound"
-            : (ratio >= 0.4 ? "mixed" : "render/streaming bound");
 
         if (ratio > 1.0)
         {
+            // The logic tick outlasted its own frame period: a stall that the
+            // period sampling did not span (a one-off hitch inside logic), not a
+            // steady "logic bound" load. Labelling this "logic/script bound" would
+            // contradict the per-frame cause split, which reports such a frame as
+            // render/streaming bound.
             WriteFrameTime(
-                "worst_frame logic_ms=%.2f period_ms=%.2f cause=%s "
-                "(logic tick ran %.1fx the frame period; the two are from the same "
-                "frame but logic can overrun its own period)",
+                "worst_frame logic_ms=%.2f period_ms=%.2f cause=logic overrun/stall "
+                "(logic tick ran %.1fx its own frame period - a one-off hitch inside "
+                "logic, not steady script load)",
                 m_frameTimeWorstLogicMs,
                 m_frameTimeWorstLogicPeriodMs,
-                cause,
                 ratio
             );
         }
         else
         {
+            const char* cause = ratio >= 0.8
+                ? "logic/script bound"
+                : (ratio >= 0.4 ? "mixed" : "render/streaming bound");
             WriteFrameTime(
                 "worst_frame logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% cause=%s",
                 m_frameTimeWorstLogicMs,

@@ -149,7 +149,11 @@ Each report shows, for the interval:
 - MinFps / LowFpsWarn / LowFpsWarn01 thresholds: when the interval's average FPS,
   its 1%-low FPS, or its 0.1%-low FPS drops below the configured value, a
   greppable `[fps] WARNING` line is written (all default to 0 = off). LowFpsWarn01
-  targets long hitches, which the 1%-low figure can hide;
+  targets long hitches, which the 1%-low figure can hide. These are FPS
+  *thresholds*, not on/off switches: a value of 1 means "warn below 1 FPS", which
+  never fires. When any of them (or FrameBudgetMs) is set to a value that cannot
+  mean anything, the log prints one `[fps] note:` line saying so, so a
+  misconfigured run is not silently missing every warning;
 - SustainedLowIntervals: when MinFps is set and the average FPS stays below it for
   this many consecutive intervals, a single `[fps] SUSTAINED LOW` line is written
   (and a `[fps] recovered` line when it comes back). One slow interval is noise
@@ -162,9 +166,11 @@ Each report shows, for the interval:
 - a per-frame cause split: every frame is classified logic/script bound (the
   logic tick used at least 80% of the frame period) or render/streaming bound
   (GPU / driver / streaming), and a `[fps] cause:` line reports the share of all
-  frames and, separately, of the stutter frames that were logic-bound. So "what
-  owns the hitches?" has a direct answer, not just a label on the single worst
-  frame;
+  frames and, separately, of the stutter frames that were logic-bound. The
+  overall label is decided by the stutters when there are any (they are the frames
+  that hurt), falling back to the whole-frame share on a smooth interval - so a
+  smooth interval whose few hitches are all in logic is not mislabelled "render
+  bound";
 - an automatic frame-pacing verdict: a single `[fps] VERDICT:` line (no
   configuration needed) that flags a low average (below 55 FPS) and uneven pacing
   (1%-low below 75% of the average) separately, so "average is fine but it
@@ -396,7 +402,10 @@ pointer swap), so it is off by default and guarded at every step:
   labelled scan in charge.
 
 `TextureEntryAddress` overrides which entry is hooked (default `0x7F3AC0`, the
-RenderWare-core reader; plugin-sdk maps the game's wrapper to `0x4C7510`).
+RenderWare-core reader; plugin-sdk maps the game's wrapper to `0x4C7510`). A
+value that is not a game-image address (for example `1`, set as if it were an
+on/off switch) is ignored and the built-in default is used, so it cannot disable
+the hook by accident.
 
 The callback/stream watch is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped

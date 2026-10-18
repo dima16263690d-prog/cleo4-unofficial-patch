@@ -931,6 +931,23 @@ void DebugUtils::InstallTextureEntryHook()
     if (target == 0)
         target = kGtaSa10RwTextureRead;
 
+    // A value that is not a plausible game-image address is a misconfiguration
+    // (e.g. set to 1 as "on"), not a request to patch there - fall back to the
+    // default rather than disabling the hook.
+    const HMODULE gameImage = GetModuleHandleA(nullptr);
+    const DWORD imageBase = reinterpret_cast<DWORD>(gameImage);
+    if (target < imageBase || target >= imageBase + 0x01000000)
+    {
+        WriteFrameTime(
+            "[texturewatch] TextureEntryAddress=0x%08X is outside the game image "
+            "(base 0x%08X); using the built-in default 0x%08X instead",
+            static_cast<unsigned>(target),
+            static_cast<unsigned>(imageBase),
+            static_cast<unsigned>(kGtaSa10RwTextureRead)
+        );
+        target = kGtaSa10RwTextureRead;
+    }
+
     // The target must be executable code inside the game image: patching a wrong
     // address would corrupt arbitrary memory.
     MEMORY_BASIC_INFORMATION info{};
@@ -942,7 +959,8 @@ void DebugUtils::InstallTextureEntryHook()
         info.AllocationBase != GetModuleHandleA(nullptr))
     {
         WriteFrameTime(
-            "[texturewatch] exact caller disabled: 0x%08X is not executable game code",
+            "[texturewatch] exact caller disabled: 0x%08X is not executable game code "
+            "(only the stack scan will name the mod)",
             static_cast<unsigned>(target)
         );
         return;

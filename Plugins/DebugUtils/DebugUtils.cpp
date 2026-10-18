@@ -130,6 +130,25 @@ DebugUtils::DebugUtils()
             m_frameTimeBudgetMs
         );
 
+        // These keys are THRESHOLDS in FPS, not on/off switches: a value of 1
+        // means "warn below 1 FPS", which never fires and is almost always a
+        // mistake (someone set 1 expecting "enable"). Say so once, so the log is
+        // not silently missing every warning the user thought they turned on.
+        const bool thresholdsMeaningless =
+            (m_frameTimeMinFps > 0 && m_frameTimeMinFps <= 5) ||
+            (m_frameTimeLowFpsWarn > 0 && m_frameTimeLowFpsWarn <= 5) ||
+            (m_frameTimeLowFpsWarn01 > 0 && m_frameTimeLowFpsWarn01 <= 5);
+        if (thresholdsMeaningless)
+        {
+            WriteFrameTime(
+                "[fps] note: MinFps/LowFpsWarn/LowFpsWarn01 are FPS THRESHOLDS, not "
+                "on/off switches - a value of 1 means 'warn below 1 FPS', which never "
+                "fires. Set them to your real targets (e.g. MinFps=55, LowFpsWarn=40, "
+                "LowFpsWarn01=25) or 0 to disable. FrameBudgetMs is a budget in ms "
+                "(16.67 = 60 FPS), not a switch."
+            );
+        }
+
         if (m_errorDiagEnabled)
         {
             WriteFrameTime(
@@ -984,12 +1003,10 @@ void DebugUtils::LoadConfig()
 
     // Optional override of the hooked entry. A mod may call either the game's
     // RwTextureRead wrapper (plugin-sdk: 0x4C7510) or the RenderWare-core one
-    // (0x7F3AC0, the default). 0 = use the built-in default.
-    {
-        const int addr = GetPrivateProfileIntA(
-            "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str());
-        m_textureEntryAddress = addr > 0 ? static_cast<DWORD>(addr) : 0;
-    }
+    // (0x7F3AC0, the default). 0 = use the built-in default. Validated at install
+    // time (the log is open there), so a bad value cannot disable the hook.
+    m_textureEntryAddress = static_cast<DWORD>(GetPrivateProfileIntA(
+        "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str()));
 
     // Failed-open report. Default 1: when FileWatch is on, naming the file that
     // failed is the whole point. Set 0 to keep the rwfopen hook but stop the
