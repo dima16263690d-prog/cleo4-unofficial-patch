@@ -240,6 +240,69 @@ bool DebugUtils::IsLargeAddressAware()
     return (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
 }
 
+// Best-effort naming of a GTA SA 1.0 US engine function from an absolute address,
+// so the texture report can say "RwTextureStreamRead+0x161" instead of a bare
+// "gta_sa.exe+0x404841". Ranges are taken from gta-reversed (verified symbol
+// addresses); an address that falls inside a known function is reported with its
+// offset, an unknown one is left unnamed. This is a symbol map, not a debugger:
+// the name is a strong hint, never a proof of the exact instruction.
+std::string DebugUtils::GameFunctionForAddress(DWORD address)
+{
+    struct Symbol
+    {
+        DWORD start;
+        DWORD end;      // exclusive; the next known function's start
+        const char* name;
+    };
+
+    // RenderWare texture/TXD path plus the game functions that read textures.
+    static const Symbol kSymbols[] =
+    {
+        { 0x7F3AC0, 0x7F3B00, "RwTextureRead" },
+        { 0x7F37C0, 0x7F3820, "RwTextureCreate" },
+        { 0x7F3820, 0x7F38A0, "RwTextureDestroy" },
+        { 0x7F3A70, 0x7F3AC0, "RwTexDictionarySetCurrent" },
+        { 0x7F3500, 0x7F3520, "RwTextureSetReadCallBack" },
+        { 0x7F3520, 0x7F3540, "RwTextureGetReadCallBack" },
+        { 0x7F34D0, 0x7F34F0, "RwTextureSetFindCallBack" },
+        { 0x7F34F0, 0x7F3510, "RwTextureGetFindCallBack" },
+        { 0x8046E0, 0x8048E0, "RwTextureStreamRead" },
+        { 0x804C30, 0x804E60, "RwTexDictionaryStreamRead" },
+        { 0x731710, 0x731720, "CTxdStore::TxdStoreLoadCB" },
+        { 0x731720, 0x731850, "CTxdStore::TxdStoreFindCB" },
+        { 0x731850, 0x7318E0, "CTxdStore::FindTxdSlot" },
+        { 0x7319C0, 0x731A00, "CTxdStore::SetCurrentTxd" },
+        { 0x7316A0, 0x7316B0, "CTxdStore::PushCurrentTxd" },
+        { 0x7316B0, 0x7316E0, "CTxdStore::PopCurrentTxd" },
+        { 0x74DD30, 0x74E010, "RpMaterialStreamRead" },
+        { 0x74D190, 0x74D8C0, "RpGeometryStreamRead" },
+        { 0x74B030, 0x74B420, "RpAtomicStreamRead" },
+        { 0x74B420, 0x74BF40, "RpClumpStreamRead" },
+        { 0x727270, 0x7272B0, "CSprite2d::SetTexture" },
+        { 0x7272B0, 0x7272E0, "CSprite2d::SetTexture(mask)" },
+        { 0x5B3860, 0x5B3910, "CFileLoader::LoadTexDictionary" },
+        { 0x5B3910, 0x5B39D0, "CFileLoader::AddTexDictionaries" },
+        { 0x5371F0, 0x5373F0, "CFileLoader::LoadAtomicFile" },
+    };
+
+    for (const Symbol& symbol : kSymbols)
+    {
+        if (address >= symbol.start && address < symbol.end)
+        {
+            char label[128] = {};
+            if (address == symbol.start)
+                _snprintf_s(label, sizeof(label), _TRUNCATE, "%s", symbol.name);
+            else
+                _snprintf_s(
+                    label, sizeof(label), _TRUNCATE, "%s+0x%X",
+                    symbol.name, static_cast<unsigned>(address - symbol.start));
+            return std::string(label);
+        }
+    }
+
+    return {};
+}
+
 // "mod.asi+0x1a2b" - the module plus the offset inside it.
 std::string DebugUtils::FormatFrameLabel(DWORD address)
 {
@@ -263,7 +326,19 @@ std::string DebugUtils::FormatFrameLabel(DWORD address)
         name.c_str(),
         static_cast<unsigned>(address - reinterpret_cast<DWORD>(module)));
 
-    return std::string(label);
+    // When the address is inside the game image, append the engine function name
+    // if one is known: "gta_sa.exe+0x404841 (RwTextureStreamRead+0x161)" answers
+    // "which engine path reached this?" directly, instead of forcing the reader to
+    // look up a bare offset.
+    std::string result(label);
+    if (module == GetModuleHandleA(nullptr))
+    {
+        const std::string function = GameFunctionForAddress(address);
+        if (!function.empty())
+            result += " (" + function + ")";
+    }
+
+    return result;
 }
 
 // Append a frame label to the list unless the module is already listed, so

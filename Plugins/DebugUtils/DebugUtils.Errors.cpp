@@ -389,6 +389,15 @@ void DebugUtils::WriteErrorReport(const char* reason)
         return false;
     };
 
+    // Errors that are normal control flow, not a fault: E_RW_ENDOFSTREAM is
+    // returned at the end of a stream by design, and the engine itself leaves it
+    // in the global. Reporting it without saying so makes a harmless marker look
+    // like a bug, so it is called out explicitly.
+    auto isBenignError = [](const ErrorRecord& record)
+    {
+        return record.name == "E_RW_ENDOFSTREAM";
+    };
+
     size_t index = 0;
     std::string unchanged;
     for (const auto& record : records)
@@ -449,6 +458,15 @@ void DebugUtils::WriteErrorReport(const char* reason)
             );
         }
 
+        if (isBenignError(record) && showDetail)
+        {
+            WriteFrameTime(
+                "      note: BENIGN - E_RW_ENDOFSTREAM is the normal 'end of stream' "
+                "marker the engine leaves in the global; it is not a fault and needs "
+                "no fix."
+            );
+        }
+
         if (!record.text.empty() && showDetail)
         {
             WriteFrameTime("      meaning: %s", record.text.c_str());
@@ -465,15 +483,29 @@ void DebugUtils::WriteErrorReport(const char* reason)
             );
             WriteFrameTime(
                 "      hint: a rendering mod or D3D9/dinput proxy that replaces "
-                "RenderWare's texture reader (NativeTextureRead, SA 0x4CD820) is a "
-                "prime suspect - it can raise this for a texture the stock engine "
-                "would load fine."
+                "RenderWare's texture read/find callback (RwTextureSetReadCallBack "
+                "0x7F3500 / RwTextureSetFindCallBack 0x7F34D0) is a prime suspect - "
+                "it can raise this for a texture the stock engine would load fine."
             );
-            WriteFrameTime(
-                "      hint: set [DebugUtils.Errors] TextureWatch=1 to name the mod "
-                "that requested the failed texture read (the stack is captured at "
-                "the read, which this poll cannot do)."
-            );
+            if (!m_textureWatchEnabled)
+            {
+                WriteFrameTime(
+                    "      hint: set [DebugUtils.Errors] TextureWatch=1 to name the "
+                    "mod that requested the failed texture read (the stack is "
+                    "captured at the read, which this poll cannot do)."
+                );
+            }
+            else
+            {
+                // TextureWatch is on, so the failed-read table below is the answer:
+                // it distinguishes an engine-initiated read (a missing resource)
+                // from a mod-initiated one (the mod asked for the wrong texture).
+                WriteFrameTime(
+                    "      hint: see the 'failed texture reads' table below - it "
+                    "names the texture and says whether the engine or a mod "
+                    "initiated the read."
+                );
+            }
         }
 
         // The opcode is only meaningful where the error was raised. For a

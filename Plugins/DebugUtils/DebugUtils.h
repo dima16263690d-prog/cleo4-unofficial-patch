@@ -306,10 +306,20 @@ private:
     // only labelling the single worst frame.
     unsigned long long m_frameTimeLogicBoundFrames = 0;
     unsigned long long m_frameTimeStutterLogicBound = 0;
+    // Frames slower than kFrameTimeSlowMs (missed the 50 FPS floor). Used to tell
+    // a genuinely smooth interval from one whose hitches were only mild.
+    unsigned long long m_frameTimeSlowFrames = 0;
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
     bool m_frameTimeHaveLastInterval = false;
     // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
     static constexpr double kFrameTimeLogicShare = 0.8;
+    // A frame must be at least this slow (ms) before its cause is worth counting:
+    // a logic-heavy frame that still hits 60 FPS is not a problem, and counting it
+    // would mislabel a smooth interval as "logic/script bound". 20 ms = 50 FPS.
+    static constexpr double kFrameTimeSlowMs = 20.0;
+    // Worst frames with an uptime below this (seconds) are treated as startup /
+    // world-load hitches, not steady-state stutter, and said so in the report.
+    static constexpr DWORD kFrameTimeStartupSec = 12;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction
@@ -344,6 +354,13 @@ private:
     static constexpr size_t kFrameTimeMaxWorst = 32;
     std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};
     size_t m_frameTimeWorstCount = 0;
+    // A frame's logic time is measured when the frame ends, but its period is only
+    // known when the *next* frame starts (the period is start-to-start). Parking
+    // the finished frame here lets the next Begin pair the two values of the SAME
+    // frame; otherwise the worst-frame table and the logic/render split would mix
+    // two different frames (off by one).
+    FrameTimeSample m_frameTimePending{};
+    bool m_frameTimeHavePending = false;
 
     std::ofstream m_frameTimeLog;
     std::mutex m_frameTimeMutex;
@@ -594,6 +611,12 @@ private:
     // leak-to-crash estimate and the fragmentation warnings all depend on which
     // one is in effect, so it is read from the PE header of the running image.
     static bool IsLargeAddressAware();
+    // Name the GTA SA engine function at an absolute game-image address (from a
+    // verified symbol table), or an empty string when the address is not in the
+    // game image / not near a known function. Turns a bare "gta_sa.exe+0x404841"
+    // into something a reader can act on, and shows whether the engine (not a mod)
+    // reached the read.
+    static std::string GameFunctionForAddress(DWORD address);
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
     // Turns a raw frame list (from any walker) into module labels, dropping the

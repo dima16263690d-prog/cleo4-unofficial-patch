@@ -403,6 +403,11 @@ void DebugUtils::WriteLeakReport(const char* reason)
         double growthPctSelfPerMin;
         double growthPctArenaPerMin;   // leak rate as a share of the whole arena
         double confidencePct;          // how sure this is a leak, 0-100
+        // Block growth: +N blocks means the script keeps calling allocate_memory
+        // (0AC8) without freeing - a leak inside the script itself. A byte growth
+        // with a flat block count is not the script leaking, it is one allocation
+        // that got bigger (the script legitimately holds more data).
+        long long blockGrowth;
         const char* verdict;
     };
 
@@ -487,6 +492,8 @@ void DebugUtils::WriteLeakReport(const char* reason)
                   (60.0 / static_cast<double>(windowSec))
             : 0.0;
         row.confidencePct = LeakConfidencePercent(state, growth, arenaBytes);
+        row.blockGrowth = static_cast<long long>(state.lastBlocks) -
+                          static_cast<long long>(state.firstBlocks);
         row.verdict = verdict;
         rows.push_back(row);
     };
@@ -542,6 +549,41 @@ void DebugUtils::WriteLeakReport(const char* reason)
             row.confidencePct,
             static_cast<unsigned>(state.shrinkCount)
         );
+
+        // Where is the growth? More blocks = the script itself keeps allocating
+        // (0AC8) without freeing - a leak inside the script. Bytes without more
+        // blocks = the script holds bigger allocations, which is normal. This is
+        // the "может ли быть утечка в самом скрипте" answer.
+        if (row.growth >= m_leakMinGrowthBytes)
+        {
+            if (row.blockGrowth > 0)
+            {
+                WriteMemory(
+                    "      where: +%lld block(s) - the script itself keeps "
+                    "allocating (allocate_memory 0AC8) without freeing: this IS a "
+                    "leak inside the script",
+                    row.blockGrowth
+                );
+            }
+            else if (row.blockGrowth == 0)
+            {
+                WriteMemory(
+                    "      where: block count flat (%llu) - the script holds bigger "
+                    "allocation(s), not more of them; this is usually NOT a leak "
+                    "inside the script (one growing buffer)",
+                    state.firstBlocks
+                );
+            }
+            else
+            {
+                WriteMemory(
+                    "      where: %lld block(s) - the script freed allocations but "
+                    "the arena still grew, so the growth is NOT the script's "
+                    "allocate_memory (look at the process-level line below)",
+                    row.blockGrowth
+                );
+            }
+        }
     }
 
     // Headline suspect: the single script to look at first. Rows are already

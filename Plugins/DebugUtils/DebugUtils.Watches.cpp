@@ -1600,10 +1600,43 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         }
     }
 
+    // Verdict line: was the read initiated by the engine (so the *file* is at
+    // fault) or by a mod (so the mod is)? The direct caller captured by the entry
+    // hook tells them apart, which is the difference between "install the missing
+    // .txd" and "fix the mod that asks for the wrong texture".
+    {
+        size_t engineInitiated = 0;
+        size_t modInitiated = 0;
+        for (const auto* entry : changed)
+        {
+            if (entry->second.exactCallerDirect)
+                ++modInitiated;
+            else if (!entry->second.directCallerRaw.empty())
+                ++engineInitiated;
+        }
+        if (engineInitiated > 0 || modInitiated > 0)
+        {
+            WriteFrameTime(
+                "[texturewatch] %zu of %zu changed read(s): engine-initiated "
+                "(a missing/corrupt resource), %zu mod-initiated (the mod asked for "
+                "the texture)",
+                engineInitiated, changed.size(), modInitiated
+            );
+            if (engineInitiated > 0)
+            {
+                WriteFrameTime(
+                    "    hint: an engine-initiated failed read means the .txd/.dff "
+                    "that should contain the texture is missing, not renamed, or "
+                    "corrupt - check the mod that replaced the model/archive, not "
+                    "the nearest mod frame in the stack."
+                );
+            }
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(m_textureReadMutex);
         for (auto& entry : m_textureReadFailures)
             entry.second.lastReportedCount = entry.second.count;
     }
 }
-

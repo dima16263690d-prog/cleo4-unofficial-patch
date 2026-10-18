@@ -69,7 +69,10 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeBudgetMissed = 0;
     m_frameTimeWorstLogicMs = 0.0;
     m_frameTimeWorstLogicPeriodMs = 0.0;
+    m_frameTimeHavePending = false;
+    m_frameTimePending = FrameTimeSample{};
     m_frameTimeLogicBoundFrames = 0;
+    m_frameTimeSlowFrames = 0;
     m_frameTimeStutterLogicBound = 0;
 }
 
@@ -187,6 +190,22 @@ void DebugUtils::BeginFrameTimeFrame()
         m_frameTimeIntervalMs += periodMs;
         m_frameTimeSumPeriodSqMs += periodMs * periodMs;
 
+        // The frame that just finished (parked at EndFrameTimeFrame) now has its
+        // real period, so pair the period and logic time of the SAME frame and
+        // rank it. Doing this at End would use the previous frame's period.
+        if (m_frameTimeHavePending)
+        {
+            m_frameTimePending.periodMs = periodMs;
+            InsertWorstTimeSample(m_frameTimePending);
+
+            if (m_frameTimePending.logicMs > m_frameTimeWorstLogicMs)
+            {
+                m_frameTimeWorstLogicMs = m_frameTimePending.logicMs;
+                m_frameTimeWorstLogicPeriodMs = periodMs;
+            }
+            m_frameTimeHavePending = false;
+        }
+
         // Bounded ring of every period, so the report can compute true
         // percentiles and 1%-low FPS instead of only min/avg/max.
         m_frameTimePeriodRing[m_frameTimePeriodNext] = static_cast<float>(periodMs);
@@ -208,11 +227,18 @@ void DebugUtils::BeginFrameTimeFrame()
                 ++m_frameTimeBudgetMissed;
         }
 
-        // Per-frame cause split. The previous frame's logic tick is measured at
-        // EndFrameTimeFrame and stored in m_frameTimeWorstLogicMs only when it was
-        // the worst; to classify every frame we keep the last measured logic time.
-        if (periodMs > 0.0 && m_frameTimeLastLogicMs >= kFrameTimeLogicShare * periodMs)
+        // Per-frame cause split. Only SLOW frames count: a logic-heavy frame that
+        // still met the frame target is not a problem, and counting it would
+        // mislabel a perfectly smooth interval as "logic/script bound".
+        if (periodMs >= kFrameTimeSlowMs &&
+            m_frameTimeLastLogicMs >= kFrameTimeLogicShare * periodMs)
             ++m_frameTimeLogicBoundFrames;
+
+        // Frames that missed the target (slow frames), regardless of cause, so the
+        // report can say "smooth" when there were none instead of always blaming a
+        // subsystem.
+        if (periodMs >= kFrameTimeSlowMs)
+            ++m_frameTimeSlowFrames;
 
         if (periodMs >= static_cast<double>(m_frameTimeWarnMs))
         {
@@ -256,13 +282,13 @@ void DebugUtils::EndFrameTimeFrame()
     if (logicMs > m_frameTimeMaxLogicMs)
         m_frameTimeMaxLogicMs = logicMs;
 
-    // Remember the slowest logic tick together with the frame period it sat in,
-    // so the report can say whether the worst frame was logic-bound or not.
-    if (logicMs > m_frameTimeWorstLogicMs)
-    {
-        m_frameTimeWorstLogicMs = logicMs;
-        m_frameTimeWorstLogicPeriodMs = m_frameTimeLastPeriodMs;
-    }
+    // The period of this frame is only known at the NEXT frame start (it is
+    // start-to-start), so the finished frame is parked and ranked in
+    // BeginFrameTimeFrame, where the period of the SAME frame is available.
+    // Pairing here would use the previous frame's period and print an impossible
+    // ratio (a logic tick longer than the frame it supposedly sat in).
+    m_frameTimePending.logicMs = logicMs;
+    m_frameTimeHavePending = true;
 
     m_frameTimeSumLogicMs += logicMs;
 
@@ -310,7 +336,11 @@ void DebugUtils::EndFrameTimeFrame()
         (GetTickCount() - m_memorySessionStartTick) / 1000u);
     sample.streamUsed = streamUsed;
     sample.streamReq = streamReq;
-    InsertWorstTimeSample(sample);
+    // Park the finished frame: its period is only measured at the next frame
+    // start, and the ranking must pair the period and the logic time of the SAME
+    // frame (see m_frameTimePending).
+    m_frameTimePending = sample;
+    m_frameTimeHavePending = true;
 
     m_frameTimeScriptsLast = scripts;
     ++m_frameTimeFrames;
@@ -476,7 +506,11 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         // few hitches in logic would still be labelled "render bound" and send
         // the reader after the wrong subsystem.
         const char* dominant;
-        if (m_frameTimeStutterCount > 0)
+        if (m_frameTimeSlowFrames == 0)
+            // No frame even missed the 50 FPS floor: nothing to blame. Saying
+            // "render/streaming bound" here would be a false lead.
+            dominant = "smooth (no slow frames)";
+        else if (m_frameTimeStutterCount > 0)
         {
             if (stutterLogicPct >= 50.0)
                 dominant = "logic/script bound (most stutters)";
@@ -494,13 +528,15 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
 
         WriteFrameTime(
             "[fps] cause: %llu/%llu frames logic-bound (%.1f%%), %llu/%llu stutters "
-            "logic-bound (%.1f%%) -> overall %s",
+            "logic-bound (%.1f%%) | %llu slow frames (>=%.0fms) -> overall %s",
             m_frameTimeLogicBoundFrames,
             m_frameTimeFrames,
             logicSharePct,
             m_frameTimeStutterLogicBound,
             m_frameTimeStutterCount,
             stutterLogicPct,
+            m_frameTimeSlowFrames,
+            kFrameTimeSlowMs,
             dominant
         );
     }
@@ -767,22 +803,49 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         listed > 0 && m_frameTimeWorst[0].periodMs >= static_cast<double>(m_frameTimeWarnMs);
     if (hadStutter)
     {
+        // Split the listed hitches into world-load (early uptime) and steady state,
+        // so a burst of big frames right after a load is not read as ongoing
+        // stutter. In the log this is the difference between "the game stutters"
+        // and "the game hitched once while it was loading the world".
+        size_t startupCount = 0;
+        for (size_t i = 0; i < listed; ++i)
+        {
+            if (m_frameTimeWorst[i].uptimeSec < kFrameTimeStartupSec)
+                ++startupCount;
+        }
+
         WriteFrameTime("---- worst frames ----");
-        WriteFrameTime("%-3s %12s %12s %8s %9s %11s %8s",
-            "#", "period_ms", "logic_ms", "scripts", "uptime_s", "stream_MB", "req");
+        WriteFrameTime("%-3s %12s %12s %8s %9s %11s %8s %-9s",
+            "#", "period_ms", "logic_ms", "scripts", "uptime_s", "stream_MB", "req", "phase");
         for (size_t i = 0; i < listed; ++i)
         {
             const auto& s = m_frameTimeWorst[i];
             WriteFrameTime(
-                "%-3zu %12.2f %12.2f %8zu %9u %11.1f %8llu",
+                "%-3zu %12.2f %12.2f %8zu %9u %11.1f %8llu %-9s",
                 i + 1,
                 s.periodMs,
                 s.logicMs,
                 s.scripts,
                 static_cast<unsigned>(s.uptimeSec),
                 static_cast<double>(s.streamUsed) / (1024.0 * 1024.0),
-                s.streamReq
+                s.streamReq,
+                s.uptimeSec < kFrameTimeStartupSec ? "load" : "steady"
             );
+        }
+
+        if (startupCount > 0 && startupCount < listed)
+        {
+            WriteFrameTime(
+                "[fps] note: %zu of %zu listed hitches happened during world load "
+                "(uptime < %us) - those are load-time hitches, not steady-state stutter",
+                startupCount, listed, static_cast<unsigned>(kFrameTimeStartupSec));
+        }
+        else if (startupCount == listed)
+        {
+            WriteFrameTime(
+                "[fps] note: all %zu listed hitches are load-time (uptime < %us); "
+                "the steady-state frames were within the target",
+                listed, static_cast<unsigned>(kFrameTimeStartupSec));
         }
     }
 
