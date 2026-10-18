@@ -191,6 +191,13 @@ private:
     uint64_t m_leakLastPrivateBytes = 0;
     DWORD m_leakLastUptimeSec = 0;
 
+    // Streaming-pool bytes at the first sample, so the report can subtract the
+    // world-loading fill from the process growth. A large part of the private
+    // growth during the first minutes is the streaming pool filling, not a leak;
+    // separating it keeps the verdict honest.
+    uint64_t m_leakFirstStreamUsedBytes = 0;
+    bool m_leakHaveStreamBaseline = false;
+
     struct LeakScriptState
     {
         std::string name;

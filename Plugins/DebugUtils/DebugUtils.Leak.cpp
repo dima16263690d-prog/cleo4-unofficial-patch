@@ -108,6 +108,15 @@ void DebugUtils::SampleScriptMemoryLeaks()
             m_leakFirstPrivateBytes = static_cast<uint64_t>(pmc.PrivateUsage);
             m_leakFirstPrivateUptimeSec =
                 (GetTickCount() - m_memorySessionStartTick) / 1000u;
+
+            // Streaming-pool baseline: the world-loading fill shows up as private
+            // growth but is not a leak, so remember where it started.
+            if (CLEO_GetGameVersion() == GV_US10)
+            {
+                m_leakFirstStreamUsedBytes = static_cast<uint64_t>(
+                    *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryUsed));
+                m_leakHaveStreamBaseline = true;
+            }
         }
     }
 
@@ -494,11 +503,90 @@ void DebugUtils::WriteLeakReport(const char* reason)
     }
     else
     {
-        WriteMemory(
-            "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
-            "LEAK/SUSPECTED verdict",
-            MemoryBytes(m_leakMinGrowthBytes).c_str()
-        );
+        // No script is leaking, but the process may still be. Do not answer
+        // "none" while private bytes climb: name the process-level growth and
+        // how long until the 2 GB address-space limit, which is the number that
+        // actually matters for a 32-bit game.
+        unsigned long long privateGrowth = 0;
+        double privateRatePerMin = 0.0;
+        if (m_leakFirstPrivateBytes != 0 && privateBytes >= m_leakFirstPrivateBytes &&
+            uptimeSeconds > m_leakFirstPrivateUptimeSec)
+        {
+            privateGrowth = privateBytes - m_leakFirstPrivateBytes;
+            const unsigned long long windowSec =
+                uptimeSeconds - m_leakFirstPrivateUptimeSec;
+            const double bytesPerSec =
+                static_cast<double>(privateGrowth) / static_cast<double>(windowSec);
+            privateRatePerMin = bytesPerSec * 60.0 / (1024.0 * 1024.0);
+        }
+
+        if (privateGrowth >= m_leakMinGrowthBytes)
+        {
+            const double pctOfPrivate = privateBytes != 0
+                ? 100.0 * static_cast<double>(privateGrowth) /
+                  static_cast<double>(privateBytes)
+                : 0.0;
+            WriteMemory(
+                "[leak] TOP SUSPECT: process private (no script is leaking) - grew %s "
+                "(+%.2f%% of private) at %.2f MB/min",
+                MemoryBytes(privateGrowth).c_str(),
+                pctOfPrivate,
+                privateRatePerMin
+            );
+
+            // Attribute part of the growth to the streaming pool: during the first
+            // minutes the world load fills it, which shows up as private growth but
+            // is not a leak. Report what is left once the pool fill is removed.
+            if (m_leakHaveStreamBaseline && CLEO_GetGameVersion() == GV_US10)
+            {
+                const unsigned long long streamNow = static_cast<unsigned long long>(
+                    *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryUsed));
+                const unsigned long long streamGrowth =
+                    streamNow > m_leakFirstStreamUsedBytes
+                        ? streamNow - m_leakFirstStreamUsedBytes
+                        : 0;
+
+                if (streamGrowth >= m_leakMinGrowthBytes)
+                {
+                    const unsigned long long unattributed =
+                        privateGrowth > streamGrowth ? privateGrowth - streamGrowth : 0;
+                    WriteMemory(
+                        "[leak] of that, %s is the streaming pool filling (world load, "
+                        "not a leak); %s is unattributed - that is the part to chase",
+                        MemoryBytes(streamGrowth).c_str(),
+                        MemoryBytes(unattributed).c_str()
+                    );
+                }
+            }
+
+            constexpr unsigned long long kAddressSpaceBytes =
+                2ull * 1024ull * 1024ull * 1024ull;
+            if (privateRatePerMin > 0.0 && privateBytes < kAddressSpaceBytes)
+            {
+                const double headroomMb =
+                    static_cast<double>(kAddressSpaceBytes - privateBytes) /
+                    (1024.0 * 1024.0);
+                const double minutesToLimit = headroomMb / privateRatePerMin;
+                if (minutesToLimit < 24.0 * 60.0)
+                {
+                    WriteMemory(
+                        "[leak] at this rate the 2.00 GB limit is reached in ~%.0f "
+                        "min (%.1f h) - %s headroom left",
+                        minutesToLimit,
+                        minutesToLimit / 60.0,
+                        MemoryBytes(kAddressSpaceBytes - privateBytes).c_str()
+                    );
+                }
+            }
+        }
+        else
+        {
+            WriteMemory(
+                "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+                "LEAK/SUSPECTED verdict, and process private is not climbing",
+                MemoryBytes(m_leakMinGrowthBytes).c_str()
+            );
+        }
     }
 
     // The single "on how many percent exactly" answer for the whole arena.

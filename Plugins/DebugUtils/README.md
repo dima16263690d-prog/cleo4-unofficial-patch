@@ -349,7 +349,11 @@ peak, and first/last-seen uptime. The verdict is one of:
 
 The report opens the per-script table with a single `[leak] TOP SUSPECT:` line
 naming the one script to look at first (the largest LEAK/SUSPECTED growth, or
-"none"), so the answer is one line rather than a table to scan.
+"none"), so the answer is one line rather than a table to scan. When no script
+is leaking but the process is, the line names the process growth instead
+(`TOP SUSPECT: process private (no script is leaking) - grew X (+P% of private)
+at R MB/min`) and follows it with an estimate of how long until the 2 GB
+address-space limit is reached at that rate.
 
 A closing `[leak]` line gives the exact total growth and its percentage of the
 arena and of the process, which is the single "how much, in percent" answer.
@@ -359,9 +363,13 @@ The report also states how much the *whole process* grew since the first sample
 because the script arena can be perfectly flat while the process still grows — a
 streaming-pool, texture, or GPU/driver leak. In that case a `[leak] NOTE:` line
 says the growth is NOT a script allocate_memory leak and points at the memory
-summary and module tables, so a flat arena is never misread as "no leak". The
-process baseline is taken at the first interval sample after the level has
-loaded, not at uptime 0, so load-time allocation is not counted as growth.
+summary and module tables, so a flat arena is never misread as "no leak". When
+the streaming pool grew over the same window, a `[leak] of that, X is the
+streaming pool filling (world load, not a leak); Y is unattributed` line
+separates the world-loading fill from the part actually worth chasing — otherwise
+the first minutes of any level load read as a leak. The process baseline is taken
+at the first interval sample after the level has loaded, not at uptime 0, so
+load-time allocation is not counted as growth.
 
 A trend line separates a real leak from a pool/streaming fill that is simply
 filling up: `[leak] this interval +X MB (N B/s); average since first M B/s ->
