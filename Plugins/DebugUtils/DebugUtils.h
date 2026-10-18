@@ -486,6 +486,15 @@ private:
     BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
     void* m_textureEntryTrampoline = nullptr; // executable stub: saved bytes + JMP back
     std::string m_lastTextureExactCaller;    // captured by the wrapper, read by Record
+    // True while RwTextureRead's entry hook is running its trampoline. The read
+    // callback fires inside that window; it must then NOT record the failure
+    // itself, or every failed read would be counted twice (once by the callback,
+    // once by the entry hook on return).
+    bool m_textureInEntryHook = false;
+    // How many times the entry hook was invoked. Lets the report say whether the
+    // hook is actually on the call path (a mod may read textures through a path
+    // that never reaches 0x4C7510), instead of leaving it ambiguous.
+    unsigned long long m_textureEntryHookCalls = 0;
     struct TextureReadFailure
     {
         DWORD count = 0;

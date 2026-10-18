@@ -884,7 +884,10 @@ void* __cdecl DebugUtils::TextureReadCallbackWatch(const char* name, const char*
 
     void* texture = original(name, maskName);
 
-    if (texture == nullptr && s_instance != nullptr)
+    // When the entry hook is installed it wraps this whole call and will record
+    // the failure itself with the exact caller; recording here too would double
+    // every count.
+    if (texture == nullptr && s_instance != nullptr && !s_instance->m_textureInEntryHook)
         s_instance->RecordTextureReadFailure(name, _ReturnAddress());
 
     return texture;
@@ -909,7 +912,16 @@ void* __cdecl DebugUtils::TextureReadEntryWatch(const char* name, const char* ma
     if (trampoline == nullptr)
         return nullptr;
 
+    // Mark the window so the read callback (fired inside) does not record the
+    // failure as well - this function records it with the exact caller below.
+    if (s_instance != nullptr)
+    {
+        s_instance->m_textureInEntryHook = true;
+        ++s_instance->m_textureEntryHookCalls;
+    }
     void* texture = trampoline(name, maskName);
+    if (s_instance != nullptr)
+        s_instance->m_textureInEntryHook = false;
 
     if (texture == nullptr && s_instance != nullptr)
         s_instance->RecordTextureReadFailure(name, _ReturnAddress());
@@ -1325,21 +1337,6 @@ void DebugUtils::RecordTextureReadFailure(const char* textureName, const void* e
     // raising frame is still on the stack; the scan cost is paid once per name.
     TextureReadFailure& stored = it->second;
 
-    // Prefer the exact caller from the RwTextureRead entry hook: it is the direct
-    // caller, so it beats any scan. Fall back to the string the wrapper left (the
-    // callback path, which runs deeper) when no address was passed.
-    if (!stored.modulesScanned || stored.exactCaller.empty())
-    {
-        std::string exact;
-        if (exactCaller != nullptr)
-            exact = LabelForModCaller(exactCaller);
-        else if (!m_lastTextureExactCaller.empty())
-            exact = m_lastTextureExactCaller;
-
-        if (!exact.empty())
-            stored.exactCaller = exact;
-    }
-
     if (!stored.modulesScanned)
     {
         stored.modulesScanned = true;
@@ -1349,6 +1346,30 @@ void DebugUtils::RecordTextureReadFailure(const char* textureName, const void* e
             stored.modules = CaptureRequesterChain(6, &via);
             stored.chainVia = via ? via : "";
         }
+    }
+
+    // Resolve the exact caller (the mod's own call site). The name-based paths
+    // pass an address (non-null); the stream path passes null.
+    //  - non-null: the entry hook already recorded the DIRECT caller of
+    //    RwTextureRead in m_lastTextureExactCaller - that is the best answer.
+    //    The address the callback path passes is usually inside the game
+    //    (RwTextureRead calling its own callback), so it is only a fallback.
+    //  - null (stream path): m_lastTextureExactCaller belongs to some earlier,
+    //    unrelated RwTextureRead call, so it must NOT be used here - take the
+    //    nearest mod frame from the scan instead.
+    if (stored.exactCaller.empty())
+    {
+        std::string exact;
+        if (exactCaller != nullptr)
+        {
+            exact = m_lastTextureExactCaller;
+            if (exact.empty())
+                exact = LabelForModCaller(exactCaller);
+        }
+        if (exact.empty() && !stored.modules.empty())
+            exact = stored.modules.front() + " (nearest mod frame, not the direct caller)";
+        if (!exact.empty())
+            stored.exactCaller = exact;
     }
 }
 
@@ -1407,6 +1428,16 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
     WriteFrameTime("================= failed texture reads =================");
     WriteFrameTime("%zu changed of %zu texture(s); grouped by the mod that read them",
                    changed.size(), failures.size());
+    if (m_textureEntryHookInstalled)
+    {
+        WriteFrameTime(
+            "    exact-caller hook: active, %llu RwTextureRead call(s) seen so far%s",
+            m_textureEntryHookCalls,
+            m_textureEntryHookCalls == 0
+                ? " - no mod read a texture via 0x4C7510 yet, so only the stack "
+                  "scan can name the requester"
+                : "");
+    }
 
     for (const auto& chain : chainOrder)
     {

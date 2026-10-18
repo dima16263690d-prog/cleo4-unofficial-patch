@@ -626,13 +626,15 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             : 0.0;
         const double targetFps = 1000.0 / m_frameTimeBudgetMs;
 
-        // A budget below the achieved median frame period cannot be met by any
-        // frame: on a vsync-locked 60 FPS build the median period is ~16.67 ms, so
-        // a budget of 16.00 asks for something impossible and "0/N met" would
-        // repeat verbatim every interval. Print the line once with a note, then
-        // stay quiet - it is the setting talking, not a per-interval event.
+        // A budget below the achieved median frame period cannot be met in any
+        // meaningful way: on a vsync-locked 60 FPS build the median period is
+        // ~16.67 ms, so a budget of 16.00 asks for something impossible. A few
+        // frames may still slip under by luck, so test the budget against the
+        // median rather than requiring zero met frames - otherwise "met by 1/600"
+        // repeats every interval and looks like a real miss. Print the line once
+        // with a note, then stay quiet: it is the setting talking, not an event.
         const bool impossibleTarget =
-            m_frameTimeBudgetMet == 0 && m_frameTimeBudgetMs < p50;
+            m_frameTimeBudgetMs < p50 * 0.995;
         if (!(impossibleTarget && m_frameTimeBudgetNoteLogged))
         {
             WriteFrameTime(
@@ -650,7 +652,7 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
                 m_frameTimeBudgetNoteLogged = true;
                 WriteFrameTime(
                     "[fps] note: FrameBudgetMs=%.2f is below this build's median frame "
-                    "period (%.2f ms), so no frame can meet it - set it to your real "
+                    "period (%.2f ms), so it cannot be met - set it to your real "
                     "target (16.67 for 60 FPS, 8.33 for 120) or 0 to disable (this "
                     "line is printed once)",
                     m_frameTimeBudgetMs,
