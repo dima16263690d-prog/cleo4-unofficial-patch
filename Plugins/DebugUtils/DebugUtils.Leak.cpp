@@ -81,12 +81,77 @@ void DebugUtils::UpdateLeakEntry(
     }
     else
     {
+        // The live bytes fell: memory was released. This is the strongest single
+        // piece of evidence AGAINST a leak, so count it and break the growth run.
         state.growthStreak = 0;
         state.flatStreak = 0;
+        ++state.shrinkCount;
+        ++state.breakStreak;
     }
 
     state.lastBytes = bytes;
     state.lastBlocks = blocks;
+}
+
+// How sure are we that this script is leaking, as a percentage?
+//
+// A leak is "memory taken and never given back", so the score is built from
+// monotonicity first (never released), then how long it has been observed and how
+// large the growth is, and it is cut hard for any release (churn). The output is
+// a confidence, not a proof: 100% is only reached by a script that grew on many
+// consecutive samples with zero releases and a large absolute growth.
+double DebugUtils::LeakConfidencePercent(
+    const LeakScriptState& state,
+    unsigned long long growthBytes,
+    unsigned long long arenaBytes)
+{
+    if (growthBytes == 0)
+        return 0.0;
+
+    double score = 0.0;
+
+    // 1) Monotonicity - the dominant signal (up to 55 points). A release caps this
+    //    at a low value: a script that frees memory is churning, not leaking.
+    if (state.shrinkCount == 0)
+    {
+        const double streak = static_cast<double>(state.growthStreak);
+        const double mono = streak / (streak + 2.0);   // 0.6 at 3, 0.83 at 10, 0.94 at 30
+        score += 55.0 * mono;
+    }
+    else
+    {
+        // Some releases: keep a little credit, scaled down by how many.
+        score += 15.0 / (1.0 + static_cast<double>(state.shrinkCount));
+    }
+
+    // 2) Observation length (up to 20 points). One or two samples prove nothing.
+    const double obs = static_cast<double>(state.samples);
+    score += 20.0 * (obs / (obs + 3.0));               // 0.4 at 2, 0.77 at 10, 0.91 at 30
+
+    // 3) Growth magnitude (up to 25 points). Absolute, with a share-of-arena term
+    //    so a large script that grows a lot scores highest.
+    constexpr double kBigGrowthBytes = 1.0 * 1024.0 * 1024.0;
+    const double mag = static_cast<double>(growthBytes) / kBigGrowthBytes;
+    score += 20.0 * (mag / (mag + 1.0));               // 0.5 at 1 MB, 0.8 at 4 MB
+    if (arenaBytes != 0)
+    {
+        const double share = 100.0 * static_cast<double>(growthBytes) /
+            static_cast<double>(arenaBytes);
+        score += 5.0 * (share / (share + 1.0));
+    }
+
+    // 4) Sample-count gate: below the minimum evidence, halve it. The verdict line
+    //    already says SUSPECTED at this point; the number should agree.
+    if (state.samples < kLeakMinSamples)
+        score *= 0.5;
+
+    // 5) A retired (released-to-zero) script is by definition not a leak.
+    if (state.releasedSince && state.lastBytes == 0)
+        score = 0.0;
+
+    if (score < 0.0) score = 0.0;
+    if (score > 100.0) score = 100.0;
+    return score;
 }
 
 void DebugUtils::SampleScriptMemoryLeaks()
@@ -322,9 +387,9 @@ void DebugUtils::WriteLeakReport(const char* reason)
     }
 
     WriteMemory(
-        "%-3s %-9s %12s %12s %8s %10s %8s %-10s",
+        "%-3s %-9s %12s %12s %8s %10s %8s %6s %-10s",
         "#", "script", "first_bytes", "now_bytes", "growth", "growth_%arena",
-        "samples", "verdict"
+        "samples", "conf%", "verdict"
     );
 
     struct Row
@@ -337,6 +402,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
         double growthBytesPerSec;
         double growthPctSelfPerMin;
         double growthPctArenaPerMin;   // leak rate as a share of the whole arena
+        double confidencePct;          // how sure this is a leak, 0-100
         const char* verdict;
     };
 
@@ -420,6 +486,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
                    static_cast<double>(arenaBytes)) *
                   (60.0 / static_cast<double>(windowSec))
             : 0.0;
+        row.confidencePct = LeakConfidencePercent(state, growth, arenaBytes);
         row.verdict = verdict;
         rows.push_back(row);
     };
@@ -443,7 +510,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
         const auto& state = *row.state;
 
         WriteMemory(
-            "%-3zu %-9s %12s %12s %8s %9.2f%% %8u %-10s",
+            "%-3zu %-9s %12s %12s %8s %9.2f%% %8u %5.0f%% %-10s",
             index,
             state.name.empty() ? "?" : state.name.c_str(),
             MemoryBytes(state.firstBytes).c_str(),
@@ -451,13 +518,15 @@ void DebugUtils::WriteLeakReport(const char* reason)
             MemoryBytes(row.growth).c_str(),
             row.growthPctArena,
             static_cast<unsigned>(state.samples),
+            row.confidencePct,
             row.verdict
         );
 
         WriteMemory(
             "      growth %s = %.3f%% of process private (%s) | +%.1f%% vs first sample | "
             "rate %.1f B/s (+%.2f%%/min of own, %.3f%%/min of arena) | "
-            "blocks %llu -> %llu | peak %s | first_seen=%us last_seen=%us",
+            "blocks %llu -> %llu | peak %s | first_seen=%us last_seen=%us | "
+            "confidence=%.0f%% (releases=%u)",
             MemoryBytes(row.growth).c_str(),
             row.growthPctProcess,
             MemoryBytes(privateBytes).c_str(),
@@ -469,7 +538,9 @@ void DebugUtils::WriteLeakReport(const char* reason)
             state.lastBlocks,
             MemoryBytes(state.peakBytes).c_str(),
             static_cast<unsigned>(state.firstUptimeSec),
-            static_cast<unsigned>(state.lastUptimeSec)
+            static_cast<unsigned>(state.lastUptimeSec),
+            row.confidencePct,
+            static_cast<unsigned>(state.shrinkCount)
         );
     }
 
@@ -492,13 +563,14 @@ void DebugUtils::WriteLeakReport(const char* reason)
     {
         WriteMemory(
             "[leak] TOP SUSPECT: script '%s' grew %s (+%.1f%% of its own, "
-            "%.3f%%/min of arena) over %u samples - verdict %s",
+            "%.3f%%/min of arena) over %u samples - verdict %s, confidence %.0f%%",
             suspect->state->name.empty() ? "?" : suspect->state->name.c_str(),
             MemoryBytes(suspect->growth).c_str(),
             suspect->growthPctSelf,
             suspect->growthPctArenaPerMin,
             static_cast<unsigned>(suspect->state->samples),
-            suspect->verdict
+            suspect->verdict,
+            suspect->confidencePct
         );
     }
     else
@@ -618,5 +690,10 @@ void DebugUtils::WriteLeakReport(const char* reason)
         "[leak] verdict guide: LEAK = grew every sample and was never released; "
         "SUSPECTED = net growth but not monotonic; STABLE = normal churn; "
         "RELEASED = held memory earlier and has since freed it"
+    );
+    WriteMemory(
+        "[leak] confidence%% = how sure this is a real leak: 100%% needs many "
+        "consecutive growing samples, zero releases and a large growth; every "
+        "release (releases=N) cuts it hard, so a churning script scores low"
     );
 }

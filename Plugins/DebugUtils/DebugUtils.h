@@ -211,6 +211,8 @@ private:
         DWORD samples = 0;                   // how many samples it was present in
         DWORD growthStreak = 0;              // consecutive samples of net growth
         DWORD flatStreak = 0;                // consecutive samples with no growth
+        DWORD shrinkCount = 0;               // times the live bytes fell (churn proof)
+        DWORD breakStreak = 0;               // consecutive growth runs broken by a drop
         bool releasedSince = false;          // it ever dropped back to zero
     };
 
@@ -220,6 +222,13 @@ private:
 
     void SampleScriptMemoryLeaks();
     void WriteLeakReport(const char* reason);
+    // Confidence that a tracked script is really leaking, 0-100%. Combines the
+    // strength of the evidence (sample count, monotonic growth streak, growth
+    // magnitude) and subtracts for churn (times memory was released). Answers the
+    // "how many percent sure is this a leak?" question directly.
+    static double LeakConfidencePercent(const LeakScriptState& state,
+                                        unsigned long long growthBytes,
+                                        unsigned long long arenaBytes);
     void UpdateLeakEntry(
         uintptr_t scriptPtr,
         const std::string& name,
@@ -261,6 +270,7 @@ private:
     bool m_frameTimeHaveLast = false;
     LARGE_INTEGER m_frameTimeLogicStart{};  // this frame's submit time
     double m_frameTimeLastPeriodMs = 0.0;   // period measured for the current frame
+    double m_frameTimeLastLogicMs = 0.0;    // previous frame's logic-tick duration
     unsigned long long m_frameTimeFrames = 0;
     double m_frameTimeSumPeriodMs = 0.0;
     double m_frameTimeSumLogicMs = 0.0;
@@ -289,8 +299,17 @@ private:
     bool m_frameTimeBudgetNoteLogged = false;       // the "impossible target" note, once
     double m_frameTimeWorstLogicMs = 0.0;       // slowest logic tick in the interval
     double m_frameTimeWorstLogicPeriodMs = 0.0; // its frame period, to split cause
+    // Per-frame cause split: a frame is "logic-bound" when its logic tick used at
+    // least kFrameTimeLogicShare of the frame period, otherwise "render-bound"
+    // (GPU / driver / streaming). Counted for every frame and, separately, for the
+    // stutter frames, so the report can say which side owns the hitches instead of
+    // only labelling the single worst frame.
+    unsigned long long m_frameTimeLogicBoundFrames = 0;
+    unsigned long long m_frameTimeStutterLogicBound = 0;
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
     bool m_frameTimeHaveLastInterval = false;
+    // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
+    static constexpr double kFrameTimeLogicShare = 0.8;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction

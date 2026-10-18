@@ -69,6 +69,8 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeBudgetMissed = 0;
     m_frameTimeWorstLogicMs = 0.0;
     m_frameTimeWorstLogicPeriodMs = 0.0;
+    m_frameTimeLogicBoundFrames = 0;
+    m_frameTimeStutterLogicBound = 0;
 }
 
 double DebugUtils::FrameTimePeriodPercentile(double p) const
@@ -206,10 +208,18 @@ void DebugUtils::BeginFrameTimeFrame()
                 ++m_frameTimeBudgetMissed;
         }
 
+        // Per-frame cause split. The previous frame's logic tick is measured at
+        // EndFrameTimeFrame and stored in m_frameTimeWorstLogicMs only when it was
+        // the worst; to classify every frame we keep the last measured logic time.
+        if (periodMs > 0.0 && m_frameTimeLastLogicMs >= kFrameTimeLogicShare * periodMs)
+            ++m_frameTimeLogicBoundFrames;
+
         if (periodMs >= static_cast<double>(m_frameTimeWarnMs))
         {
             ++m_frameTimeStutterCount;
             m_frameTimeStutterLostMs += periodMs - static_cast<double>(m_frameTimeWarnMs);
+            if (periodMs > 0.0 && m_frameTimeLastLogicMs >= kFrameTimeLogicShare * periodMs)
+                ++m_frameTimeStutterLogicBound;
         }
 
         // Histogram bucket: first edge the period is below, else overflow.
@@ -242,6 +252,7 @@ void DebugUtils::EndFrameTimeFrame()
     QueryPerformanceCounter(&now);
 
     const double logicMs = FrameTimeMs(m_frameTimeLogicStart, now);
+    m_frameTimeLastLogicMs = logicMs;
     if (logicMs > m_frameTimeMaxLogicMs)
         m_frameTimeMaxLogicMs = logicMs;
 
@@ -445,6 +456,62 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             : 0.0,
         m_frameTimeStutterLostMs
     );
+
+    // Cause split across ALL frames, not just the worst one: what share of frames
+    // were logic/script bound (the logic tick used >= 80% of the frame) versus
+    // render/streaming bound. The stutter subset is given too, so "what owns the
+    // hitches?" has a direct answer.
+    if (frames > 0.0)
+    {
+        const double logicSharePct =
+            100.0 * static_cast<double>(m_frameTimeLogicBoundFrames) / frames;
+        const double stutterLogicPct = m_frameTimeStutterCount > 0
+            ? 100.0 * static_cast<double>(m_frameTimeStutterLogicBound) /
+              static_cast<double>(m_frameTimeStutterCount)
+            : 0.0;
+        const char* dominant = logicSharePct >= 50.0
+            ? "logic/script bound"
+            : (logicSharePct >= 20.0 ? "mixed" : "render/streaming bound");
+        WriteFrameTime(
+            "[fps] cause: %llu/%llu frames logic-bound (%.1f%%), %llu/%llu stutters "
+            "logic-bound (%.1f%%) -> overall %s",
+            m_frameTimeLogicBoundFrames,
+            m_frameTimeFrames,
+            logicSharePct,
+            m_frameTimeStutterLogicBound,
+            m_frameTimeStutterCount,
+            stutterLogicPct,
+            dominant
+        );
+    }
+
+    // Auto frame-pacing verdict: one greppable line that needs no configuration.
+    // It flags the two independent problems separately - a low average (not
+    // enough performance) and a low 1%-low relative to the average (uneven
+    // pacing / hitches) - so "FPS is fine but it stutters" is visible even when
+    // MinFps/LowFpsWarn are left at 0.
+    if (avgFps > 0.0)
+    {
+        const double smoothness = low1Fps > 0.0 ? low1Fps / avgFps : 0.0;
+        const bool lowAvg = avgFps < 55.0;            // below a 60 FPS target
+        const bool uneven = low1Fps > 0.0 && smoothness < 0.75;
+
+        const char* pacing = "smooth";
+        if (lowAvg && uneven)
+            pacing = "low FPS and uneven pacing";
+        else if (lowAvg)
+            pacing = "low FPS (even pacing)";
+        else if (uneven)
+            pacing = "uneven pacing (hitches despite a good average)";
+
+        if (lowAvg || uneven)
+        {
+            WriteFrameTime(
+                "[fps] VERDICT: %s - fps_avg=%.1f fps_1%%low=%.1f (%.0f%% of average)",
+                pacing, avgFps, low1Fps, smoothness * 100.0
+            );
+        }
+    }
 
     // Cause split: if the slowest logic tick consumed most of its frame, the
     // hitch is logic/script bound (a mod or script), otherwise it is render

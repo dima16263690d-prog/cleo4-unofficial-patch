@@ -159,6 +159,16 @@ Each report shows, for the interval:
   hold the target FPS?". If the budget is set below ~4 ms (a target no 60 Hz build
   can meet) the line is printed once and then suppressed, so it does not repeat
   `0/N met` verbatim every interval;
+- a per-frame cause split: every frame is classified logic/script bound (the
+  logic tick used at least 80% of the frame period) or render/streaming bound
+  (GPU / driver / streaming), and a `[fps] cause:` line reports the share of all
+  frames and, separately, of the stutter frames that were logic-bound. So "what
+  owns the hitches?" has a direct answer, not just a label on the single worst
+  frame;
+- an automatic frame-pacing verdict: a single `[fps] VERDICT:` line (no
+  configuration needed) that flags a low average (below 55 FPS) and uneven pacing
+  (1%-low below 75% of the average) separately, so "average is fine but it
+  stutters" is visible even when MinFps/LowFpsWarn are left at 0;
 - the worst frames of the interval, with their logic_ms, active scripts and
   uptime, so a hitch can be tied to a moment and a script count. This table is
   printed only when the interval actually stuttered (a frame at or above WarnMs);
@@ -437,6 +447,25 @@ peak, and first/last-seen uptime. The verdict is one of:
 - SUSPECTED — net growth but not monotonic, or too few samples yet;
 - STABLE — normal churn (grew and shrank) or below LeakMinGrowthKB;
 - RELEASED — it held memory earlier and has since freed it.
+
+#### How sure is it? (confidence %)
+
+Every row also carries a `conf%` column — the "how many percent sure is this a
+leak?" answer. It is a 0-100 score, not a proof, built from the same evidence the
+verdict uses:
+
+- monotonicity dominates (up to 55 points): a long run of consecutive growing
+  samples scores high, and any single release (memory handed back) cuts this to a
+  small value, because a script that frees memory is churning, not leaking;
+- observation length (up to 20 points): one or two samples prove nothing;
+- growth magnitude (up to 25 points): absolute size, plus a small share-of-arena
+  term, so the biggest leaker scores highest.
+
+So a script that grew 4 MB over 30 samples with zero releases reads ~90%, the
+same growth with a handful of releases drops to ~40%, and a script that released
+everything reads 0%. The per-row detail line ends with
+`confidence=NN% (releases=N)` so the churn count behind the number is visible, and
+the `[leak] TOP SUSPECT:` line repeats the confidence for the headline suspect.
 
 The report opens the per-script table with a single `[leak] TOP SUSPECT:` line
 naming the one script to look at first (the largest LEAK/SUSPECTED growth, or
