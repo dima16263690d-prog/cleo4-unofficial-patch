@@ -18,6 +18,8 @@
     <ClCompile Include="DebugUtils.Callbacks.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Opcodes.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Errors.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.StackScan.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Watches.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Leak.cpp"><Filter>source</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>

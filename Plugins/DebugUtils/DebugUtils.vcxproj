@@ -82,6 +82,8 @@
     <ClCompile Include="DebugUtils.Callbacks.cpp" />
     <ClCompile Include="DebugUtils.Opcodes.cpp" />
     <ClCompile Include="DebugUtils.Errors.cpp" />
+    <ClCompile Include="DebugUtils.StackScan.cpp" />
+    <ClCompile Include="DebugUtils.Watches.cpp" />
     <ClCompile Include="DebugUtils.Leak.cpp" />
     <ResourceCompile Include="DebugUtils.rc" />
   </ItemGroup>
