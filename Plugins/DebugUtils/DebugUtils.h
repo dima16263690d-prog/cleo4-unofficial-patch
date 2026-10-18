@@ -507,6 +507,10 @@ private:
         // The exact caller captured by the RwTextureRead entry hook, when that
         // hook is on and the caller is a mod/plugin (not the game). "mod.asi+0x1a2b".
         std::string exactCaller;
+        // True when exactCaller is the DIRECT caller of RwTextureRead (from the
+        // entry hook). False when it is only the nearest mod frame from the stack
+        // scan, which is a strong hint but not the proven call site.
+        bool exactCallerDirect = false;
         bool modulesScanned = false;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name

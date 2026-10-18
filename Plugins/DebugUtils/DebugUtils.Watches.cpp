@@ -1360,16 +1360,24 @@ void DebugUtils::RecordTextureReadFailure(const char* textureName, const void* e
     if (stored.exactCaller.empty())
     {
         std::string exact;
+        bool direct = false;
         if (exactCaller != nullptr)
         {
             exact = m_lastTextureExactCaller;
+            direct = !exact.empty();
             if (exact.empty())
                 exact = LabelForModCaller(exactCaller);
         }
         if (exact.empty() && !stored.modules.empty())
-            exact = stored.modules.front() + " (nearest mod frame, not the direct caller)";
+        {
+            exact = stored.modules.front();
+            direct = false;
+        }
         if (!exact.empty())
+        {
             stored.exactCaller = exact;
+            stored.exactCallerDirect = direct;
+        }
     }
 }
 
@@ -1455,14 +1463,21 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         }
 
         // The exact caller (RwTextureRead entry hook) is the strongest answer -
-        // the mod's own call site - so print it when present.
+        // the mod's own call site - so print it when present. When it is only the
+        // nearest mod frame from the scan, say so rather than claim 100%.
         for (const auto* entry : group)
         {
             if (!entry->second.exactCaller.empty())
             {
-                WriteFrameTime(
-                    "    exact caller: %s  (captured at RwTextureRead, 100%% exact)",
-                    entry->second.exactCaller.c_str());
+                if (entry->second.exactCallerDirect)
+                    WriteFrameTime(
+                        "    exact caller: %s  (captured at RwTextureRead, 100%% exact)",
+                        entry->second.exactCaller.c_str());
+                else
+                    WriteFrameTime(
+                        "    probable caller: %s  (nearest mod frame on the stack - a "
+                        "strong hint, not the direct caller)",
+                        entry->second.exactCaller.c_str());
                 break;
             }
         }
