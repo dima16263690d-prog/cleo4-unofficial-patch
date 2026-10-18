@@ -172,7 +172,13 @@ void __stdcall DebugUtils::OnGameBegin()
         s_instance->m_fileWatchRecords.clear();
         s_instance->m_fileWatchRecordOrder.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_textureReadMutex);
+        s_instance->m_textureReadFailures.clear();
+        s_instance->m_textureReadOrder.clear();
+    }
     s_instance->InstallFileOpenWatch();
+    s_instance->InstallTextureReadWatch();
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
@@ -197,7 +203,9 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteErrorReport("game_end");
     s_instance->WriteFileOpenReport(true);
     s_instance->WriteWatchedOpenReport(true);
+    s_instance->WriteTextureReadReport(true);
     s_instance->RemoveFileOpenWatch();
+    s_instance->RemoveTextureReadWatch();
     s_instance->SampleScriptMemoryLeaks();
     s_instance->WriteLeakReport("game_end");
     s_instance->FlushScriptRepeat();

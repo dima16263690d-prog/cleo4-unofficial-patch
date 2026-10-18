@@ -316,6 +316,7 @@ void DebugUtils::EndFrameTimeFrame()
         WriteErrorReport("interval");
         WriteFileOpenReport(false);
         WriteWatchedOpenReport(false);
+        WriteTextureReadReport(false);
     }
 }
 

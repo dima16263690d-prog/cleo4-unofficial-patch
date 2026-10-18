@@ -134,10 +134,11 @@ DebugUtils::DebugUtils()
         {
             WriteFrameTime(
                 "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
-                "watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
+                "texture_watch=%u watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
                 m_rwErrorWatchEnabled ? 1u : 0u,
                 m_errorModuleScanEnabled ? 1u : 0u,
                 m_fileWatchEnabled ? 1u : 0u,
+                m_textureWatchEnabled ? 1u : 0u,
                 m_fileWatchNames.size()
             );
         }
@@ -213,6 +214,7 @@ DebugUtils::~DebugUtils()
     CLEO_DebugSetCrashSnapshotEnabled(FALSE);
 
     RemoveFileOpenWatch();
+    RemoveTextureReadWatch();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -521,6 +523,18 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  есть. Маски: * и ?. Пример: particle.txd,*.txd,*.png"
             : "  Masks: * and ?. Example: particle.txd,*.txd,*.png");
     kv("DebugUtils.Errors", "FileWatchNames", "");
+    line("");
+    desc(ru ? "TextureWatch: 1 = перехватывать чтения текстур RenderWare и печатать"
+            : "TextureWatch: 1 = capture RenderWare texture reads and print the mod");
+    desc(ru ? "  мод, который вызвал E_RW_READTEXMASK (не удалось прочитать текстуру)."
+            : "  behind E_RW_READTEXMASK (unable to read Texture/Mask). The error");
+    desc(ru ? "  Ошибка ловится в момент чтения, поэтому стек мода ещё на месте"
+            : "  is caught at the read, so the mod's stack is still present - unlike");
+    desc(ru ? "  (в отличие от опроса ошибок через кадр). Патч только данных"
+            : "  the one-frame-later error poll. Data-only patch (a table pointer is");
+    desc(ru ? "  (подмена указателя), код не трогается. Только GTA SA 1.0 US."
+            : "  swapped), no code is modified. GTA SA 1.0 US only.");
+    kv("DebugUtils.Errors", "TextureWatch", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -927,6 +941,15 @@ void DebugUtils::LoadConfig()
     m_fileWatchEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "FileWatch",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Wrap RenderWare's native texture reader (RwGlobals.stdFunc[26]) to name the
+    // mod behind E_RW_READTEXMASK. Data-only patch, same safety model as FileWatch.
+    m_textureWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "TextureWatch",
             0,
             path.c_str()
         ) != 0;

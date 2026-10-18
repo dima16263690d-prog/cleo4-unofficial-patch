@@ -438,6 +438,37 @@ private:
     void RecordFileOpenFailure(const char* path);
     void WriteFileOpenReport(bool forceAll);
     static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
+
+    // Texture-read watch. RenderWare raises E_RW_READTEXMASK inside its native
+    // texture reader (RwGlobals.stdFunc[26], SA 0x4CD820), which runs while the
+    // game thread is inside a mod - so the *raising* stack is available there,
+    // unlike the error poll (one frame later, stack already gone). We swap that
+    // one table entry for our wrapper (a data-only patch, no code is touched) and
+    // capture the requester chain whenever the original reports failure, so the
+    // report can finally name the mod behind E_RW_READTEXMASK. Opt-in.
+    bool m_textureWatchEnabled = false;
+    bool m_textureWatchInstalled = false;
+    void* m_textureWatchSlot = nullptr;      // &RwGlobals.stdFunc[26]
+    void* m_textureWatchOriginalRead = nullptr;
+    struct TextureReadFailure
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        std::string lastScript;
+        std::vector<std::string> modules;
+        std::string chainVia;
+        bool modulesScanned = false;
+    };
+    std::map<std::string, TextureReadFailure> m_textureReadFailures;
+    std::vector<std::string> m_textureReadOrder;
+    std::mutex m_textureReadMutex;
+    void InstallTextureReadWatch();
+    void RemoveTextureReadWatch();
+    void RecordTextureReadFailure();
+    void WriteTextureReadReport(bool forceAll);
+    static int __cdecl TextureReadWatchRead(void* stream, void** texture, int length);
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;
