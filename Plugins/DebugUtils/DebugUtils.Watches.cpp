@@ -1222,7 +1222,7 @@ void DebugUtils::InstallTextureEntryHook()
         INT32 oldRel = 0;
         memcpy(&oldRel, tramp + relOffsets[r], sizeof(oldRel));
         const INT32 newRel = oldRel + static_cast<INT32>(
-            reinterpret_cast<DWORD>(target) - reinterpret_cast<DWORD>(tramp));
+            target - reinterpret_cast<DWORD>(tramp));
         memcpy(tramp + relOffsets[r], &newRel, sizeof(newRel));
     }
 
