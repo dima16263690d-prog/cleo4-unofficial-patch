@@ -500,7 +500,11 @@ private:
     void WriteErrorReport(const char* reason);
     static std::string CurrentScriptName();
     static DWORD CurrentScriptOpcode();
-    static std::vector<std::string> ScanErrorModules(size_t maxModules);
+    // Scans the live stack for return addresses in third-party modules. When
+    // `allStrict` is non-null it is set false if any accepted frame is verified
+    // only by a loose call pattern rather than a near CALL (E8).
+    static std::vector<std::string> ScanErrorModules(
+        size_t maxModules, bool* allStrict = nullptr);
 
     // Module attribution shared by the error report and the file watch.
     static bool IsIgnoredModuleHandle(HMODULE module);

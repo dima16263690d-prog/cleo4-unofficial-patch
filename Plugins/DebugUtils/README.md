@@ -245,20 +245,20 @@ its path is not under `Windows`. So a chain like
 means a D3D9 proxy (`d3d9.dll`) asked RenderWare for the file, called from a mod
 loader — the `d3d9.dll` frame is the immediate requester, not a system DLL.
 
-Each chain prints `chain via:` naming the mechanism that produced it, so the
-reader knows how much to trust it:
+Each chain prints `chain via:` naming the mechanism and how strongly it is
+verified, so the reader knows how much to trust it:
 
 - `unwind` — `RtlCaptureStackBackTrace`, a real unwind. Most trustworthy.
-- `scan-e8` — a stack scan where a candidate word is kept only if the five bytes
-  before it decode to a near `CALL` (the shape of a real return address). This is
-  the workhorse on 32-bit, where the frame-pointer unwind above often stops inside
-  the game EXE.
-- `scan` — the permissive raw stack scan, used only when the two above found
-  nothing. Treat it as a hint, not proof: it can pick up stale stack values.
+- `scan-e8` — a stack scan where every frame is preceded by a near `CALL` (the
+  exact shape of a return address). Strong.
+- `scan` — a stack scan where at least one frame is verified only by a looser
+  indirect-call pattern (`call [reg]`, `call [abs]`, …). Still a suspect, not
+  proof.
 
-32-bit Windows has no PE unwind tables (they are an x64/ARM64 feature) and the
-game/mods ship no PDBs, so DbgHelp's `StackWalk64` cannot do better than the
-frame-pointer walk here — it is deliberately not used.
+The scan is the workhorse on 32-bit, where the frame-pointer unwind above often
+stops inside the game EXE. 32-bit Windows has no PE unwind tables (they are an
+x64/ARM64 feature) and the game/mods ship no PDBs, so DbgHelp's `StackWalk64`
+cannot do better than the frame-pointer walk here — it is deliberately not used.
 
 Frames whose address is outside its module image, or whose preceding bytes do not
 decode to a call, are dropped; when those bytes cannot be read the frame is kept
@@ -341,10 +341,10 @@ lunar.png                              3     5    53 ~plg-sdk
 - `requested by:` is the concrete module that asked RenderWare to read the
   texture (needs `ModuleScan=1`), with the offset inside it — the "which mod"
   answer the error poll cannot give.
-- `chain via:` names the mechanism that produced the chain — `unwind`
-  (`RtlCaptureStackBackTrace`), `scan-e8` (a stack scan validated against the
-  preceding `CALL` opcode, the workhorse on 32-bit), or `scan` (permissive
-  fallback).
+- `chain via:` names how the chain was captured and verified — `unwind`
+  (`RtlCaptureStackBackTrace`), `scan-e8` (a stack scan where every frame is
+  preceded by a near `CALL`, the workhorse on 32-bit), or `scan` (a scan where at
+  least one frame matched only a looser call pattern).
 
 Like `FileWatch`, this is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped

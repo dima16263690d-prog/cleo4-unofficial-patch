@@ -161,8 +161,16 @@ namespace
     // drop those words: the address must lie inside its module image, and the
     // bytes just before it must decode to a call. When the preceding bytes cannot
     // be read the frame is kept - never drop a frame on uncertainty alone.
-    bool IsPlausibleReturnAddress(DWORD address, HMODULE module)
+    //
+    // `strictE8`, when non-null, is set true only for the strongest evidence: a
+    // near CALL (E8 rel32) immediately before the address. Indirect-call patterns
+    // and the cannot-read case set it false, so the caller can report how much of
+    // a chain is verified.
+    bool IsPlausibleReturnAddress(DWORD address, HMODULE module, bool* strictE8 = nullptr)
     {
+        if (strictE8 != nullptr)
+            *strictE8 = false;
+
         if (module == nullptr || address < 0x10000)
             return false;
 
@@ -183,7 +191,12 @@ namespace
             pre[i] = *reinterpret_cast<const BYTE*>(p);
         }
 
-        if (pre[5] == 0xE8)                             return true; // call rel32
+        if (pre[5] == 0xE8)
+        {
+            if (strictE8 != nullptr)
+                *strictE8 = true;
+            return true; // call rel32
+        }
         if (pre[6] == 0xFF && pre[5] == 0x15)           return true; // call [abs32]
         if (pre[2] == 0xFF && (pre[1] & 0xF8) == 0xD0)  return true; // call reg
         if (pre[2] == 0xFF && (pre[1] & 0xF8) == 0x10)  return true; // call [reg]
@@ -282,41 +295,6 @@ namespace
                 return reinterpret_cast<RtlCaptureStackBackTraceFn>(
                     reinterpret_cast<void*>(
                         GetProcAddress(ntdll, "RtlCaptureStackBackTrace")));
-            }
-
-            return nullptr;
-        }();
-
-        return cached;
-    }
-
-    typedef void(WINAPI* RtlCaptureContextFn)(PCONTEXT);
-
-    // RtlCaptureContext fills a CONTEXT for the current thread at the point of
-    // the call. Used to hand a live stack to the DbgHelp walker (which is
-    // FPO-aware and therefore reaches mod frames that the frame-pointer unwind
-    // misses). Resolved dynamically so no import is needed.
-    RtlCaptureContextFn ResolveCaptureContext()
-    {
-        static RtlCaptureContextFn cached = []() -> RtlCaptureContextFn
-        {
-            HMODULE kernel = GetModuleHandleA("kernel32.dll");
-            if (kernel != nullptr)
-            {
-                if (auto fn = reinterpret_cast<RtlCaptureContextFn>(
-                        reinterpret_cast<void*>(
-                            GetProcAddress(kernel, "RtlCaptureContext"))))
-                {
-                    return fn;
-                }
-            }
-
-            HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-            if (ntdll != nullptr)
-            {
-                return reinterpret_cast<RtlCaptureContextFn>(
-                    reinterpret_cast<void*>(
-                        GetProcAddress(ntdll, "RtlCaptureContext")));
             }
 
             return nullptr;
@@ -485,17 +463,21 @@ std::vector<std::string> DebugUtils::ModulesFromFrames(const DWORD* frames, size
 }
 
 // Module chain of the callers of this function, nearest first, ignoring the
-// game, CLEO and DebugUtils itself. Three mechanisms, best first:
+// game, CLEO and DebugUtils itself. Two mechanisms:
 //   1. RtlCaptureStackBackTrace - a real unwind, but on x86 it follows the frame
 //      pointer, which GTA/mods omit (FPO), so it often stops inside the EXE.
-//   2. An E8-validated stack scan over the live stack pointer: every candidate
-//      word is kept only if the five bytes before it decode to a near CALL, which
-//      is what a real return address looks like. This does not need a frame
-//      pointer, so it is what actually reaches mod frames on x86.
-//   3. A bounded permissive scan - last resort when (2) found nothing.
-// DbgHelp is deliberately NOT used: x86 Windows has no PE unwind tables (they
-// are an x64/ARM64 feature) and the game/mods ship no PDBs, so StackWalk64 just
-// falls back to the frame pointer here while costing a full SymInitialize.
+//   2. A stack scan over the live stack. Every accepted word must be a plausible
+//      return address (the preceding bytes decode to a call), which needs no frame
+//      pointer, so this is what actually reaches mod frames on x86.
+// DbgHelp is deliberately NOT used: x86 Windows has no PE unwind tables (they are
+// an x64/ARM64 feature) and the game/mods ship no PDBs, so StackWalk64 just falls
+// back to the frame pointer here while costing a full SymInitialize.
+//
+// The `via` label reports the *precision* of the winning chain:
+//   "unwind"  - RtlCaptureStackBackTrace;
+//   "scan-e8" - a scan where every frame is preceded by a near CALL (strongest);
+//   "scan"    - a scan where at least one frame is verified only by a looser
+//               indirect-call pattern (still a suspect, not proof).
 std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, const char** via)
 {
     std::vector<std::string> modules;
@@ -523,30 +505,12 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
         }
     }
 
-    // E8-validated scan. Take the live stack pointer from a CONTEXT (no frame
-    // pointer needed) and let the same validated scanner the crash path uses
-    // walk it: a word is a frame only if a near CALL precedes it.
-    const auto captureContext = ResolveCaptureContext();
-    if (captureContext != nullptr)
-    {
-        CONTEXT context = {};
-        context.ContextFlags = CONTEXT_FULL;
-        captureContext(&context);
+    bool allStrict = true;
+    modules = ScanErrorModules(maxFrames, &allStrict);
+    if (via != nullptr && !modules.empty())
+        *via = allStrict ? "scan-e8" : "scan";
 
-        const std::vector<DWORD> frames =
-            BuildHeuristicStackFrames(context.Esp, 0x2000u, 32u);
-
-        modules = ModulesFromFrames(frames.data(), frames.size(), maxFrames);
-        if (!modules.empty())
-        {
-            if (via != nullptr)
-                *via = "scan-e8";
-            return modules;
-        }
-    }
-
-    // Last resort: the permissive raw scan the error report uses.
-    return ScanErrorModules(maxFrames);
+    return modules;
 }
 
 
@@ -585,14 +549,18 @@ DWORD DebugUtils::CurrentScriptOpcode()
 // the candidate third-party modules (mods/plugins/loaders) responsible for the
 // error. Uses the address of a local as the scan anchor, so it needs no
 // compiler-specific intrinsic. Read-only and bounded.
-std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
+std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules, bool* allStrict)
 {
     std::vector<std::string> modules;
 
+    if (allStrict != nullptr)
+        *allStrict = true;
+
     // Anchor on a local; on x86 the stack grows down, so higher addresses hold
-    // older (caller) frames. Scan a bounded window upward.
+    // older (caller) frames. Scan a bounded window upward. The window is wide
+    // enough to reach the outermost mod frame of a deep game/mod call chain.
     const DWORD anchor = reinterpret_cast<DWORD>(&modules);
-    constexpr DWORD kScanBytes = 0x2000;
+    constexpr DWORD kScanBytes = 0x4000;
 
     for (DWORD offset = 0; offset < kScanBytes; offset += sizeof(DWORD))
     {
@@ -618,8 +586,12 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules)
         if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
             continue;
 
-        if (!IsPlausibleReturnAddress(candidate, module))
+        bool strict = false;
+        if (!IsPlausibleReturnAddress(candidate, module, &strict))
             continue;
+
+        if (!strict && allStrict != nullptr)
+            *allStrict = false;
 
         PushUniqueFrame(modules, candidate);
 
