@@ -255,9 +255,10 @@ verified, so the reader knows how much to trust it:
 - `unwind` — `RtlCaptureStackBackTrace`, a real unwind. Most trustworthy.
 - `scan-e8` — a stack scan where every frame is preceded by a near `CALL` (the
   exact shape of a return address). Strong.
-- `scan` — a stack scan where at least one frame is verified only by a looser
-  indirect-call pattern (`call [reg]`, `call [abs]`, …). Still a suspect, not
-  proof.
+- `scan-e8 N/M (partial)` — a scan where N of M frames are E8-verified and the
+  rest matched only a looser indirect-call pattern (`call [reg]`, `call [abs]`,
+  …). The ratio says how much of the chain to trust.
+- `scan` — a scan where no frame is E8-verified. Weakest; a suspect, not proof.
 
 The scan is the workhorse on 32-bit, where the frame-pointer unwind above often
 stops inside the game EXE. 32-bit Windows has no PE unwind tables (they are an
@@ -347,8 +348,8 @@ lunar.png                              3     5    53 ~plg-sdk
   answer the error poll cannot give.
 - `chain via:` names how the chain was captured and verified — `unwind`
   (`RtlCaptureStackBackTrace`), `scan-e8` (a stack scan where every frame is
-  preceded by a near `CALL`, the workhorse on 32-bit), or `scan` (a scan where at
-  least one frame matched only a looser call pattern).
+  preceded by a near `CALL`, the workhorse on 32-bit), `scan-e8 N/M (partial)`
+  (only N of M frames are E8-verified), or `scan` (no frame is E8-verified).
 
 Like `FileWatch`, this is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped

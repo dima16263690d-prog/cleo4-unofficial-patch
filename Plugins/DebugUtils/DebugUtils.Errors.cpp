@@ -473,11 +473,12 @@ std::vector<std::string> DebugUtils::ModulesFromFrames(const DWORD* frames, size
 // an x64/ARM64 feature) and the game/mods ship no PDBs, so StackWalk64 just falls
 // back to the frame pointer here while costing a full SymInitialize.
 //
-// The `via` label reports the *precision* of the winning chain:
-//   "unwind"  - RtlCaptureStackBackTrace;
-//   "scan-e8" - a scan where every frame is preceded by a near CALL (strongest);
-//   "scan"    - a scan where at least one frame is verified only by a looser
-//               indirect-call pattern (still a suspect, not proof).
+// The `via` label reports the *reliability* of the winning chain:
+//   "unwind"            - RtlCaptureStackBackTrace, a real unwind;
+//   "scan-e8"           - a scan where every frame is preceded by a near CALL;
+//   "scan-e8 N/M"       - a scan where N of M frames are E8-verified (the rest
+//                         matched only a looser indirect-call pattern);
+//   "scan"              - a scan where no frame is E8-verified (weakest).
 std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, const char** via)
 {
     std::vector<std::string> modules;
@@ -505,10 +506,25 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
         }
     }
 
-    bool allStrict = true;
-    modules = ScanErrorModules(maxFrames, &allStrict);
-    if (via != nullptr && !modules.empty())
-        *via = allStrict ? "scan-e8" : "scan";
+    size_t strict = 0;
+    size_t total = 0;
+    modules = ScanErrorModules(maxFrames, &strict, &total);
+
+    if (via != nullptr && total > 0)
+    {
+        if (strict == total)
+        {
+            *via = "scan-e8";
+        }
+        else
+        {
+            // Copied into a std::string by the caller before the next capture, so
+            // a per-thread buffer is safe and avoids a heap allocation here.
+            static thread_local char label[32];
+            sprintf_s(label, sizeof(label), "scan-e8 %zu/%zu (partial)", strict, total);
+            *via = label;
+        }
+    }
 
     return modules;
 }
@@ -549,12 +565,12 @@ DWORD DebugUtils::CurrentScriptOpcode()
 // the candidate third-party modules (mods/plugins/loaders) responsible for the
 // error. Uses the address of a local as the scan anchor, so it needs no
 // compiler-specific intrinsic. Read-only and bounded.
-std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules, bool* allStrict)
+std::vector<std::string> DebugUtils::ScanErrorModules(
+    size_t maxModules, size_t* strictCount, size_t* totalCount)
 {
     std::vector<std::string> modules;
 
-    if (allStrict != nullptr)
-        *allStrict = true;
+    size_t strict = 0;
 
     // Anchor on a local; on x86 the stack grows down, so higher addresses hold
     // older (caller) frames. Scan a bounded window upward. The window is wide
@@ -586,18 +602,23 @@ std::vector<std::string> DebugUtils::ScanErrorModules(size_t maxModules, bool* a
         if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
             continue;
 
-        bool strict = false;
-        if (!IsPlausibleReturnAddress(candidate, module, &strict))
+        bool frameStrict = false;
+        if (!IsPlausibleReturnAddress(candidate, module, &frameStrict))
             continue;
 
-        if (!strict && allStrict != nullptr)
-            *allStrict = false;
+        if (frameStrict)
+            ++strict;
 
         PushUniqueFrame(modules, candidate);
 
         if (modules.size() >= maxModules)
             break;
     }
+
+    if (strictCount != nullptr)
+        *strictCount = strict;
+    if (totalCount != nullptr)
+        *totalCount = modules.size();
 
     return modules;
 }

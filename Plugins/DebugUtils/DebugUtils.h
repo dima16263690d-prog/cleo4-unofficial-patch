@@ -501,10 +501,11 @@ private:
     static std::string CurrentScriptName();
     static DWORD CurrentScriptOpcode();
     // Scans the live stack for return addresses in third-party modules. When
-    // `allStrict` is non-null it is set false if any accepted frame is verified
-    // only by a loose call pattern rather than a near CALL (E8).
+    // `strictCount`/`totalCount` are non-null they receive how many accepted
+    // frames were verified by a near CALL (E8) and how many were accepted in
+    // total, so the caller can report a chain's reliability as a ratio.
     static std::vector<std::string> ScanErrorModules(
-        size_t maxModules, bool* allStrict = nullptr);
+        size_t maxModules, size_t* strictCount = nullptr, size_t* totalCount = nullptr);
 
     // Module attribution shared by the error report and the file watch.
     static bool IsIgnoredModuleHandle(HMODULE module);
