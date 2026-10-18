@@ -569,8 +569,8 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     kv("DebugUtils.Errors", "TextureExactCaller", "0");
     desc(ru ? "TextureEntryAddress: адрес RwTextureRead для перехвата входа (0 ="
             : "TextureEntryAddress: RwTextureRead address to hook (0 = built-in");
-    desc(ru ? "  встроенный 0x7F3AC0). Мод может звать обёртку игры (0x4C7510)."
-            : "  default 0x7F3AC0). A mod may call the game wrapper (0x4C7510).");
+    desc(ru ? "  встроенный 0x4C7510 - тот же адрес зовут игра и plugin-sdk)."
+            : "  default 0x4C7510 - the same address the game and plugin-sdk call).");
     kv("DebugUtils.Errors", "TextureEntryAddress", "0");
     line("");
 
@@ -1001,10 +1001,10 @@ void DebugUtils::LoadConfig()
             path.c_str()
         ) != 0;
 
-    // Optional override of the hooked entry. A mod may call either the game's
-    // RwTextureRead wrapper (plugin-sdk: 0x4C7510) or the RenderWare-core one
-    // (0x7F3AC0, the default). 0 = use the built-in default. Validated at install
-    // time (the log is open there), so a bad value cannot disable the hook.
+    // Optional override of the hooked entry (default 0x4C7510, the address both
+    // plugin-sdk's RwTextureRead and CVehicleModelInfo::FindTextureCB call). 0 =
+    // use the built-in default. Validated at install time (the log is open there),
+    // so a bad value cannot disable the hook.
     m_textureEntryAddress = static_cast<DWORD>(GetPrivateProfileIntA(
         "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str()));
 

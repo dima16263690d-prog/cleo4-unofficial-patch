@@ -460,7 +460,7 @@ private:
     static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
 
     // Texture-read watch. E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s")
-    // is raised by the *name-based* reader RwTextureRead (SA 0x7F3AC0) when its
+    // is raised by the *name-based* reader RwTextureRead (SA 0x4C7510) when its
     // read callback returns NULL - the only raiser that matches GTA SA's texture
     // path. The error poll runs one frame later, when the raising stack is gone,
     // so it cannot name the mod. We wrap that read callback (via the public

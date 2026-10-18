@@ -558,7 +558,7 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
 // RenderWare texture-read watch.
 //
 // E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s") is raised by the
-// *name-based* reader RwTextureRead (SA 1.0 US 0x7F3AC0) when its read callback
+// *name-based* reader RwTextureRead (SA 1.0 US 0x4C7510) when its read callback
 // returns NULL. The error poll in PollRenderWareError runs one frame later, when
 // the raising stack is already gone, so it cannot name the mod. We wrap that read
 // callback (through the public RwTextureGetReadCallBack/RwTextureSetReadCallBack,
@@ -579,11 +579,13 @@ namespace
     constexpr DWORD kGtaSa10RwTextureGetReadCallBack = 0x7F3520;
     constexpr DWORD kGtaSa10RwTextureSetReadCallBack = 0x7F3500;
 
-    // RenderWare-core entry of RwTextureRead (SA 1.0 US), next to RwTextureCreate
-    // at 0x7F37C0. Note plugin-sdk maps the *game's* RwTextureRead wrapper to
-    // 0x4C7510; a mod may call either, so the entry hook's target is
-    // ini-configurable (TextureEntryAddress) and this is only the default.
-    constexpr DWORD kGtaSa10RwTextureRead = 0x7F3AC0;
+    // Entry of RwTextureRead (SA 1.0 US). Verified against plugin-sdk
+    // (plugin_sa/game_sa/RenderWare.cpp): RwTextureRead() itself calls 0x4C7510,
+    // and CVehicleModelInfo::FindTextureCB calls the same address, so this is what
+    // mods and the game both hit. (An earlier guess of 0x7F3AC0 was wrong: that is
+    // RwTextureGenerateMipmapName's neighbourhood, which is why the entry hook
+    // refused it as "not relocatable".)
+    constexpr DWORD kGtaSa10RwTextureRead = 0x4C7510;
 
     typedef void* (__cdecl* RwTextureCallBackReadFn)(const char* name, const char* maskName);
     typedef RwTextureCallBackReadFn(__cdecl* RwTextureGetReadCallBackFn)(void);
@@ -946,6 +948,43 @@ void DebugUtils::InstallTextureEntryHook()
             static_cast<unsigned>(kGtaSa10RwTextureRead)
         );
         target = kGtaSa10RwTextureRead;
+    }
+
+    // A 5-byte entry JMP is not relocatable (the decoder refuses relative
+    // branches), and 0x4C7510 may itself be a thunk that jumps to the real body.
+    // Follow a simple `jmp rel32` / `jmp [abs32]` chain to the real entry so the
+    // hook installs on the function rather than on a stub. Bounded to a few hops.
+    for (int hop = 0; hop < 4; ++hop)
+    {
+        // Only read if the page is committed and readable: the address came from
+        // the ini, so a bad value must not fault here.
+        MEMORY_BASIC_INFORMATION peek{};
+        if (VirtualQuery(reinterpret_cast<void*>(target), &peek, sizeof(peek)) == 0 ||
+            peek.State != MEM_COMMIT ||
+            (peek.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY |
+                             PAGE_EXECUTE)) == 0)
+        {
+            break;
+        }
+
+        const BYTE* p = reinterpret_cast<const BYTE*>(target);
+        if (p[0] == 0xE9) // jmp rel32
+        {
+            INT32 rel = 0;
+            memcpy(&rel, p + 1, sizeof(rel));
+            target = static_cast<DWORD>(target + 5 + rel);
+        }
+        else if (p[0] == 0xFF && p[1] == 0x25) // jmp dword ptr [abs32]
+        {
+            DWORD abs = 0;
+            memcpy(&abs, p + 2, sizeof(abs));
+            target = *reinterpret_cast<const DWORD*>(abs);
+        }
+        else
+        {
+            break;
+        }
     }
 
     // The target must be executable code inside the game image: patching a wrong

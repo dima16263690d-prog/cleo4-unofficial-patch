@@ -116,8 +116,8 @@ TextureWatch=0
 ; mod's own call site (100% exact) instead of scanning the stack. This is the
 ; ONLY code patch in the plugin; off by default. Requires TextureWatch=1.
 TextureExactCaller=0
-; Address of RwTextureRead to hook (0 = built-in default 0x7F3AC0). A mod may
-; call the game wrapper instead (plugin-sdk maps it to 0x4C7510).
+; Address of RwTextureRead to hook (0 = built-in default 0x4C7510, the address
+; both the game and plugin-sdk call).
 TextureEntryAddress=0
 
 [DebugUtils.General]
@@ -401,11 +401,11 @@ pointer swap), so it is off by default and guarded at every step:
 - any failure disables the hook and leaves the data-only callback watch and the
   labelled scan in charge.
 
-`TextureEntryAddress` overrides which entry is hooked (default `0x7F3AC0`, the
-RenderWare-core reader; plugin-sdk maps the game's wrapper to `0x4C7510`). A
-value that is not a game-image address (for example `1`, set as if it were an
-on/off switch) is ignored and the built-in default is used, so it cannot disable
-the hook by accident.
+`TextureEntryAddress` overrides which entry is hooked (default `0x4C7510`, the
+address both plugin-sdk's `RwTextureRead` and `CVehicleModelInfo::FindTextureCB`
+call). A value that is not a game-image address (for example `1`, set as if it
+were an on/off switch) is ignored and the built-in default is used, so it cannot
+disable the hook by accident.
 
 The callback/stream watch is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped
