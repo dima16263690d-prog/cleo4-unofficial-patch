@@ -217,6 +217,29 @@ bool DebugUtils::IsSystemModuleHandle(HMODULE module)
     return false;
 }
 
+// True when the running game image is Large Address Aware (the "4GB patch"). Read
+// straight from the PE header so it reflects the actual file being run, not a
+// guess from the OS. A 32-bit process without the flag has a 2 GB user address
+// space; with it, ~4 GB - so this changes what "running out of memory" means.
+bool DebugUtils::IsLargeAddressAware()
+{
+    const HMODULE image = GetModuleHandleA(nullptr);
+    if (image == nullptr)
+        return false;
+
+    const BYTE* base = reinterpret_cast<const BYTE*>(image);
+    const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+
+    const IMAGE_NT_HEADERS* nt =
+        reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return false;
+
+    return (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
+}
+
 // "mod.asi+0x1a2b" - the module plus the offset inside it.
 std::string DebugUtils::FormatFrameLabel(DWORD address)
 {

@@ -1203,19 +1203,26 @@ void DebugUtils::WriteCoreMemorySummary()
             }
         }
 
-        // 32-bit GTA with the standard 2 GB user address space: near the limit
-        // fragmentation is expected, so flag the transition into the last 20%.
-        const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+        // 32-bit GTA's user address space: 2 GB normally, ~4 GB when the image is
+        // Large Address Aware (the "4GB patch"). Near the limit fragmentation is
+        // expected, so flag the transition into the last 20%. Reading the flag
+        // avoids reporting a 4GB-patched game as if it were about to die at 2 GB.
+        const bool largeAddressAware = IsLargeAddressAware();
+        const uint64_t kAddressSpaceBytes = largeAddressAware
+            ? 4ull * 1024ull * 1024ull * 1024ull
+            : 2ull * 1024ull * 1024ull * 1024ull;
         const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
         const uint64_t headroomBytes =
             privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
         const bool rotateActive = privateUsage >= (kAddressSpaceBytes * 80ull / 100ull);
 
         // Absolute headroom is easier to reason about than a percentage when a
-        // leak is suspected, so print it every interval.
+        // leak is suspected, so print it every interval. The address-space size is
+        // named because it depends on the LAA flag, not on the OS alone.
         WriteMemory(
-            "         limit=%s used=%.1f%% headroom=%s",
+            "         limit=%s (%s) used=%.1f%% headroom=%s",
             MemoryBytes(kAddressSpaceBytes).c_str(),
+            largeAddressAware ? "4GB patch / LAA" : "no LAA (2GB)",
             static_cast<double>(privateUsage) * 100.0 /
                 static_cast<double>(kAddressSpaceBytes),
             MemoryBytes(headroomBytes).c_str()
@@ -1240,8 +1247,9 @@ void DebugUtils::WriteCoreMemorySummary()
         if (rotateActive && !m_memoryRotateActive)
         {
             WriteMemory(
-                "[memory][warn] private usage %s is above 80%% of the 2 GB address space",
-                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
+                "[memory][warn] private usage %s is above 80%% of the %s address space",
+                MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str(),
+                largeAddressAware ? "4 GB (LAA)" : "2 GB"
             );
         }
         m_memoryRotateActive = rotateActive;

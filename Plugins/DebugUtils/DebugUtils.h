@@ -460,8 +460,8 @@ private:
     static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
 
     // Texture-read watch. E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s")
-    // is raised by the *name-based* reader RwTextureRead (SA 0x4C7510) when its
-    // read callback returns NULL - the only raiser that matches GTA SA's texture
+    // is raised by the *name-based* reader RwTextureRead (SA 1.0 US 0x7F3AC0) when
+    // its read callback returns NULL - the only raiser that matches GTA SA's texture
     // path. The error poll runs one frame later, when the raising stack is gone,
     // so it cannot name the mod. We wrap that read callback (via the public
     // RwTextureGetReadCallBack/RwTextureSetReadCallBack, SA 0x7F3520/0x7F3500) and
@@ -582,6 +582,12 @@ private:
     // system d3d9, ...). Such a frame is OS noise in a requester chain; a mod
     // that ships its own d3d9.dll lives in the game folder and is kept.
     static bool IsSystemModuleHandle(HMODULE module);
+    // True when the process has the IMAGE_FILE_LARGE_ADDRESS_AWARE flag, i.e. the
+    // game is 4GB-patched (LAA / "4gb_patch"). A 32-bit process without it gets
+    // only 2 GB of user address space; with it, ~4 GB. The memory limit, the
+    // leak-to-crash estimate and the fragmentation warnings all depend on which
+    // one is in effect, so it is read from the PE header of the running image.
+    static bool IsLargeAddressAware();
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
     // Turns a raw frame list (from any walker) into module labels, dropping the

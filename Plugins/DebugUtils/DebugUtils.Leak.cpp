@@ -577,8 +577,8 @@ void DebugUtils::WriteLeakReport(const char* reason)
     {
         // No script is leaking, but the process may still be. Do not answer
         // "none" while private bytes climb: name the process-level growth and
-        // how long until the 2 GB address-space limit, which is the number that
-        // actually matters for a 32-bit game.
+        // how long until the address-space limit (2 GB, or 4 GB with the LAA
+        // patch), which is the number that actually matters for a 32-bit game.
         unsigned long long privateGrowth = 0;
         double privateRatePerMin = 0.0;
         if (m_leakFirstPrivateBytes != 0 && privateBytes >= m_leakFirstPrivateBytes &&
@@ -631,8 +631,13 @@ void DebugUtils::WriteLeakReport(const char* reason)
                 }
             }
 
-            constexpr unsigned long long kAddressSpaceBytes =
-                2ull * 1024ull * 1024ull * 1024ull;
+            // 2 GB normally, ~4 GB with the Large Address Aware (4GB) patch. The
+            // estimate is meaningless if the wrong ceiling is assumed, so read the
+            // flag from the running image.
+            const bool largeAddressAware = IsLargeAddressAware();
+            const unsigned long long kAddressSpaceBytes = largeAddressAware
+                ? 4ull * 1024ull * 1024ull * 1024ull
+                : 2ull * 1024ull * 1024ull * 1024ull;
             if (privateRatePerMin > 0.0 && privateBytes < kAddressSpaceBytes)
             {
                 const double headroomMb =
@@ -642,8 +647,11 @@ void DebugUtils::WriteLeakReport(const char* reason)
                 if (minutesToLimit < 24.0 * 60.0)
                 {
                     WriteMemory(
-                        "[leak] at this rate the 2.00 GB limit is reached in ~%.0f "
+                        "[leak] at this rate the %.2f GB limit (%s) is reached in ~%.0f "
                         "min (%.1f h) - %s headroom left",
+                        static_cast<double>(kAddressSpaceBytes) /
+                            (1024.0 * 1024.0 * 1024.0),
+                        largeAddressAware ? "4GB patch / LAA" : "no LAA (2GB)",
                         minutesToLimit,
                         minutesToLimit / 60.0,
                         MemoryBytes(kAddressSpaceBytes - privateBytes).c_str()

@@ -558,7 +558,7 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
 // RenderWare texture-read watch.
 //
 // E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s") is raised by the
-// *name-based* reader RwTextureRead (SA 1.0 US 0x4C7510) when its read callback
+// *name-based* reader RwTextureRead (SA 1.0 US 0x7F3AC0) when its read callback
 // returns NULL. The error poll in PollRenderWareError runs one frame later, when
 // the raising stack is already gone, so it cannot name the mod. We wrap that read
 // callback (through the public RwTextureGetReadCallBack/RwTextureSetReadCallBack,
@@ -579,13 +579,19 @@ namespace
     constexpr DWORD kGtaSa10RwTextureGetReadCallBack = 0x7F3520;
     constexpr DWORD kGtaSa10RwTextureSetReadCallBack = 0x7F3500;
 
-    // Entry of RwTextureRead (SA 1.0 US). Verified against plugin-sdk
-    // (plugin_sa/game_sa/RenderWare.cpp): RwTextureRead() itself calls 0x4C7510,
-    // and CVehicleModelInfo::FindTextureCB calls the same address, so this is what
-    // mods and the game both hit. (An earlier guess of 0x7F3AC0 was wrong: that is
-    // RwTextureGenerateMipmapName's neighbourhood, which is why the entry hook
-    // refused it as "not relocatable".)
-    constexpr DWORD kGtaSa10RwTextureRead = 0x4C7510;
+    // Entry of RwTextureRead (SA 1.0 US). Verified against gta-reversed
+    // (source/game_sa/RenderWare/rw/rwcore.cpp: RwTextureRead = CallAndReturn<...,
+    // 0x7F3AC0>) and against dozens of independent projects (MTA:SA, fastman92
+    // limit adjuster, sa-render, skygfx, VehFuncs, gtaRenderHook, VCSPC): mods
+    // call 0x7F3AC0 directly to read a texture. plugin-sdk's RenderWare.cpp is
+    // WRONG here - it lists 0x4C7510 for RwTextureRead, but 0x4C7510 is
+    // CVehicleModelInfo::FindTextureCB (gta-reversed VehicleModelInfo.cpp:67,
+    // RH_ScopedInstall(FindTextureCB, 0x4C7510)) - the *find* callback the engine
+    // calls from inside RwTextureRead, which is why hooking it only ever named the
+    // game. The real E_RW_READTEXMASK raiser is RwTextureRead itself.
+    constexpr DWORD kGtaSa10RwTextureRead = 0x7F3AC0;
+    // 0x4C7510 is CVehicleModelInfo::FindTextureCB, not RwTextureRead: an ini
+    // override can point at it, but the built-in default is the real reader.
 
     typedef void* (__cdecl* RwTextureCallBackReadFn)(const char* name, const char* maskName);
     typedef RwTextureCallBackReadFn(__cdecl* RwTextureGetReadCallBackFn)(void);
@@ -1466,7 +1472,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
             "    exact-caller hook: active, %llu RwTextureRead call(s) seen so far%s",
             m_textureEntryHookCalls,
             m_textureEntryHookCalls == 0
-                ? " - no mod read a texture via 0x4C7510 yet, so only the stack "
+                ? " - no mod read a texture via 0x7F3AC0 yet, so only the stack "
                   "scan can name the requester"
                 : "");
     }
