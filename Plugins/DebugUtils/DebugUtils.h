@@ -471,6 +471,12 @@ private:
     bool m_textureWatchEnabled = false;
     bool m_textureReadCbInstalled = false;   // RwTextureRead read callback swapped
     void* m_textureReadCbOriginal = nullptr;
+    // Who owned the read/find callbacks *before* we swapped them. If either is not
+    // the game image, a mod (a texture/D3D9 proxy) had already replaced RenderWare's
+    // texture loader - a prime suspect for E_RW_READTEXMASK and for a texture
+    // loaded from the wrong place. Empty when it was the stock game callback.
+    std::string m_textureReadCbOwner;
+    std::string m_textureFindCbOwner;
     bool m_textureWatchInstalled = false;    // RwGlobals.stdFunc[26] swapped
     void* m_textureWatchSlot = nullptr;      // &RwGlobals.stdFunc[26]
     void* m_textureWatchOriginalRead = nullptr;

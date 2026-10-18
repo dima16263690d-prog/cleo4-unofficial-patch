@@ -578,6 +578,10 @@ namespace
     // touch code: RwTextureCallBackRead is RwTexture* cdecl (name, maskName).
     constexpr DWORD kGtaSa10RwTextureGetReadCallBack = 0x7F3520;
     constexpr DWORD kGtaSa10RwTextureSetReadCallBack = 0x7F3500;
+    // The find callback (RwTextureGetFindCallBack/SetFindCallBack). The engine
+    // installs CVehicleModelInfo::FindTextureCB here; a mod that swaps it changes
+    // how every texture name is resolved, so its owner is worth reporting.
+    constexpr DWORD kGtaSa10RwTextureGetFindCallBack = 0x7F34F0;
 
     // Entry of RwTextureRead (SA 1.0 US). Verified against gta-reversed
     // (source/game_sa/RenderWare/rw/rwcore.cpp: RwTextureRead = CallAndReturn<...,
@@ -596,6 +600,9 @@ namespace
     typedef void* (__cdecl* RwTextureCallBackReadFn)(const char* name, const char* maskName);
     typedef RwTextureCallBackReadFn(__cdecl* RwTextureGetReadCallBackFn)(void);
     typedef int(__cdecl* RwTextureSetReadCallBackFn)(RwTextureCallBackReadFn callBack);
+    // The find callback takes only the name (rwcore.h: RwTextureCallBackFind).
+    typedef void* (__cdecl* RwTextureCallBackFindFn)(const char* name);
+    typedef RwTextureCallBackFindFn(__cdecl* RwTextureGetFindCallBackFn)(void);
 
     typedef int(__cdecl* RwNativeTextureReadFn)(void* stream, void** texture, int length);
 
@@ -1038,8 +1045,36 @@ void DebugUtils::InstallTextureReadWatch()
 
     g_rwTextureReadCbOriginal = current;
     m_textureReadCbOriginal = reinterpret_cast<void*>(current);
+    // Who installed the read callback before us? If it is not the game image, a
+    // mod already replaced RenderWare's texture loader - the prime suspect.
+    {
+        const std::string owner = LabelAnyModule(reinterpret_cast<const void*>(current));
+        if (!owner.empty() && owner.compare(0, 12, "GTA_SA.exe+") != 0 &&
+            owner.compare(0, 11, "gta_sa.exe+") != 0)
+        {
+            m_textureReadCbOwner = owner;
+        }
+    }
     setReadCallback(&DebugUtils::TextureReadCallbackWatch);
     m_textureReadCbInstalled = true;
+
+    // Also record who owns the *find* callback: the engine uses
+    // CVehicleModelInfo::FindTextureCB, so anything else is a mod that changed
+    // texture-name resolution (a texture/D3D9 proxy is the usual culprit).
+    {
+        auto getFindCallback = reinterpret_cast<RwTextureGetFindCallBackFn>(
+            kGtaSa10RwTextureGetFindCallBack);
+        RwTextureCallBackFindFn findCb = getFindCallback();
+        if (findCb != nullptr)
+        {
+            const std::string owner = LabelAnyModule(reinterpret_cast<const void*>(findCb));
+            if (!owner.empty() && owner.compare(0, 12, "GTA_SA.exe+") != 0 &&
+                owner.compare(0, 11, "gta_sa.exe+") != 0)
+            {
+                m_textureFindCbOwner = owner;
+            }
+        }
+    }
 
     // 2) The stream reader RwGlobals.stdFunc[26] (the TXD-internal path). Optional:
     //    if the layout guard fails we still keep the callback watch above.
@@ -1475,6 +1510,25 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                 ? " - no mod read a texture via 0x7F3AC0 yet, so only the stack "
                   "scan can name the requester"
                 : "");
+    }
+    // If a mod had already replaced RenderWare's read/find callback, it is a prime
+    // suspect: it changes how every texture name resolves, so a failed read may be
+    // its doing (a texture looked up in the wrong place) rather than a missing file.
+    if (!m_textureReadCbOwner.empty())
+    {
+        WriteFrameTime(
+            "    WARNING: the RenderWare read callback was replaced by %s before "
+            "DebugUtils loaded - a texture-loader mod/proxy is the prime suspect",
+            m_textureReadCbOwner.c_str()
+        );
+    }
+    if (!m_textureFindCbOwner.empty())
+    {
+        WriteFrameTime(
+            "    WARNING: the RenderWare find callback was replaced by %s - texture "
+            "name resolution is not the stock engine's (wrong TXD/archive is possible)",
+            m_textureFindCbOwner.c_str()
+        );
     }
 
     for (const auto& chain : chainOrder)
