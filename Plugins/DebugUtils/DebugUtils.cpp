@@ -537,6 +537,22 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  Только GTA SA 1.0 US."
             : "  GTA SA 1.0 US only.");
     kv("DebugUtils.Errors", "TextureWatch", "0");
+    desc(ru ? "TextureExactCaller: 1 = точный виновник (перехват входа RwTextureRead)."
+            : "TextureExactCaller: 1 = exact culprit (RwTextureRead entry hook).");
+    desc(ru ? "  Стек сканируется приблизительно (может указать игру, а не мод)."
+            : "  The stack scan is approximate (it can name the game, not the mod).");
+    desc(ru ? "  Этот хук ставит JMP на вход функции, поэтому первый кадр ="
+            : "  This hook places a JMP at the function entry, so the first frame is");
+    desc(ru ? "  вызывающий мод, точно (100%). Требует TextureWatch=1."
+            : "  the calling mod, exactly (100%). Requires TextureWatch=1.");
+    desc(ru ? "  ЕДИНСТВЕННЫЙ патч кода в плагине; по умолчанию выключен."
+            : "  The ONLY code patch in this plugin; off by default.");
+    kv("DebugUtils.Errors", "TextureExactCaller", "0");
+    desc(ru ? "TextureEntryAddress: адрес RwTextureRead для перехвата входа (0 ="
+            : "TextureEntryAddress: RwTextureRead address to hook (0 = built-in");
+    desc(ru ? "  встроенный 0x7F3AC0). Мод может звать обёртку игры (0x4C7510)."
+            : "  default 0x7F3AC0). A mod may call the game wrapper (0x4C7510).");
+    kv("DebugUtils.Errors", "TextureEntryAddress", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -955,6 +971,25 @@ void DebugUtils::LoadConfig()
             0,
             path.c_str()
         ) != 0;
+
+    // Exact-caller entry hook: patch RwTextureRead's entry so the wrapper sees the
+    // mod's own call site (100% exact), instead of scanning the stack. Opt-in: it
+    // is the only code patch in this plugin, so it is off unless asked for.
+    m_textureEntryHookEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "TextureExactCaller",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Optional override of the hooked entry. A mod may call either the game's
+    // RwTextureRead wrapper (plugin-sdk: 0x4C7510) or the RenderWare-core one
+    // (0x7F3AC0, the default). 0 = use the built-in default.
+    {
+        const int addr = GetPrivateProfileIntA(
+            "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str());
+        m_textureEntryAddress = addr > 0 ? static_cast<DWORD>(addr) : 0;
+    }
 
     // Failed-open report. Default 1: when FileWatch is on, naming the file that
     // failed is the whole point. Set 0 to keep the rwfopen hook but stop the

@@ -455,6 +455,18 @@ private:
     bool m_textureWatchInstalled = false;    // RwGlobals.stdFunc[26] swapped
     void* m_textureWatchSlot = nullptr;      // &RwGlobals.stdFunc[26]
     void* m_textureWatchOriginalRead = nullptr;
+    // Exact-caller entry hook on RwTextureRead itself. A 5-byte JMP detour
+    // (no return address is pushed) so the wrapper's _ReturnAddress() is the
+    // caller of RwTextureRead - the mod that asked for the texture, exactly.
+    // Opt-in (TextureExactCaller=1) because it is the only code patch in this
+    // file; everything else is a data-only pointer swap.
+    bool m_textureEntryHookEnabled = false;
+    DWORD m_textureEntryAddress = 0;         // 0 = use the built-in default
+    bool m_textureEntryHookInstalled = false;
+    void* m_textureEntryTarget = nullptr;    // RwTextureRead entry (game image)
+    BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
+    void* m_textureEntryTrampoline = nullptr; // executable stub: saved bytes + JMP back
+    std::string m_lastTextureExactCaller;    // captured by the wrapper, read by Record
     struct TextureReadFailure
     {
         DWORD count = 0;
@@ -464,6 +476,9 @@ private:
         std::string lastScript;
         std::vector<std::string> modules;
         std::string chainVia;
+        // The exact caller captured by the RwTextureRead entry hook, when that
+        // hook is on and the caller is a mod/plugin (not the game). "mod.asi+0x1a2b".
+        std::string exactCaller;
         bool modulesScanned = false;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
@@ -471,10 +486,19 @@ private:
     std::mutex m_textureReadMutex;
     void InstallTextureReadWatch();
     void RemoveTextureReadWatch();
-    void RecordTextureReadFailure(const char* textureName);
+    // `exactCaller`, when non-null, is the return address of the mod that called
+    // RwTextureRead directly (from the entry hook); it is resolved to a
+    // "mod.asi+0x1a2b" label and stored as the row's exact caller.
+    void RecordTextureReadFailure(const char* textureName, const void* exactCaller = nullptr);
     void WriteTextureReadReport(bool forceAll);
     static void* __cdecl TextureReadCallbackWatch(const char* name, const char* maskName);
     static int __cdecl TextureReadWatchRead(void* stream, void** texture, int length);
+    static void* __cdecl TextureReadEntryWatch(const char* name, const char* maskName);
+    void InstallTextureEntryHook();
+    void RemoveTextureEntryHook();
+    // Resolve a caller address to "mod.asi+0x1a2b", or an empty string when it is
+    // the game, CLEO, DebugUtils or a system DLL (i.e. not an interesting answer).
+    static std::string LabelForModCaller(const void* address);
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;

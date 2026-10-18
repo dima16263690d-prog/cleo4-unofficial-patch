@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <intrin.h>
 #include <map>
 #include <string>
 #include <vector>
@@ -578,6 +579,12 @@ namespace
     constexpr DWORD kGtaSa10RwTextureGetReadCallBack = 0x7F3520;
     constexpr DWORD kGtaSa10RwTextureSetReadCallBack = 0x7F3500;
 
+    // RenderWare-core entry of RwTextureRead (SA 1.0 US), next to RwTextureCreate
+    // at 0x7F37C0. Note plugin-sdk maps the *game's* RwTextureRead wrapper to
+    // 0x4C7510; a mod may call either, so the entry hook's target is
+    // ini-configurable (TextureEntryAddress) and this is only the default.
+    constexpr DWORD kGtaSa10RwTextureRead = 0x7F3AC0;
+
     typedef void* (__cdecl* RwTextureCallBackReadFn)(const char* name, const char* maskName);
     typedef RwTextureCallBackReadFn(__cdecl* RwTextureGetReadCallBackFn)(void);
     typedef int(__cdecl* RwTextureSetReadCallBackFn)(RwTextureCallBackReadFn callBack);
@@ -587,6 +594,104 @@ namespace
     // Assigned during InstallTextureReadWatch, read on every intercepted call.
     RwNativeTextureReadFn g_rwTextureReadOriginal = nullptr;
     RwTextureCallBackReadFn g_rwTextureReadCbOriginal = nullptr;
+
+    // -----------------------------------------------------------------------
+    // Minimal x86 prologue length decoder, for the exact-caller entry hook.
+    //
+    // A 5-byte JMP detour must copy WHOLE instructions out of the target's
+    // prologue into a trampoline, so we need the byte length of the first
+    // instructions until we have >= 5 bytes. It only accepts instructions that
+    // are safe to relocate (no relative branch, which would change meaning when
+    // moved). Anything it does not fully understand returns 0, and the caller
+    // then refuses to hook - falling back to the labelled stack scan. Being
+    // conservative here is the whole safety story: a wrong length corrupts the
+    // game's code, a refused decode just disables a feature.
+    // -----------------------------------------------------------------------
+
+    // x86 ModRM: returns the number of bytes the modrm+disp consumes for the
+    // given modrm byte (0 when the byte is not a valid modrm).
+    int ModRmLength(BYTE modrm)
+    {
+        const BYTE mod = (modrm >> 6) & 3;
+        const BYTE rm = modrm & 7;
+
+        if (mod == 3)
+            return 1; // register operand, no disp
+
+        if (rm == 4)
+        {
+            // SIB follows; disp depends on mod and the SIB base.
+            if (mod == 0)
+                return 2; // modrm + sib (base!=5 -> no disp)
+            if (mod == 1)
+                return 3; // modrm + sib + disp8
+            return 6;     // mod==2: modrm + sib + disp32
+        }
+
+        if (rm == 5 && mod == 0)
+            return 5; // [disp32]
+        if (mod == 1)
+            return 2; // modrm + disp8
+        return 5;     // mod==2: modrm + disp32
+    }
+
+    // Length of the instruction at `code` in bytes, or 0 when it is not one we
+    // are willing to relocate. Only the prologue shapes seen in practice are
+    // handled; a miss disables the hook rather than risk a bad copy.
+    int InstructionLength(const BYTE* code)
+    {
+        const BYTE op = code[0];
+
+        // push/pop r32 (0x50-0x5F), push imm8/32, mov r32,imm32, sub/add esp.
+        if (op >= 0x50 && op <= 0x5F) return 1;
+        if (op == 0x6A) return 2;                    // push imm8
+        if (op == 0x68) return 5;                    // push imm32
+        if (op == 0xB8 || (op >= 0xB8 && op <= 0xBF)) return 5; // mov r32, imm32
+        if (op == 0x90) return 1;                    // nop
+
+        // 0x83 / 0x81: group1 r/m32, imm8 / imm32 (sub/add/and/or/xor/cmp).
+        if (op == 0x83 || op == 0x81)
+        {
+            const int modrm = ModRmLength(code[1]);
+            if (modrm == 0)
+                return 0;
+            return 1 + modrm + (op == 0x83 ? 1 : 4);
+        }
+
+        // 0x8B / 0x89 / 0x8D: mov/mov/lea r32, r/m32 (modrm + disp).
+        if (op == 0x8B || op == 0x89 || op == 0x8D || op == 0x03 || op == 0x2B)
+        {
+            const int modrm = ModRmLength(code[1]);
+            if (modrm == 0)
+                return 0;
+            return 1 + modrm;
+        }
+
+        // 0x55 push ebp, 0x8B 0xEC mov ebp,esp are covered above (0x55 -> push,
+        // 0x8B with modrm 0xEC -> mov reg,reg). Explicit immediates:
+        if (op == 0xC8) return 4; // enter imm16, imm8
+
+        // Anything with a 0x0F two-byte opcode, prefixes, or a relative branch is
+        // not relocated: refuse.
+        return 0;
+    }
+
+    // Number of whole bytes to copy so that at least `need` bytes are covered,
+    // or 0 when the prologue contains something we cannot relocate.
+    int PrologueLengthForJump(const BYTE* code, int need)
+    {
+        int total = 0;
+        while (total < need)
+        {
+            const int len = InstructionLength(code + total);
+            if (len <= 0)
+                return 0;
+            total += len;
+            if (total > 32) // sanity bound
+                return 0;
+        }
+        return total;
+    }
 }
 
 // Wraps RwTextureRead's read callback (the name-based path). A NULL return is
@@ -601,9 +706,62 @@ void* __cdecl DebugUtils::TextureReadCallbackWatch(const char* name, const char*
     void* texture = original(name, maskName);
 
     if (texture == nullptr && s_instance != nullptr)
-        s_instance->RecordTextureReadFailure(name);
+        s_instance->RecordTextureReadFailure(name, _ReturnAddress());
 
     return texture;
+}
+
+// Exact-caller entry hook. RwTextureRead's entry JMPs here (see
+// InstallTextureEntryHook), and because a JMP pushes no return address,
+// _ReturnAddress() is the *direct caller* of RwTextureRead - the mod that asked
+// for the texture. The original prologue was copied into a trampoline, so we run
+// it, then jump into the rest of RwTextureRead; the callback watch still fires
+// for a NULL result and reports the exact caller recorded here.
+void* __cdecl DebugUtils::TextureReadEntryWatch(const char* name, const char* maskName)
+{
+    // Remember the exact caller for the duration of the call, so the callback
+    // wrapper (which runs deeper, inside the game) can attribute the failure to
+    // this caller rather than to the game frame it sees.
+    if (s_instance != nullptr)
+        s_instance->m_lastTextureExactCaller = LabelForModCaller(_ReturnAddress());
+
+    typedef void* (__cdecl* RwTextureReadFn)(const char*, const char*);
+    auto trampoline = reinterpret_cast<RwTextureReadFn>(s_instance->m_textureEntryTrampoline);
+    if (trampoline == nullptr)
+        return nullptr;
+
+    void* texture = trampoline(name, maskName);
+
+    if (texture == nullptr && s_instance != nullptr)
+        s_instance->RecordTextureReadFailure(name, _ReturnAddress());
+
+    return texture;
+}
+
+// Resolve a caller address to "mod.asi+0x1a2b", or an empty string when it is
+// the game, CLEO, DebugUtils itself or a system DLL - i.e. not an interesting
+// answer. Reuses the same module filters as the stack scan so the label means the
+// same thing everywhere.
+std::string DebugUtils::LabelForModCaller(const void* address)
+{
+    const DWORD addr = reinterpret_cast<DWORD>(address);
+    if (addr < 0x10000)
+        return {};
+
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(addr),
+            &module) || module == nullptr)
+    {
+        return {};
+    }
+
+    if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
+        return {};
+
+    return FormatFrameLabel(addr);
 }
 
 int __cdecl DebugUtils::TextureReadWatchRead(void* stream, void** texture, int length)
@@ -706,6 +864,10 @@ void DebugUtils::InstallTextureReadWatch()
         m_textureReadCbInstalled ? 1u : 0u,
         m_textureWatchInstalled ? 1u : 0u
     );
+
+    // Optional exact-caller entry hook (opt-in). Runs after the data-only swaps so
+    // a refusal here still leaves the callback/stream watch working.
+    InstallTextureEntryHook();
 }
 
 void DebugUtils::RemoveTextureReadWatch()
@@ -736,9 +898,141 @@ void DebugUtils::RemoveTextureReadWatch()
         m_textureWatchOriginalRead = nullptr;
         g_rwTextureReadOriginal = nullptr;
     }
+
+    RemoveTextureEntryHook();
 }
 
-void DebugUtils::RecordTextureReadFailure(const char* textureName)
+// Install the exact-caller entry hook on RwTextureRead. This is the only code
+// patch in this file: a 5-byte JMP at the target's entry to TextureReadEntryWatch,
+// with the displaced prologue copied into an executable trampoline that jumps
+// back. A JMP pushes no return address, so inside the wrapper _ReturnAddress() is
+// the mod that called RwTextureRead - an exact answer, unlike the stack scan.
+//
+// Every step is guarded: the target must be inside the game image and executable,
+// the prologue must decode to relocatable instructions (else we refuse), and the
+// trampoline must allocate. Any failure just disables this hook and leaves the
+// data-only callback watch (and the labelled scan) in charge.
+void DebugUtils::InstallTextureEntryHook()
+{
+    if (!m_textureEntryHookEnabled || m_textureEntryHookInstalled)
+        return;
+
+    if (CLEO_GetGameVersion() != GV_US10)
+    {
+        WriteFrameTime(
+            "[texturewatch] exact caller disabled: RenderWare addresses are SA 1.0 US only"
+        );
+        return;
+    }
+
+    // Resolve the target: an explicit ini address wins (a mod may call either
+    // RwTextureRead wrapper); otherwise the RenderWare-core entry.
+    DWORD target = m_textureEntryAddress;
+    if (target == 0)
+        target = kGtaSa10RwTextureRead;
+
+    // The target must be executable code inside the game image: patching a wrong
+    // address would corrupt arbitrary memory.
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(reinterpret_cast<void*>(target), &info, sizeof(info)) == 0 ||
+        info.State != MEM_COMMIT ||
+        (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                         PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0 ||
+        info.Type != MEM_IMAGE ||
+        info.AllocationBase != GetModuleHandleA(nullptr))
+    {
+        WriteFrameTime(
+            "[texturewatch] exact caller disabled: 0x%08X is not executable game code",
+            static_cast<unsigned>(target)
+        );
+        return;
+    }
+
+    // Copy whole instructions covering at least the 5 bytes the JMP replaces.
+    const int prologue = PrologueLengthForJump(
+        reinterpret_cast<const BYTE*>(target), 5);
+    if (prologue <= 0)
+    {
+        WriteFrameTime(
+            "[texturewatch] exact caller disabled: prologue at 0x%08X is not "
+            "relocatable (only the stack scan will name the mod)",
+            static_cast<unsigned>(target)
+        );
+        return;
+    }
+
+    // Executable trampoline: the displaced prologue, then a JMP back to the
+    // first instruction after the patch.
+    BYTE* tramp = static_cast<BYTE*>(VirtualAlloc(
+        nullptr, prologue + 5, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (tramp == nullptr)
+    {
+        WriteFrameTime("[texturewatch] exact caller disabled: trampoline allocation failed");
+        return;
+    }
+
+    memcpy(tramp, reinterpret_cast<const void*>(target), prologue);
+    tramp[prologue] = 0xE9; // jmp rel32 back into RwTextureRead
+    const DWORD back = (target + prologue) - (reinterpret_cast<DWORD>(tramp) + prologue + 5);
+    memcpy(tramp + prologue + 1, &back, sizeof(back));
+
+    // Save the prologue, then overwrite it with jmp TextureReadEntryWatch.
+    memcpy(m_textureEntrySaved, reinterpret_cast<const void*>(target), 5);
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(target), 5, PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        WriteFrameTime("[texturewatch] exact caller disabled: could not make the entry writable");
+        return;
+    }
+
+    BYTE patch[5];
+    patch[0] = 0xE9;
+    const DWORD rel = reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) -
+                      (target + 5);
+    memcpy(patch + 1, &rel, sizeof(rel));
+    memcpy(reinterpret_cast<void*>(target), patch, sizeof(patch));
+    VirtualProtect(reinterpret_cast<void*>(target), 5, oldProtect, &oldProtect);
+
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(target), 5);
+
+    m_textureEntryTarget = reinterpret_cast<void*>(target);
+    m_textureEntryTrampoline = tramp;
+    m_textureEntryHookInstalled = true;
+
+    WriteFrameTime(
+        "[texturewatch] exact caller enabled: RwTextureRead at 0x%08X is hooked "
+        "(prologue %d byte(s)); the mod that requests a failed texture is named exactly",
+        static_cast<unsigned>(target), prologue
+    );
+}
+
+void DebugUtils::RemoveTextureEntryHook()
+{
+    if (!m_textureEntryHookInstalled || m_textureEntryTarget == nullptr)
+        return;
+
+    DWORD oldProtect = 0;
+    if (VirtualProtect(m_textureEntryTarget, 5, PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        memcpy(m_textureEntryTarget, m_textureEntrySaved, 5);
+        VirtualProtect(m_textureEntryTarget, 5, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), m_textureEntryTarget, 5);
+    }
+
+    if (m_textureEntryTrampoline != nullptr)
+    {
+        VirtualFree(m_textureEntryTrampoline, 0, MEM_RELEASE);
+        m_textureEntryTrampoline = nullptr;
+    }
+
+    m_textureEntryHookInstalled = false;
+    m_textureEntryTarget = nullptr;
+    m_lastTextureExactCaller.clear();
+}
+
+void DebugUtils::RecordTextureReadFailure(const char* textureName, const void* exactCaller)
 {
     const DWORD now = GetTickCount();
     const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
@@ -776,6 +1070,22 @@ void DebugUtils::RecordTextureReadFailure(const char* textureName)
     // Capture the chain only on the first failure of that texture, while the
     // raising frame is still on the stack; the scan cost is paid once per name.
     TextureReadFailure& stored = it->second;
+
+    // Prefer the exact caller from the RwTextureRead entry hook: it is the direct
+    // caller, so it beats any scan. Fall back to the string the wrapper left (the
+    // callback path, which runs deeper) when no address was passed.
+    if (!stored.modulesScanned || stored.exactCaller.empty())
+    {
+        std::string exact;
+        if (exactCaller != nullptr)
+            exact = LabelForModCaller(exactCaller);
+        else if (!m_lastTextureExactCaller.empty())
+            exact = m_lastTextureExactCaller;
+
+        if (!exact.empty())
+            stored.exactCaller = exact;
+    }
+
     if (!stored.modulesScanned)
     {
         stored.modulesScanned = true;
@@ -855,6 +1165,19 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
             if (!entry->second.chainVia.empty())
             {
                 WriteFrameTime("    chain via: %s", entry->second.chainVia.c_str());
+                break;
+            }
+        }
+
+        // The exact caller (RwTextureRead entry hook) is the strongest answer -
+        // the mod's own call site - so print it when present.
+        for (const auto* entry : group)
+        {
+            if (!entry->second.exactCaller.empty())
+            {
+                WriteFrameTime(
+                    "    exact caller: %s  (captured at RwTextureRead, 100%% exact)",
+                    entry->second.exactCaller.c_str());
                 break;
             }
         }

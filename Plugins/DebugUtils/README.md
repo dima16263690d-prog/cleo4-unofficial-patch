@@ -112,6 +112,13 @@ FileWatchFailures=1
 ; Name the mod behind E_RW_READTEXMASK (data-only patch, no code detour). The
 ; error is caught inside RwTextureRead, so the mod's stack is still present.
 TextureWatch=0
+; Exact culprit: place a JMP at RwTextureRead's entry so the wrapper sees the
+; mod's own call site (100% exact) instead of scanning the stack. This is the
+; ONLY code patch in the plugin; off by default. Requires TextureWatch=1.
+TextureExactCaller=0
+; Address of RwTextureRead to hook (0 = built-in default 0x7F3AC0). A mod may
+; call the game wrapper instead (plugin-sdk maps it to 0x4C7510).
+TextureEntryAddress=0
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -351,9 +358,40 @@ lunar.png                              3     5    53 ~plg-sdk
   preceded by a near `CALL`, the workhorse on 32-bit), `scan-e8 N/M (partial)`
   (only N of M frames are E8-verified), or `scan` (no frame is E8-verified).
 
-Like `FileWatch`, this is a **data-only patch**: the read callback pointer is
+### The exact culprit (TextureExactCaller)
+
+The chain above comes from a stack scan, which is a *suspect*, not proof. For an
+exact answer set `[DebugUtils.Errors] TextureExactCaller=1` (with
+`TextureWatch=1`). DebugUtils then places a 5-byte `JMP` at the entry of
+`RwTextureRead` itself. A `JMP` pushes no return address, so inside the wrapper
+`_ReturnAddress()` is the **direct caller** — the mod that asked for the texture,
+named with 100% certainty:
+
+```
+      requested by: mymod.asi+0x1a2b <- gta_sa.exe+0x730ed0
+      chain via: unwind
+      exact caller: mymod.asi+0x1a2b  (captured at RwTextureRead, 100% exact)
+```
+
+This is the **only code patch** in the plugin (everything else is a data-only
+pointer swap), so it is off by default and guarded at every step:
+
+- the target must be executable code inside the game image, else it is refused;
+- the displaced prologue must decode to *relocatable* whole instructions (the
+  decoder refuses on any relative branch or unknown opcode), and those bytes are
+  copied into an executable trampoline that jumps back — a naive 5-byte copy of
+  `55 8B EC 83 EC 18` would corrupt the function, so only whole instructions are
+  moved;
+- any failure disables the hook and leaves the data-only callback watch and the
+  labelled scan in charge.
+
+`TextureEntryAddress` overrides which entry is hooked (default `0x7F3AC0`, the
+RenderWare-core reader; plugin-sdk maps the game's wrapper to `0x4C7510`).
+
+The callback/stream watch is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped
-in place; no code is overwritten, and both are restored on unload. It is
+in place; no code is overwritten, and both are restored on unload. The optional
+exact-caller hook is the one exception (a code `JMP`, off by default). It is
 GTA SA 1.0 US only and refuses to install on any other version.
 
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
