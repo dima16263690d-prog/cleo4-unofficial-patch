@@ -488,16 +488,20 @@ std::vector<std::string> DebugUtils::ModulesFromFrames(const DWORD* frames, size
 // game, CLEO and DebugUtils itself. Three mechanisms, best first:
 //   1. RtlCaptureStackBackTrace - a real unwind, but on x86 it follows the frame
 //      pointer, which GTA/mods omit (FPO), so it often stops inside the EXE.
-//   2. DbgHelp StackWalk64 - FPO-aware (reads unwind data), so it reaches the
-//      mod frames the frame-pointer walk misses. Slower, so only used when (1)
-//      finds nothing.
-//   3. A bounded raw stack scan - last resort when DbgHelp is unavailable.
+//   2. An E8-validated stack scan over the live stack pointer: every candidate
+//      word is kept only if the five bytes before it decode to a near CALL, which
+//      is what a real return address looks like. This does not need a frame
+//      pointer, so it is what actually reaches mod frames on x86.
+//   3. A bounded permissive scan - last resort when (2) found nothing.
+// DbgHelp is deliberately NOT used: x86 Windows has no PE unwind tables (they
+// are an x64/ARM64 feature) and the game/mods ship no PDBs, so StackWalk64 just
+// falls back to the frame pointer here while costing a full SymInitialize.
 std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, const char** via)
 {
     std::vector<std::string> modules;
 
     if (via != nullptr)
-        *via = "scan (no unwind)";
+        *via = "scan";
 
     const auto capture = ResolveCaptureBackTrace();
     if (capture != nullptr)
@@ -517,18 +521,11 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
                 *via = "unwind";
             return modules;
         }
-
-        if (via != nullptr)
-        {
-            *via = count == 0
-                ? "scan (unwind empty)"
-                : "scan (unwind had no mod frame)";
-        }
     }
 
-    // FPO-aware walk. Build a CONTEXT for this thread and let the crash-path
-    // DbgHelp walker unwind it; it reads the PE unwind tables, so it does not
-    // need a frame pointer.
+    // E8-validated scan. Take the live stack pointer from a CONTEXT (no frame
+    // pointer needed) and let the same validated scanner the crash path uses
+    // walk it: a word is a frame only if a near CALL precedes it.
     const auto captureContext = ResolveCaptureContext();
     if (captureContext != nullptr)
     {
@@ -536,25 +533,19 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
         context.ContextFlags = CONTEXT_FULL;
         captureContext(&context);
 
-        EXCEPTION_RECORD record = {};
-        EXCEPTION_POINTERS pointers = {};
-        pointers.ExceptionRecord = &record;
-        pointers.ContextRecord = &context;
-
-        std::string diagnostics;
-        bool heuristic = false;
-        std::vector<DWORD> frames = BuildStackWalk(&pointers, 24, &diagnostics, &heuristic);
+        const std::vector<DWORD> frames =
+            BuildHeuristicStackFrames(context.Esp, 0x2000u, 32u);
 
         modules = ModulesFromFrames(frames.data(), frames.size(), maxFrames);
         if (!modules.empty())
         {
             if (via != nullptr)
-                *via = "dbghelp";
+                *via = "scan-e8";
             return modules;
         }
     }
 
-    // Last resort: the same raw stack scan the error report uses.
+    // Last resort: the permissive raw scan the error report uses.
     return ScanErrorModules(maxFrames);
 }
 

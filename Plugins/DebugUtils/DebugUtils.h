@@ -514,8 +514,8 @@ private:
     // game/CLEO/DebugUtils frames, system DLLs and implausible stale words.
     static std::vector<std::string> ModulesFromFrames(
         const DWORD* frames, size_t count, size_t maxFrames);
-    // `via`, when non-null, receives "unwind" or "scan" - which mechanism
-    // produced the chain - so the log can say how trustworthy it is.
+    // `via`, when non-null, receives the mechanism that produced the chain
+    // ("unwind", "scan-e8" or "scan") so the log can say how trustworthy it is.
     static std::vector<std::string> CaptureRequesterChain(
         size_t maxFrames, const char** via = nullptr);
 

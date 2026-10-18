@@ -249,14 +249,16 @@ Each chain prints `chain via:` naming the mechanism that produced it, so the
 reader knows how much to trust it:
 
 - `unwind` — `RtlCaptureStackBackTrace`, a real unwind. Most trustworthy.
-- `dbghelp` — the DbgHelp `StackWalk64` walker (the same one the crash report
-  uses). It reads the PE unwind tables, so unlike a frame-pointer walk it reaches
-  mod frames even when the game/mod was built without a frame pointer (FPO), which
-  is the norm for GTA SA and most `.asi` mods. This is why a chain that used to
-  fall back to `scan` now resolves.
-- `scan` — the bounded raw stack scan, used only when both unwinds returned
-  nothing. Treat it as a hint, not proof: it matches return-address-like words and
-  can pick up stale stack values.
+- `scan-e8` — a stack scan where a candidate word is kept only if the five bytes
+  before it decode to a near `CALL` (the shape of a real return address). This is
+  the workhorse on 32-bit, where the frame-pointer unwind above often stops inside
+  the game EXE.
+- `scan` — the permissive raw stack scan, used only when the two above found
+  nothing. Treat it as a hint, not proof: it can pick up stale stack values.
+
+32-bit Windows has no PE unwind tables (they are an x64/ARM64 feature) and the
+game/mods ship no PDBs, so DbgHelp's `StackWalk64` cannot do better than the
+frame-pointer walk here — it is deliberately not used.
 
 Frames whose address is outside its module image, or whose preceding bytes do not
 decode to a call, are dropped; when those bytes cannot be read the frame is kept
@@ -340,8 +342,9 @@ lunar.png                              3     5    53 ~plg-sdk
   texture (needs `ModuleScan=1`), with the offset inside it — the "which mod"
   answer the error poll cannot give.
 - `chain via:` names the mechanism that produced the chain — `unwind`
-  (`RtlCaptureStackBackTrace`), `dbghelp` (the FPO-aware DbgHelp walk, used when
-  the frame-pointer unwind misses the mod frame), or `scan` (bounded fallback).
+  (`RtlCaptureStackBackTrace`), `scan-e8` (a stack scan validated against the
+  preceding `CALL` opcode, the workhorse on 32-bit), or `scan` (permissive
+  fallback).
 
 Like `FileWatch`, this is a **data-only patch**: the read callback pointer is
 swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped
