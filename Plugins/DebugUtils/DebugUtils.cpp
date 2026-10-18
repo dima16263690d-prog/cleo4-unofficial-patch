@@ -528,12 +528,14 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
             : "TextureWatch: 1 = capture RenderWare texture reads and print the mod");
     desc(ru ? "  мод, который вызвал E_RW_READTEXMASK (не удалось прочитать текстуру)."
             : "  behind E_RW_READTEXMASK (unable to read Texture/Mask). The error");
-    desc(ru ? "  Ошибка ловится в момент чтения, поэтому стек мода ещё на месте"
-            : "  is caught at the read, so the mod's stack is still present - unlike");
-    desc(ru ? "  (в отличие от опроса ошибок через кадр). Патч только данных"
-            : "  the one-frame-later error poll. Data-only patch (a table pointer is");
-    desc(ru ? "  (подмена указателя), код не трогается. Только GTA SA 1.0 US."
-            : "  swapped), no code is modified. GTA SA 1.0 US only.");
+    desc(ru ? "  Ошибку поднимает RwTextureRead; перехват стоит на его callback,"
+            : "  is raised by RwTextureRead; the hook is on its read callback, so the");
+    desc(ru ? "  поэтому стек мода ещё на месте (в отличие от опроса ошибок через"
+            : "  mod's stack is still present - unlike the one-frame-later error poll.");
+    desc(ru ? "  кадр). Патч только данных (подмена указателей), код не трогается."
+            : "  Data-only patch (pointers are swapped), no code is modified.");
+    desc(ru ? "  Только GTA SA 1.0 US."
+            : "  GTA SA 1.0 US only.");
     kv("DebugUtils.Errors", "TextureWatch", "0");
     line("");
 

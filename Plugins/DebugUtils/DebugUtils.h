@@ -439,15 +439,19 @@ private:
     void WriteFileOpenReport(bool forceAll);
     static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
 
-    // Texture-read watch. RenderWare raises E_RW_READTEXMASK inside its native
-    // texture reader (RwGlobals.stdFunc[26], SA 0x4CD820), which runs while the
-    // game thread is inside a mod - so the *raising* stack is available there,
-    // unlike the error poll (one frame later, stack already gone). We swap that
-    // one table entry for our wrapper (a data-only patch, no code is touched) and
-    // capture the requester chain whenever the original reports failure, so the
-    // report can finally name the mod behind E_RW_READTEXMASK. Opt-in.
+    // Texture-read watch. E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s")
+    // is raised by the *name-based* reader RwTextureRead (SA 0x7F3AC0) when its
+    // read callback returns NULL - the only raiser that matches GTA SA's texture
+    // path. The error poll runs one frame later, when the raising stack is gone,
+    // so it cannot name the mod. We wrap that read callback (via the public
+    // RwTextureGetReadCallBack/RwTextureSetReadCallBack, SA 0x7F3520/0x7F3500) and
+    // the stream reader RwGlobals.stdFunc[26] (SA 0x4CD820, the TXD-internal path);
+    // both run while the game thread is inside the mod, so the requester chain is
+    // captured at the right moment. Data-only swaps (no code is touched). Opt-in.
     bool m_textureWatchEnabled = false;
-    bool m_textureWatchInstalled = false;
+    bool m_textureReadCbInstalled = false;   // RwTextureRead read callback swapped
+    void* m_textureReadCbOriginal = nullptr;
+    bool m_textureWatchInstalled = false;    // RwGlobals.stdFunc[26] swapped
     void* m_textureWatchSlot = nullptr;      // &RwGlobals.stdFunc[26]
     void* m_textureWatchOriginalRead = nullptr;
     struct TextureReadFailure
@@ -461,13 +465,14 @@ private:
         std::string chainVia;
         bool modulesScanned = false;
     };
-    std::map<std::string, TextureReadFailure> m_textureReadFailures;
+    std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
     std::vector<std::string> m_textureReadOrder;
     std::mutex m_textureReadMutex;
     void InstallTextureReadWatch();
     void RemoveTextureReadWatch();
-    void RecordTextureReadFailure();
+    void RecordTextureReadFailure(const char* textureName);
     void WriteTextureReadReport(bool forceAll);
+    static void* __cdecl TextureReadCallbackWatch(const char* name, const char* maskName);
     static int __cdecl TextureReadWatchRead(void* stream, void** texture, int length);
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;

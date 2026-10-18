@@ -110,7 +110,7 @@ FileWatch=0
 ; silence it; set FileWatchFailures=0 to stop the block while keeping the hook.
 FileWatchFailures=1
 ; Name the mod behind E_RW_READTEXMASK (data-only patch, no code detour). The
-; error is caught at the texture read, so the mod's stack is still present.
+; error is caught inside RwTextureRead, so the mod's stack is still present.
 TextureWatch=0
 
 [DebugUtils.General]
@@ -308,32 +308,37 @@ files only.
 
 ### Naming the mod behind E_RW_READTEXMASK (TextureWatch)
 
-`E_RW_READTEXMASK` ("Unable to read Texture/Mask") is raised *inside* RenderWare's
-native texture reader. The error poll runs one frame later, when the raising stack
-is already gone, so it can only report the error, never the mod that caused it.
+`E_RW_READTEXMASK` ("Unable to read Texture/Mask") is raised by RenderWare's
+*name-based* reader `RwTextureRead` when its read callback returns NULL. The error
+poll runs one frame later, when the raising stack is already gone, so it can only
+report the error, never the mod that caused it.
 
-Set `[DebugUtils.Errors] TextureWatch=1` and DebugUtils wraps that single reader
-entry (`RwGlobals.stdFunc[26]`, SA 1.0 US `0x4CD820`). The wrapper calls the
-original and, whenever it reports failure, captures the requester chain *at that
-moment* — while the mod's frame is still on the stack:
+Set `[DebugUtils.Errors] TextureWatch=1` and DebugUtils wraps that read callback
+(`RwTextureGetReadCallBack`/`RwTextureSetReadCallBack`, SA 1.0 US `0x7F3520`/
+`0x7F3500`) and, as a secondary, the stream reader `RwGlobals.stdFunc[26]`
+(SA `0x4CD820`, the TXD-internal path). When a read fails, the requester chain is
+captured *at that moment* — while the mod's frame is still on the stack:
 
 ```
 ================= failed texture reads =================
-what                  count first  last script
-RwTextureRead             3     5    53 ~plg-sdk
+texture                            count first  last script
+lunar.png                              3     5    53 ~plg-sdk
       requested by: mymod.asi+0x1a2b <- gta_sa.exe+0x730ed0
       chain via: unwind
-[texturewatch] 1 failed read(s); these are the textures behind E_RW_READTEXMASK
+[texturewatch] 1 failed texture read(s); these are the textures behind E_RW_READTEXMASK
 ```
 
+- `texture` is the exact name that failed to read, so a missing/corrupt texture
+  is named directly.
 - `requested by:` is the concrete module that asked RenderWare to read the
   texture (needs `ModuleScan=1`), with the offset inside it — the "which mod"
   answer the error poll cannot give.
 - `chain via:` is `unwind` (real stack unwind, nearest frame is the actual
   caller) or `scan` (bounded fallback), the same marker the file watch uses.
 
-Like `FileWatch`, this is a **data-only patch**: one pointer in `RwGlobals` is
-swapped, no code is overwritten, and the original is restored on unload. It is
+Like `FileWatch`, this is a **data-only patch**: the read callback pointer is
+swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped
+in place; no code is overwritten, and both are restored on unload. It is
 GTA SA 1.0 US only and refuses to install on any other version.
 
 - RenderWare: RenderWare keeps the last error as an `RwError {pluginID,

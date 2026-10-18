@@ -1111,14 +1111,16 @@ void DebugUtils::WriteFileOpenReport(bool forceAll)
 // ---------------------------------------------------------------------------
 // RenderWare texture-read watch.
 //
-// E_RW_READTEXMASK is raised inside RenderWare's native texture reader, which
-// the game reaches through RwGlobals.stdFunc[26] (SA 1.0 US 0x4CD820). The error
-// poll in PollRenderWareError runs one frame later, when the raising stack is
-// already gone, so it cannot name the mod. Swapping this single table entry for
-// our wrapper runs while the game thread is still inside the mod that asked for
-// the texture, so the requester chain is captured at the right moment. It is a
-// data-only patch (one pointer in RwGlobals), like the rwfopen watch, so it
-// carries none of the risk of a code detour.
+// E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s") is raised by the
+// *name-based* reader RwTextureRead (SA 1.0 US 0x7F3AC0) when its read callback
+// returns NULL. The error poll in PollRenderWareError runs one frame later, when
+// the raising stack is already gone, so it cannot name the mod. We wrap that read
+// callback (through the public RwTextureGetReadCallBack/RwTextureSetReadCallBack,
+// SA 0x7F3520/0x7F3500) and, as a secondary, the stream reader
+// RwGlobals.stdFunc[26] (SA 0x4CD820, the TXD-internal path). Both run while the
+// game thread is inside the mod that asked for the texture, so the requester
+// chain is captured at the right moment. Both are data-only swaps (no code is
+// modified), like the rwfopen watch, so they carry none of the risk of a detour.
 // ---------------------------------------------------------------------------
 namespace
 {
@@ -1126,10 +1128,37 @@ namespace
     constexpr DWORD kGtaSa10RwEngineInstance = 0xC97B24;
     constexpr DWORD kRwStdFuncNativeTextureReadOffset = 0xB0;
 
+    // RwTextureRead's read callback, swapped through the public API so we never
+    // touch code: RwTextureCallBackRead is RwTexture* cdecl (name, maskName).
+    constexpr DWORD kGtaSa10RwTextureGetReadCallBack = 0x7F3520;
+    constexpr DWORD kGtaSa10RwTextureSetReadCallBack = 0x7F3500;
+
+    typedef void* (__cdecl* RwTextureCallBackReadFn)(const char* name, const char* maskName);
+    typedef RwTextureCallBackReadFn(__cdecl* RwTextureGetReadCallBackFn)(void);
+    typedef int(__cdecl* RwTextureSetReadCallBackFn)(RwTextureCallBackReadFn callBack);
+
     typedef int(__cdecl* RwNativeTextureReadFn)(void* stream, void** texture, int length);
 
-    // Assigned during InstallTextureReadWatch, read on every intercepted read.
+    // Assigned during InstallTextureReadWatch, read on every intercepted call.
     RwNativeTextureReadFn g_rwTextureReadOriginal = nullptr;
+    RwTextureCallBackReadFn g_rwTextureReadCbOriginal = nullptr;
+}
+
+// Wraps RwTextureRead's read callback (the name-based path). A NULL return is
+// exactly what makes RwTextureRead raise E_RW_READTEXMASK, and it happens while
+// the requesting mod is still on the stack.
+void* __cdecl DebugUtils::TextureReadCallbackWatch(const char* name, const char* maskName)
+{
+    RwTextureCallBackReadFn original = g_rwTextureReadCbOriginal;
+    if (original == nullptr)
+        return nullptr;
+
+    void* texture = original(name, maskName);
+
+    if (texture == nullptr && s_instance != nullptr)
+        s_instance->RecordTextureReadFailure(name);
+
+    return texture;
 }
 
 int __cdecl DebugUtils::TextureReadWatchRead(void* stream, void** texture, int length)
@@ -1140,112 +1169,145 @@ int __cdecl DebugUtils::TextureReadWatchRead(void* stream, void** texture, int l
 
     const int result = original(stream, texture, length);
 
-    // A false return is exactly the condition under which RenderWare raises
-    // E_RW_READTEXMASK ("Unable to read Texture/Mask"). Record the requester
-    // chain here, while the mod's frame is still on the stack.
+    // The stream (TXD-internal) path does not raise E_RW_READTEXMASK, but a false
+    // return still means a texture failed to read, so it is recorded too.
     if (result == 0 && s_instance != nullptr)
-        s_instance->RecordTextureReadFailure();
+        s_instance->RecordTextureReadFailure(nullptr);
 
     return result;
 }
 
 void DebugUtils::InstallTextureReadWatch()
 {
-    if (m_textureWatchInstalled || !m_textureWatchEnabled)
+    if (!m_textureWatchEnabled)
+        return;
+    if (m_textureReadCbInstalled || m_textureWatchInstalled)
         return;
 
-    // The RwGlobals layout is SA 1.0 US specific; refuse anything else rather
-    // than poke a wrong pointer and crash the game.
+    // The addresses are SA 1.0 US specific; refuse anything else rather than call
+    // a wrong pointer and crash the game.
     if (CLEO_GetGameVersion() != GV_US10)
     {
         WriteFrameTime(
-            "[texturewatch] disabled: RwGlobals layout is SA 1.0 US only"
+            "[texturewatch] disabled: RenderWare texture-read addresses are SA 1.0 US only"
         );
         return;
     }
 
-    void* rwGlobals = *reinterpret_cast<void**>(kGtaSa10RwEngineInstance);
-    if (rwGlobals == nullptr)
-    {
-        WriteFrameTime("[texturewatch] disabled: RwGlobals is null (engine not started)");
-        return;
-    }
+    // 1) The name-based reader's callback - the raiser of E_RW_READTEXMASK. This
+    //    is a public RW API, so swapping it is a data-only change.
+    auto getReadCallback = reinterpret_cast<RwTextureGetReadCallBackFn>(
+        kGtaSa10RwTextureGetReadCallBack);
+    auto setReadCallback = reinterpret_cast<RwTextureSetReadCallBackFn>(
+        kGtaSa10RwTextureSetReadCallBack);
 
-    void** slot = reinterpret_cast<void**>(
-        reinterpret_cast<uintptr_t>(rwGlobals) + kRwStdFuncNativeTextureReadOffset);
-
-    // Guard against a wrong layout: the entry we are about to replace must be
-    // executable code inside the game image. Replacing a data pointer and then
-    // calling it would crash, so refuse anything that is not executable.
+    RwTextureCallBackReadFn current = getReadCallback();
     {
         MEMORY_BASIC_INFORMATION info{};
-        if (*slot == nullptr ||
-            VirtualQuery(*slot, &info, sizeof(info)) == 0 ||
+        if (current == nullptr ||
+            VirtualQuery(reinterpret_cast<void*>(current), &info, sizeof(info)) == 0 ||
             (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
                              PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0)
         {
             WriteFrameTime(
-                "[texturewatch] disabled: RwGlobals.stdFunc[26] is not executable code"
+                "[texturewatch] disabled: RwTextureRead callback is not executable code"
             );
             return;
         }
     }
 
-    g_rwTextureReadOriginal = reinterpret_cast<RwNativeTextureReadFn>(*slot);
-    m_textureWatchOriginalRead = *slot;
-    m_textureWatchSlot = slot;
+    g_rwTextureReadCbOriginal = current;
+    m_textureReadCbOriginal = reinterpret_cast<void*>(current);
+    setReadCallback(&DebugUtils::TextureReadCallbackWatch);
+    m_textureReadCbInstalled = true;
 
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+    // 2) The stream reader RwGlobals.stdFunc[26] (the TXD-internal path). Optional:
+    //    if the layout guard fails we still keep the callback watch above.
+    void* rwGlobals = *reinterpret_cast<void**>(kGtaSa10RwEngineInstance);
+    if (rwGlobals != nullptr)
     {
-        g_rwTextureReadOriginal = nullptr;
-        m_textureWatchSlot = nullptr;
-        WriteFrameTime("[texturewatch] disabled: could not make the slot writable");
-        return;
+        void** slot = reinterpret_cast<void**>(
+            reinterpret_cast<uintptr_t>(rwGlobals) + kRwStdFuncNativeTextureReadOffset);
+
+        MEMORY_BASIC_INFORMATION info{};
+        if (*slot != nullptr &&
+            VirtualQuery(*slot, &info, sizeof(info)) != 0 &&
+            (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0)
+        {
+            g_rwTextureReadOriginal = reinterpret_cast<RwNativeTextureReadFn>(*slot);
+            m_textureWatchOriginalRead = *slot;
+            m_textureWatchSlot = slot;
+
+            DWORD oldProtect = 0;
+            if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+            {
+                *slot = reinterpret_cast<void*>(&DebugUtils::TextureReadWatchRead);
+                VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+                m_textureWatchInstalled = true;
+            }
+            else
+            {
+                g_rwTextureReadOriginal = nullptr;
+                m_textureWatchSlot = nullptr;
+            }
+        }
     }
 
-    *slot = reinterpret_cast<void*>(&DebugUtils::TextureReadWatchRead);
-    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
-
-    m_textureWatchInstalled = true;
     WriteFrameTime(
-        "[texturewatch] enabled: RenderWare texture reads are captured; a failed "
-        "read is reported with the mod that requested it"
+        "[texturewatch] enabled: RenderWare texture reads are captured "
+        "(read callback=%u, stream slot=%u); a failed read is reported with the "
+        "mod that requested it",
+        m_textureReadCbInstalled ? 1u : 0u,
+        m_textureWatchInstalled ? 1u : 0u
     );
 }
 
 void DebugUtils::RemoveTextureReadWatch()
 {
-    if (!m_textureWatchInstalled || m_textureWatchSlot == nullptr)
-        return;
-
-    auto* slot = reinterpret_cast<void**>(m_textureWatchSlot);
-
-    DWORD oldProtect = 0;
-    if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+    if (m_textureReadCbInstalled)
     {
-        *slot = m_textureWatchOriginalRead;
-        VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+        auto setReadCallback = reinterpret_cast<RwTextureSetReadCallBackFn>(
+            kGtaSa10RwTextureSetReadCallBack);
+        setReadCallback(reinterpret_cast<RwTextureCallBackReadFn>(m_textureReadCbOriginal));
+        m_textureReadCbInstalled = false;
+        m_textureReadCbOriginal = nullptr;
+        g_rwTextureReadCbOriginal = nullptr;
     }
 
-    m_textureWatchInstalled = false;
-    m_textureWatchSlot = nullptr;
-    m_textureWatchOriginalRead = nullptr;
-    g_rwTextureReadOriginal = nullptr;
+    if (m_textureWatchInstalled && m_textureWatchSlot != nullptr)
+    {
+        auto* slot = reinterpret_cast<void**>(m_textureWatchSlot);
+
+        DWORD oldProtect = 0;
+        if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+        {
+            *slot = m_textureWatchOriginalRead;
+            VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+        }
+
+        m_textureWatchInstalled = false;
+        m_textureWatchSlot = nullptr;
+        m_textureWatchOriginalRead = nullptr;
+        g_rwTextureReadOriginal = nullptr;
+    }
 }
 
-void DebugUtils::RecordTextureReadFailure()
+void DebugUtils::RecordTextureReadFailure(const char* textureName)
 {
     const DWORD now = GetTickCount();
     const DWORD uptimeSec = (now - m_memorySessionStartTick) / 1000u;
     const std::string script = CurrentScriptName();
 
+    // Key by texture name so the report says *which* texture failed as well as
+    // which mod asked for it; an unnamed read (stream path) collapses to one row.
+    const std::string key =
+        (textureName != nullptr && textureName[0] != '\0')
+            ? std::string(textureName)
+            : std::string("(unnamed texture read)");
+
     std::lock_guard<std::mutex> lock(m_textureReadMutex);
 
-    // One bucket for all failed reads (the reader is called per texture, so the
-    // key would be identical every time): the count plus the last chain is what
-    // names the requester.
-    const std::string key = "texture-read";
     auto it = m_textureReadFailures.find(key);
     if (it == m_textureReadFailures.end())
     {
@@ -1266,8 +1328,8 @@ void DebugUtils::RecordTextureReadFailure()
         failure.lastScript = script;
     }
 
-    // Capture the chain only on the first failure, while the raising frame is
-    // still on the stack; the scan cost is paid once.
+    // Capture the chain only on the first failure of that texture, while the
+    // raising frame is still on the stack; the scan cost is paid once per name.
     TextureReadFailure& stored = it->second;
     if (!stored.modulesScanned)
     {
@@ -1305,7 +1367,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         return;
 
     WriteFrameTime("================= failed texture reads =================");
-    WriteFrameTime("%-20s %6s %5s %5s %-16s", "what", "count", "first", "last", "script");
+    WriteFrameTime("%-34s %6s %5s %5s %-16s", "texture", "count", "first", "last", "script");
 
     size_t index = 0;
     for (const auto& key : order)
@@ -1317,9 +1379,13 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         const TextureReadFailure& failure = it->second;
         ++index;
 
+        std::string name = key;
+        if (name.size() > 34)
+            name = std::string("...") + name.substr(name.size() - 31);
+
         WriteFrameTime(
-            "%-20s %6u %5u %5u %-16s",
-            "RwTextureRead",
+            "%-34s %6u %5u %5u %-16s",
+            name.c_str(),
             static_cast<unsigned>(failure.count),
             static_cast<unsigned>(failure.firstUptimeSec),
             static_cast<unsigned>(failure.lastUptimeSec),
@@ -1351,7 +1417,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
     }
 
     WriteFrameTime(
-        "[texturewatch] %zu failed read(s); these are the textures behind "
+        "[texturewatch] %zu failed texture read(s); these are the textures behind "
         "E_RW_READTEXMASK",
         failures.size()
     );
