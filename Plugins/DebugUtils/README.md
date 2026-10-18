@@ -149,9 +149,13 @@ Each report shows, for the interval:
   (a load hitch, an alt-tab); a run is a real regression. 0 = off;
 - FrameBudgetMs: a frame budget in ms (0 = off). The report then states how many
   frames met it and the share, the single number that answers "does this build
-  hold the target FPS?";
+  hold the target FPS?". If the budget is set below ~4 ms (a target no 60 Hz build
+  can meet) the line is printed once and then suppressed, so it does not repeat
+  `0/N met` verbatim every interval;
 - the worst frames of the interval, with their logic_ms, active scripts and
-  uptime, so a hitch can be tied to a moment and a script count;
+  uptime, so a hitch can be tied to a moment and a script count. This table is
+  printed only when the interval actually stuttered (a frame at or above WarnMs);
+  on a smooth interval it would be 15 rows of ~16.7 ms noise;
 - streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
   average and peak bytes held, peak as a share of the budget, plus pending model
   requests (ms_numModelsRequested: avg/max, and the share of frames with a

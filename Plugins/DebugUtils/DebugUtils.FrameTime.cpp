@@ -534,30 +534,35 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             ? 100.0 * static_cast<double>(m_frameTimeBudgetMet) / static_cast<double>(judged)
             : 0.0;
         const double targetFps = 1000.0 / m_frameTimeBudgetMs;
-        WriteFrameTime(
-            "[fps] budget <=%.2f ms (%.0f FPS) met by %llu/%llu frames (%.2f%%), missed %llu",
-            m_frameTimeBudgetMs,
-            targetFps,
-            m_frameTimeBudgetMet,
-            judged,
-            metPct,
-            m_frameTimeBudgetMissed
-        );
 
-        // Guard against a config typo: a budget under ~4 ms asks for a target no
-        // 60 Hz build can meet, so "0% met" is the setting talking, not a fault.
-        // Say it once per session - it is a config remark, not a per-interval event.
-        if (m_frameTimeBudgetMs < 4.0 && m_frameTimeBudgetMet == 0 &&
-            !m_frameTimeBudgetNoteLogged)
+        // A budget under ~4 ms asks for a target no 60 Hz build can meet, so the
+        // "0/N met" line would repeat verbatim every interval. Print it once,
+        // together with the config note, then stay quiet - it is the setting
+        // talking, not a per-interval event.
+        const bool impossibleTarget = m_frameTimeBudgetMs < 4.0 && m_frameTimeBudgetMet == 0;
+        if (!(impossibleTarget && m_frameTimeBudgetNoteLogged))
         {
-            m_frameTimeBudgetNoteLogged = true;
             WriteFrameTime(
-                "[fps] note: FrameBudgetMs=%.2f asks for %.0f FPS, which no build at "
-                "this frame rate can meet - set it to your real target (16.67 for 60 "
-                "FPS, 8.33 for 120) or 0 to disable (this note is printed once)",
+                "[fps] budget <=%.2f ms (%.0f FPS) met by %llu/%llu frames (%.2f%%), missed %llu",
                 m_frameTimeBudgetMs,
-                targetFps
+                targetFps,
+                m_frameTimeBudgetMet,
+                judged,
+                metPct,
+                m_frameTimeBudgetMissed
             );
+
+            if (impossibleTarget)
+            {
+                m_frameTimeBudgetNoteLogged = true;
+                WriteFrameTime(
+                    "[fps] note: FrameBudgetMs=%.2f asks for %.0f FPS, which no build at "
+                    "this frame rate can meet - set it to your real target (16.67 for 60 "
+                    "FPS, 8.33 for 120) or 0 to disable (this line is printed once)",
+                    m_frameTimeBudgetMs,
+                    targetFps
+                );
+            }
         }
     }
 
@@ -657,9 +662,14 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         }
     }
 
-    // Worst frames of the interval, so a stutter can be tied to a moment/script count.
+    // Worst frames of the interval, so a stutter can be tied to a moment/script
+    // count. Only worth listing when the interval actually stuttered (a frame at
+    // or above WarnMs): on a smooth interval the top-15 are all ~16.7 ms and the
+    // table is pure noise. m_frameTimeWorst is sorted descending, so [0] is worst.
     const size_t listed = std::min<size_t>(m_frameTimeTopStutter, m_frameTimeWorstCount);
-    if (listed > 0)
+    const bool hadStutter =
+        listed > 0 && m_frameTimeWorst[0].periodMs >= static_cast<double>(m_frameTimeWarnMs);
+    if (hadStutter)
     {
         WriteFrameTime("---- worst frames ----");
         WriteFrameTime("%-3s %12s %12s %8s %9s %11s %8s",
