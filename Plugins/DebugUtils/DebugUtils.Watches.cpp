@@ -905,7 +905,14 @@ void* __cdecl DebugUtils::TextureReadEntryWatch(const char* name, const char* ma
     // wrapper (which runs deeper, inside the game) can attribute the failure to
     // this caller rather than to the game frame it sees.
     if (s_instance != nullptr)
+    {
         s_instance->m_lastTextureExactCaller = LabelForModCaller(_ReturnAddress());
+        // Also keep the raw label even when the direct caller is the game/CLEO:
+        // engine-initiated reads (the engine loading a .txd) reach RwTextureRead
+        // from the game, so the exact answer is "the engine", and the report must
+        // say so instead of silently falling back to the scan.
+        s_instance->m_lastTextureDirectCallerRaw = LabelAnyModule(_ReturnAddress());
+    }
 
     typedef void* (__cdecl* RwTextureReadFn)(const char*, const char*);
     auto trampoline = reinterpret_cast<RwTextureReadFn>(s_instance->m_textureEntryTrampoline);
@@ -950,6 +957,19 @@ std::string DebugUtils::LabelForModCaller(const void* address)
     }
 
     if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
+        return {};
+
+    return FormatFrameLabel(addr);
+}
+
+// Same as LabelForModCaller but without the "is it interesting" filters, so the
+// game and CLEO are labelled too. Used only for diagnostics: an engine-initiated
+// RwTextureRead (the engine loading a .txd) has no mod as its direct caller, and
+// this shows which engine function reached the read.
+std::string DebugUtils::LabelAnyModule(const void* address)
+{
+    const DWORD addr = reinterpret_cast<DWORD>(address);
+    if (addr < 0x10000)
         return {};
 
     return FormatFrameLabel(addr);
@@ -1367,6 +1387,10 @@ void DebugUtils::RecordTextureReadFailure(const char* textureName, const void* e
             direct = !exact.empty();
             if (exact.empty())
                 exact = LabelForModCaller(exactCaller);
+            // Not a mod: remember the raw direct caller so the report can say the
+            // engine (or CLEO) reached the read, not a mod.
+            if (exact.empty() && stored.directCallerRaw.empty())
+                stored.directCallerRaw = m_lastTextureDirectCallerRaw;
         }
         if (exact.empty() && !stored.modules.empty())
         {
@@ -1478,6 +1502,23 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         "    probable caller: %s  (nearest mod frame on the stack - a "
                         "strong hint, not the direct caller)",
                         entry->second.exactCaller.c_str());
+                break;
+            }
+        }
+
+        // When the direct caller of RwTextureRead was the engine or CLEO (not a
+        // mod), say which one: it means the engine loaded the .txd itself, so no
+        // mod is to blame and the mod frame above is only the requester's context.
+        for (const auto* entry : group)
+        {
+            if (entry->second.exactCallerDirect == false &&
+                !entry->second.directCallerRaw.empty())
+            {
+                WriteFrameTime(
+                    "    direct caller of RwTextureRead: %s (engine/CLEO-initiated "
+                    "read - the mod named above is only the nearest frame, not the "
+                    "requester)",
+                    entry->second.directCallerRaw.c_str());
                 break;
             }
         }

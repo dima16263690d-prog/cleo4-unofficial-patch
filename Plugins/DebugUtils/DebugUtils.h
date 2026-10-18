@@ -486,6 +486,11 @@ private:
     BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
     void* m_textureEntryTrampoline = nullptr; // executable stub: saved bytes + JMP back
     std::string m_lastTextureExactCaller;    // captured by the wrapper, read by Record
+    // The direct caller of RwTextureRead labelled even when it is the game or
+    // CLEO. The exact-caller field stays empty for engine-initiated reads (the
+    // engine loads the .txd, not the mod), so this says "GTA_SA.exe+0x..." and
+    // the report can explain why the answer is only the scanned mod frame.
+    std::string m_lastTextureDirectCallerRaw;
     // True while RwTextureRead's entry hook is running its trampoline. The read
     // callback fires inside that window; it must then NOT record the failure
     // itself, or every failed read would be counted twice (once by the callback,
@@ -511,6 +516,10 @@ private:
         // entry hook). False when it is only the nearest mod frame from the stack
         // scan, which is a strong hint but not the proven call site.
         bool exactCallerDirect = false;
+        // The raw direct caller (any module, incl. the game/CLEO) when the direct
+        // caller is NOT a mod - explains why exactCaller had to fall back to the
+        // scan ("the engine read this .txd, not a mod").
+        std::string directCallerRaw;
         bool modulesScanned = false;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
@@ -531,6 +540,10 @@ private:
     // Resolve a caller address to "mod.asi+0x1a2b", or an empty string when it is
     // the game, CLEO, DebugUtils or a system DLL (i.e. not an interesting answer).
     static std::string LabelForModCaller(const void* address);
+    // Like LabelForModCaller but without the game/CLEO/system filters: returns
+    // "module+0xoffset" for ANY mapped module, including the game. Used to show
+    // where an engine-initiated RwTextureRead actually came from.
+    static std::string LabelAnyModule(const void* address);
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;
