@@ -510,6 +510,10 @@ private:
     static bool IsSystemModuleHandle(HMODULE module);
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
+    // Turns a raw frame list (from any walker) into module labels, dropping the
+    // game/CLEO/DebugUtils frames, system DLLs and implausible stale words.
+    static std::vector<std::string> ModulesFromFrames(
+        const DWORD* frames, size_t count, size_t maxFrames);
     // `via`, when non-null, receives "unwind" or "scan" - which mechanism
     // produced the chain - so the log can say how trustworthy it is.
     static std::vector<std::string> CaptureRequesterChain(

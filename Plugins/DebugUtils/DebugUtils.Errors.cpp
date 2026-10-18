@@ -289,6 +289,41 @@ namespace
 
         return cached;
     }
+
+    typedef void(WINAPI* RtlCaptureContextFn)(PCONTEXT);
+
+    // RtlCaptureContext fills a CONTEXT for the current thread at the point of
+    // the call. Used to hand a live stack to the DbgHelp walker (which is
+    // FPO-aware and therefore reaches mod frames that the frame-pointer unwind
+    // misses). Resolved dynamically so no import is needed.
+    RtlCaptureContextFn ResolveCaptureContext()
+    {
+        static RtlCaptureContextFn cached = []() -> RtlCaptureContextFn
+        {
+            HMODULE kernel = GetModuleHandleA("kernel32.dll");
+            if (kernel != nullptr)
+            {
+                if (auto fn = reinterpret_cast<RtlCaptureContextFn>(
+                        reinterpret_cast<void*>(
+                            GetProcAddress(kernel, "RtlCaptureContext"))))
+                {
+                    return fn;
+                }
+            }
+
+            HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+            if (ntdll != nullptr)
+            {
+                return reinterpret_cast<RtlCaptureContextFn>(
+                    reinterpret_cast<void*>(
+                        GetProcAddress(ntdll, "RtlCaptureContext")));
+            }
+
+            return nullptr;
+        }();
+
+        return cached;
+    }
 }
 
 // True for the game, CLEO and DebugUtils itself: modules that are never the
@@ -412,10 +447,51 @@ void DebugUtils::PushUniqueFrame(std::vector<std::string>& modules, DWORD addres
         modules.push_back(label);
 }
 
+// Converts a raw frame list into module labels, dropping the game/CLEO/DebugUtils
+// frames, system DLLs and stale stack words. Shared by every capture mechanism so
+// they all attribute the same way.
+std::vector<std::string> DebugUtils::ModulesFromFrames(const DWORD* frames, size_t count, size_t maxFrames)
+{
+    std::vector<std::string> modules;
+
+    for (size_t i = 0; i < count && modules.size() < maxFrames; ++i)
+    {
+        const DWORD address = frames[i];
+        if (address < 0x10000)
+            continue;
+
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(address),
+                &module) || module == nullptr)
+        {
+            continue;
+        }
+
+        if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
+            continue;
+
+        // Drop stale stack words that a frame-pointer walk reports as frames:
+        // they land in large DLLs at offsets that are not the site of a call.
+        if (!IsPlausibleReturnAddress(address, module))
+            continue;
+
+        PushUniqueFrame(modules, address);
+    }
+
+    return modules;
+}
+
 // Module chain of the callers of this function, nearest first, ignoring the
-// game, CLEO and DebugUtils itself. Prefers RtlCaptureStackBackTrace (a real
-// unwind, so it does not pick up stale stack words); falls back to the
-// E8-return-address heuristic when the unwind is unavailable or empty.
+// game, CLEO and DebugUtils itself. Three mechanisms, best first:
+//   1. RtlCaptureStackBackTrace - a real unwind, but on x86 it follows the frame
+//      pointer, which GTA/mods omit (FPO), so it often stops inside the EXE.
+//   2. DbgHelp StackWalk64 - FPO-aware (reads unwind data), so it reaches the
+//      mod frames the frame-pointer walk misses. Slower, so only used when (1)
+//      finds nothing.
+//   3. A bounded raw stack scan - last resort when DbgHelp is unavailable.
 std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, const char** via)
 {
     std::vector<std::string> modules;
@@ -429,34 +505,12 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
         PVOID frames[32] = {};
         const USHORT count = capture(0, 32, frames, nullptr);
 
-        for (USHORT i = 0; i < count && modules.size() < maxFrames; ++i)
-        {
-            const DWORD address = reinterpret_cast<DWORD>(frames[i]);
-            if (address < 0x10000)
-                continue;
+        DWORD addresses[32] = {};
+        size_t used = 0;
+        for (USHORT i = 0; i < count && used < 32; ++i)
+            addresses[used++] = reinterpret_cast<DWORD>(frames[i]);
 
-            HMODULE module = nullptr;
-            if (!GetModuleHandleExA(
-                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                    reinterpret_cast<LPCSTR>(address),
-                    &module))
-            {
-                continue;
-            }
-
-            if (IsIgnoredModuleHandle(module) || IsSystemModuleHandle(module))
-                continue;
-
-            // Drop stale stack words that the frame-pointer walk reports as
-            // frames: they land in large DLLs (d3d9/OpenAL) at offsets that are
-            // not the site of a call, and they change between runs.
-            if (!IsPlausibleReturnAddress(address, module))
-                continue;
-
-            PushUniqueFrame(modules, address);
-        }
-
+        modules = ModulesFromFrames(addresses, used, maxFrames);
         if (!modules.empty())
         {
             if (via != nullptr)
@@ -464,10 +518,6 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
             return modules;
         }
 
-        // The unwind ran but nothing survived: on x86 it follows the frame
-        // pointer, and the game/mods are built without one (FPO), so it often
-        // stops inside the game EXE and never reaches the mod frame. Say which
-        // case it was so the reader knows how much to trust the chain.
         if (via != nullptr)
         {
             *via = count == 0
@@ -476,7 +526,35 @@ std::vector<std::string> DebugUtils::CaptureRequesterChain(size_t maxFrames, con
         }
     }
 
-    // Fallback: the same stack scan the error report uses.
+    // FPO-aware walk. Build a CONTEXT for this thread and let the crash-path
+    // DbgHelp walker unwind it; it reads the PE unwind tables, so it does not
+    // need a frame pointer.
+    const auto captureContext = ResolveCaptureContext();
+    if (captureContext != nullptr)
+    {
+        CONTEXT context = {};
+        context.ContextFlags = CONTEXT_FULL;
+        captureContext(&context);
+
+        EXCEPTION_RECORD record = {};
+        EXCEPTION_POINTERS pointers = {};
+        pointers.ExceptionRecord = &record;
+        pointers.ContextRecord = &context;
+
+        std::string diagnostics;
+        bool heuristic = false;
+        std::vector<DWORD> frames = BuildStackWalk(&pointers, 24, &diagnostics, &heuristic);
+
+        modules = ModulesFromFrames(frames.data(), frames.size(), maxFrames);
+        if (!modules.empty())
+        {
+            if (via != nullptr)
+                *via = "dbghelp";
+            return modules;
+        }
+    }
+
+    // Last resort: the same raw stack scan the error report uses.
     return ScanErrorModules(maxFrames);
 }
 
