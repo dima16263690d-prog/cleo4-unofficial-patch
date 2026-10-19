@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <array>
 #include <atomic>
+#include <unordered_map>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -564,6 +565,13 @@ private:
         // requester instead of freezing the first one forever.
         std::string lastScanCaller;
         bool modulesScanned = false;
+        // The model/txd being streamed when this texture read failed (from the
+        // ConvertBufferToObject hook), resolved to a file name. Empty when the
+        // streaming hook is off, the read did not happen inside a model
+        // conversion, or the name could not be resolved. "-1" model id and an
+        // empty name is normal for a non-streaming (engine/script) read.
+        std::string streamingModel;   // e.g. "comptwall36"
+        int streamingModelId = -1;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
     std::vector<std::string> m_textureReadOrder;
@@ -583,6 +591,16 @@ private:
     static void* __cdecl TextureReadEntryWatch(const char* name, const char* maskName);
     void InstallTextureEntryHook();
     void RemoveTextureEntryHook();
+    // Generic 5-byte JMP detour + restore. The only code patch in the plugin; used
+    // by the texture exact-caller hook and the streaming-model hook. `savedOut`
+    // receives the displaced prologue (5 bytes) for a later restore; `trampolineOut`
+    // receives the executable trampoline (never freed). Both refuse (return false)
+    // on any anomaly and leave the target untouched.
+    bool InstallEntryDetour(
+        DWORD target, const void* wrapper, BYTE savedOut[5],
+        void** trampolineOut, const char* label);
+    bool RemoveEntryDetour(
+        DWORD target, const void* wrapper, const BYTE saved[5], const char* label);
     // Resolve a caller address to "mod.asi+0x1a2b", or an empty string when it is
     // the game, CLEO, DebugUtils or a system DLL (i.e. not an interesting answer).
     static std::string LabelForModCaller(const void* address);
@@ -590,6 +608,33 @@ private:
     // "module+0xoffset" for ANY mapped module, including the game. Used to show
     // where an engine-initiated RwTextureRead actually came from.
     static std::string LabelAnyModule(const void* address);
+
+    // --- streaming-model attribution (DebugUtils.Streaming.cpp) -----------------
+    // Opt-in (StreamingModelNames=1): hook CStreaming::ConvertBufferToObject so a
+    // failed texture read can name the model/txd being streamed, and build a
+    // modelId -> file-name index from the IMG archives' directories (the game
+    // itself keeps only a name hash, never the string).
+    bool m_streamingModelNamesEnabled = false;
+    DWORD m_streamingModelAddress = 0;        // 0 = use the built-in default
+    bool m_streamingHookInstalled = false;
+    void* m_streamingTarget = nullptr;
+    BYTE m_streamingSaved[5] = {};
+    bool m_modelNameIndexBuilt = false;
+    std::unordered_map<int, std::string> m_modelNames; // modelId -> "comptwall36"
+    static char __cdecl ConvertBufferToObjectWatch(char* fileBuffer, int modelId, int channelIndex);
+    void InstallStreamingModelWatch();
+    void RemoveStreamingModelWatch();
+    void EnsureModelNameIndex();
+    void LoadImgNames(
+        const char* path,
+        const std::unordered_map<unsigned int, int>& modelByKey,
+        const std::unordered_map<unsigned int, int>& slotByHash);
+    static unsigned int KeyHashUpper(const char* str);
+    // The model currently being converted on the calling thread, or -1.
+    static int CurrentStreamingModelId();
+    // The file name behind a model id, or "" when unknown.
+    std::string ModelNameForId(int modelId);
+
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;

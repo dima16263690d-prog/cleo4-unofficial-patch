@@ -85,6 +85,7 @@
     <ClCompile Include="DebugUtils.StackScan.cpp" />
     <ClCompile Include="DebugUtils.Watches.cpp" />
     <ClCompile Include="DebugUtils.Leak.cpp" />
+    <ClCompile Include="DebugUtils.Streaming.cpp" />
     <ResourceCompile Include="DebugUtils.rc" />
   </ItemGroup>
   <ItemGroup>

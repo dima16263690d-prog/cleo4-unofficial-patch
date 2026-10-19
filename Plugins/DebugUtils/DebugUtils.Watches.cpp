@@ -943,60 +943,36 @@ void DebugUtils::RemoveTextureReadWatch()
     RemoveTextureEntryHook();
 }
 
-// Install the exact-caller entry hook on RwTextureRead. This is the only code
-// patch in this file: a 5-byte JMP at the target's entry to TextureReadEntryWatch,
-// with the displaced prologue copied into an executable trampoline that jumps
-// back. A JMP pushes no return address, so inside the wrapper _ReturnAddress() is
-// the mod that called RwTextureRead - an exact answer, unlike the stack scan.
+// Install a 5-byte JMP detour at `target`, redirecting to `wrapper`. The
+// displaced prologue is copied into an executable trampoline that jumps back to
+// the first instruction after the patch; `*trampolineOut` receives it (or stays
+// null on failure). `savedOut` keeps the original 5 bytes for a later restore.
 //
-// Every step is guarded: the target must be inside the game image and executable,
-// the prologue must decode to relocatable instructions (else we refuse), and the
-// trampoline must allocate. Any failure just disables this hook and leaves the
-// data-only callback watch (and the labelled scan) in charge.
-void DebugUtils::InstallTextureEntryHook()
+// Every step is guarded: the target must be committed, executable code inside the
+// game image, the prologue must decode to relocatable instructions (else we
+// refuse), and the trampoline must allocate. A failure returns false and leaves
+// the target untouched, so the caller can fall back to a data-only watch.
+//
+// A JMP pushes no return address, so inside the wrapper _ReturnAddress() is the
+// caller of the hooked function - an exact answer, unlike a stack scan. This is
+// the ONLY kind of code patch in the plugin.
+bool DebugUtils::InstallEntryDetour(
+    DWORD target,
+    const void* wrapper,
+    BYTE savedOut[5],
+    void** trampolineOut,
+    const char* label)
 {
-    if (!m_textureEntryHookEnabled || m_textureEntryHookInstalled)
-        return;
-
-    if (CLEO_GetGameVersion() != GV_US10)
-    {
-        WriteFrameTime(
-            "[texturewatch] exact caller disabled: RenderWare addresses are SA 1.0 US only"
-        );
-        return;
-    }
-
-    // Resolve the target: an explicit ini address wins (a mod may call either
-    // RwTextureRead wrapper); otherwise the RenderWare-core entry.
-    DWORD target = m_textureEntryAddress;
-    if (target == 0)
-        target = kGtaSa10RwTextureRead;
-
-    // A value that is not a plausible game-image address is a misconfiguration
-    // (e.g. set to 1 as "on"), not a request to patch there - fall back to the
-    // default rather than disabling the hook.
-    const HMODULE gameImage = GetModuleHandleA(nullptr);
-    const DWORD imageBase = reinterpret_cast<DWORD>(gameImage);
-    if (target < imageBase || target >= imageBase + 0x01000000)
-    {
-        WriteFrameTime(
-            "[texturewatch] TextureEntryAddress=0x%08X is outside the game image "
-            "(base 0x%08X); using the built-in default 0x%08X instead",
-            static_cast<unsigned>(target),
-            static_cast<unsigned>(imageBase),
-            static_cast<unsigned>(kGtaSa10RwTextureRead)
-        );
-        target = kGtaSa10RwTextureRead;
-    }
+    *trampolineOut = nullptr;
 
     // A 5-byte entry JMP is not relocatable (the decoder refuses relative
-    // branches), and 0x4C7510 may itself be a thunk that jumps to the real body.
+    // branches), and a target may itself be a thunk that jumps to the real body.
     // Follow a simple `jmp rel32` / `jmp [abs32]` chain to the real entry so the
     // hook installs on the function rather than on a stub. Bounded to a few hops.
     for (int hop = 0; hop < 4; ++hop)
     {
-        // Only read if the page is committed and readable: the address came from
-        // the ini, so a bad value must not fault here.
+        // Only read if the page is committed and readable: the address may come
+        // from the ini, so a bad value must not fault here.
         MEMORY_BASIC_INFORMATION peek{};
         if (VirtualQuery(reinterpret_cast<void*>(target), &peek, sizeof(peek)) == 0 ||
             peek.State != MEM_COMMIT ||
@@ -1037,11 +1013,11 @@ void DebugUtils::InstallTextureEntryHook()
         info.AllocationBase != GetModuleHandleA(nullptr))
     {
         WriteFrameTime(
-            "[texturewatch] exact caller disabled: 0x%08X is not executable game code "
-            "(only the stack scan will name the mod)",
+            "[%s] disabled: 0x%08X is not executable game code",
+            label,
             static_cast<unsigned>(target)
         );
-        return;
+        return false;
     }
 
     // Copy whole instructions covering at least the 5 bytes the JMP replaces.
@@ -1055,13 +1031,13 @@ void DebugUtils::InstallTextureEntryHook()
     {
         const BYTE* p = reinterpret_cast<const BYTE*>(target);
         WriteFrameTime(
-            "[texturewatch] exact caller disabled: prologue at 0x%08X is not "
-            "relocatable (bytes %02X %02X %02X %02X %02X %02X %02X %02X); only the "
-            "stack scan will name the mod",
+            "[%s] disabled: prologue at 0x%08X is not relocatable (bytes %02X %02X "
+            "%02X %02X %02X %02X %02X %02X)",
+            label,
             static_cast<unsigned>(target),
             p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
         );
-        return;
+        return false;
     }
 
     // Executable trampoline: the displaced prologue, then a JMP back to the
@@ -1070,8 +1046,8 @@ void DebugUtils::InstallTextureEntryHook()
         nullptr, prologue + 5, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (tramp == nullptr)
     {
-        WriteFrameTime("[texturewatch] exact caller disabled: trampoline allocation failed");
-        return;
+        WriteFrameTime("[%s] disabled: trampoline allocation failed", label);
+        return false;
     }
 
     memcpy(tramp, reinterpret_cast<const void*>(target), prologue);
@@ -1088,39 +1064,131 @@ void DebugUtils::InstallTextureEntryHook()
         memcpy(tramp + relOffsets[r], &newRel, sizeof(newRel));
     }
 
-    tramp[prologue] = 0xE9; // jmp rel32 back into RwTextureRead
+    tramp[prologue] = 0xE9; // jmp rel32 back into the original function
     const DWORD back = (target + prologue) - (reinterpret_cast<DWORD>(tramp) + prologue + 5);
     memcpy(tramp + prologue + 1, &back, sizeof(back));
 
-    // Save the prologue, then overwrite it with jmp TextureReadEntryWatch.
-    memcpy(m_textureEntrySaved, reinterpret_cast<const void*>(target), 5);
+    // Save the prologue, then overwrite it with jmp wrapper.
+    memcpy(savedOut, reinterpret_cast<const void*>(target), 5);
 
     DWORD oldProtect = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(target), 5, PAGE_EXECUTE_READWRITE, &oldProtect))
     {
         VirtualFree(tramp, 0, MEM_RELEASE);
-        WriteFrameTime("[texturewatch] exact caller disabled: could not make the entry writable");
-        return;
+        WriteFrameTime("[%s] disabled: could not make the entry writable", label);
+        return false;
     }
 
     BYTE patch[5];
     patch[0] = 0xE9;
-    const DWORD rel = reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) -
-                      (target + 5);
+    const DWORD rel = reinterpret_cast<DWORD>(wrapper) - (target + 5);
     memcpy(patch + 1, &rel, sizeof(rel));
     memcpy(reinterpret_cast<void*>(target), patch, sizeof(patch));
     VirtualProtect(reinterpret_cast<void*>(target), 5, oldProtect, &oldProtect);
 
     FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(target), 5);
 
+    *trampolineOut = tramp;
+    return true;
+}
+
+// Restore the prologue saved by InstallEntryDetour, but only when our own JMP is
+// still in place: if another hook was installed on top of ours, writing the saved
+// bytes back would silently delete that hook. The trampoline is deliberately NOT
+// freed - a thread may still be executing inside it, and leaking a few dozen bytes
+// is far safer than unmapping a page under a running thread.
+bool DebugUtils::RemoveEntryDetour(
+    DWORD target, const void* wrapper, const BYTE saved[5], const char* label)
+{
+    if (target == 0)
+        return false;
+
+    const BYTE* at = reinterpret_cast<const BYTE*>(target);
+    const DWORD expected = reinterpret_cast<DWORD>(wrapper) - (target + 5);
+    INT32 presentRel = 0;
+    memcpy(&presentRel, at + 1, sizeof(presentRel));
+    if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
+    {
+        WriteFrameTime(
+            "[%s] NOT removed: 0x%08X no longer holds our hook (another hook took "
+            "the slot); leaving it untouched",
+            label,
+            static_cast<unsigned>(target)
+        );
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    if (VirtualProtect(reinterpret_cast<void*>(target), 5, PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        memcpy(reinterpret_cast<void*>(target), saved, 5);
+        VirtualProtect(reinterpret_cast<void*>(target), 5, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(target), 5);
+    }
+    return true;
+}
+
+// Install the exact-caller entry hook on RwTextureRead. A JMP pushes no return
+// address, so inside the wrapper _ReturnAddress() is the mod that called
+// RwTextureRead - an exact answer, unlike the stack scan. Any failure just
+// disables this hook and leaves the data-only callback watch (and the labelled
+// scan) in charge.
+void DebugUtils::InstallTextureEntryHook()
+{
+    if (!m_textureEntryHookEnabled || m_textureEntryHookInstalled)
+
+        return;
+
+    if (CLEO_GetGameVersion() != GV_US10)
+    {
+        WriteFrameTime(
+            "[texturewatch] exact caller disabled: RenderWare addresses are SA 1.0 US only"
+        );
+        return;
+    }
+
+    // Resolve the target: an explicit ini address wins (a mod may call either
+    // RwTextureRead wrapper); otherwise the RenderWare-core entry.
+    DWORD target = m_textureEntryAddress;
+    if (target == 0)
+        target = kGtaSa10RwTextureRead;
+
+    // A value that is not a plausible game-image address is a misconfiguration
+    // (e.g. set to 1 as "on"), not a request to patch there - fall back to the
+    // default rather than disabling the hook.
+    const HMODULE gameImage = GetModuleHandleA(nullptr);
+    const DWORD imageBase = reinterpret_cast<DWORD>(gameImage);
+    if (target < imageBase || target >= imageBase + 0x01000000)
+    {
+        WriteFrameTime(
+            "[texturewatch] TextureEntryAddress=0x%08X is outside the game image "
+            "(base 0x%08X); using the built-in default 0x%08X instead",
+            static_cast<unsigned>(target),
+            static_cast<unsigned>(imageBase),
+            static_cast<unsigned>(kGtaSa10RwTextureRead)
+        );
+        target = kGtaSa10RwTextureRead;
+    }
+
+    void* trampoline = nullptr;
+    if (!InstallEntryDetour(
+            target,
+            reinterpret_cast<const void*>(&DebugUtils::TextureReadEntryWatch),
+            m_textureEntrySaved,
+            &trampoline,
+            "texturewatch"))
+    {
+        return;
+    }
+
     m_textureEntryTarget = reinterpret_cast<void*>(target);
-    g_textureEntryTrampoline = reinterpret_cast<RwTextureReadFn>(tramp);
+    g_textureEntryTrampoline = reinterpret_cast<RwTextureReadFn>(trampoline);
     m_textureEntryHookInstalled = true;
 
     WriteFrameTime(
-        "[texturewatch] exact caller enabled: RwTextureRead at 0x%08X is hooked "
-        "(prologue %d byte(s)); the mod that requests a failed texture is named exactly",
-        static_cast<unsigned>(target), prologue
+        "[texturewatch] exact caller enabled: RwTextureRead at 0x%08X is hooked; "
+        "the mod that requests a failed texture is named exactly",
+        static_cast<unsigned>(target)
     );
 }
 
@@ -1129,34 +1197,11 @@ void DebugUtils::RemoveTextureEntryHook()
     if (!m_textureEntryHookInstalled || m_textureEntryTarget == nullptr)
         return;
 
-    // Only undo the patch if our own JMP is still there. If another hook was
-    // installed on top of ours, restoring the saved prologue would silently
-    // delete the other hook's patch; leave it alone and say so instead.
-    const DWORD target = reinterpret_cast<DWORD>(m_textureEntryTarget);
-    const BYTE* at = reinterpret_cast<const BYTE*>(m_textureEntryTarget);
-    const DWORD expected =
-        reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) - (target + 5);
-    INT32 presentRel = 0;
-    memcpy(&presentRel, at + 1, sizeof(presentRel));
-    if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
-    {
-        WriteFrameTime(
-            "[texturewatch] exact caller NOT removed: 0x%08X no longer holds our "
-            "hook (another hook took the slot); leaving it untouched",
-            static_cast<unsigned>(target)
-        );
-        m_textureEntryHookInstalled = false;
-        m_textureEntryTarget = nullptr;
-        return;
-    }
-
-    DWORD oldProtect = 0;
-    if (VirtualProtect(m_textureEntryTarget, 5, PAGE_EXECUTE_READWRITE, &oldProtect))
-    {
-        memcpy(m_textureEntryTarget, m_textureEntrySaved, 5);
-        VirtualProtect(m_textureEntryTarget, 5, oldProtect, &oldProtect);
-        FlushInstructionCache(GetCurrentProcess(), m_textureEntryTarget, 5);
-    }
+    RemoveEntryDetour(
+        reinterpret_cast<DWORD>(m_textureEntryTarget),
+        reinterpret_cast<const void*>(&DebugUtils::TextureReadEntryWatch),
+        m_textureEntrySaved,
+        "texturewatch");
 
     // Do NOT VirtualFree the trampoline: a thread may be executing inside it
     // right now (the JMP that sent it there was still live until the line above),
@@ -1226,6 +1271,18 @@ void DebugUtils::RecordTextureReadFailure(
     // would report the wrong requester for every later failure. The scan cost is
     // paid only when the caller label actually changes, not per failure.
     TextureReadFailure& stored = it->second;
+
+    // Which model was being converted on this thread when the read failed? Set by
+    // the ConvertBufferToObject hook; -1 when the streaming hook is off or the read
+    // happened outside a model conversion (engine/script path). The name is
+    // resolved lazily (and cached in the record) so the IMG index is built at most
+    // once, on the first stream-time failure.
+    const int streamingModelId = CurrentStreamingModelId();
+    if (streamingModelId >= 0 && stored.streamingModelId != streamingModelId)
+    {
+        stored.streamingModelId = streamingModelId;
+        stored.streamingModel = ModelNameForId(streamingModelId);
+    }
 
     const std::string callerKey = callerIsDirect ? modCaller : rawCaller;
     if (!stored.modulesScanned || stored.lastScanCaller != callerKey)
@@ -1300,27 +1357,70 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
     if (changed.empty())
         return;
 
-    // Group the changed rows by their requester chain: many textures are read by
-    // the same mod, so the chain is printed once and the textures listed under it
-    // instead of repeating the identical "requested by" line per texture.
+    // Which modules are on EVERY chain? A frame that shows up in every chain is
+    // not the requester - it is a hook/wrapper that sits on the stack no matter
+    // what actually asked for the texture (e.g. the nested main-loop hooks of
+    // modloader, a HUD ASI, a SilentPatch-style mod). Naming such a module as the
+    // "probable caller" sends the reader after the wrong mod, so it is pulled out
+    // of the chain and labelled separately. Computed over ALL recorded chains (not
+    // just the changed rows) so the verdict is stable between reports.
+    std::set<std::string> alwaysOnStack;
+    {
+        std::map<std::string, size_t> moduleChainCount;
+        size_t chainsWithModules = 0;
+        for (const auto& kv : failures)
+        {
+            if (kv.second.modules.empty())
+                continue;
+            ++chainsWithModules;
+            std::set<std::string> seen;
+            for (const auto& module : kv.second.modules)
+            {
+                if (seen.insert(module).second)
+                    ++moduleChainCount[module];
+            }
+        }
+        // "Every chain" with a small tolerance (>= 80%), and only once there are
+        // enough chains for the notion to mean anything (with 2 chains any shared
+        // frame would look universal).
+        if (chainsWithModules >= 3)
+        {
+            const size_t threshold = (chainsWithModules * 8 + 9) / 10; // ceil(80%)
+            for (const auto& kv : moduleChainCount)
+            {
+                if (kv.second >= threshold)
+                    alwaysOnStack.insert(kv.first);
+            }
+        }
+    }
+
+    // Group the changed rows by the DISTINCTIVE part of their requester chain (the
+    // frames that are not on every chain): entries that differ only in the
+    // always-on-stack tail share the same requester, so they are grouped together
+    // and the main-loop tail is printed once per group.
     std::vector<std::string> chainOrder;
     std::map<std::string, std::vector<const std::pair<const std::string, TextureReadFailure>*>> byChain;
+    std::map<std::string, std::string> commonByChain; // group key -> main-loop tail
     for (const auto* entry : changed)
     {
-        std::string chain;
+        std::string distinctive;
+        std::string common;
         for (const auto& module : entry->second.modules)
         {
-            if (!chain.empty())
-                chain += " <- ";
-            chain += module;
+            std::string& target = alwaysOnStack.count(module) != 0 ? common : distinctive;
+            if (!target.empty())
+                target += " <- ";
+            target += module;
         }
-        if (chain.empty())
-            chain = "(no mod frame captured - enable ModuleScan)";
 
-        auto it = byChain.find(chain);
+        const std::string key = distinctive.empty()
+            ? std::string("(no requester frame captured)")
+            : distinctive;
+        auto it = byChain.find(key);
         if (it == byChain.end())
-            chainOrder.push_back(chain);
-        byChain[chain].push_back(entry);
+            chainOrder.push_back(key);
+        byChain[key].push_back(entry);
+        commonByChain[key] = common;
     }
 
     WriteFrameTime("================= failed texture reads =================");
@@ -1358,15 +1458,52 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
 
     for (const auto& chain : chainOrder)
     {
-        WriteFrameTime("  requested by: %s", chain.c_str());
+        const auto& group = byChain[chain];
+        const bool hasRequester = chain != "(no requester frame captured)";
+        const std::string& common = commonByChain[chain];
+        if (hasRequester)
+            WriteFrameTime("  requested by: %s", chain.c_str());
+        else if (common.empty())
+            WriteFrameTime(
+                "  requested by: (no mod frame captured - enable ModuleScan to "
+                "scan the stack at the failure)");
+        else
+            WriteFrameTime(
+                "  requested by: (no distinctive mod frame - every frame was on "
+                "all chains, so either the engine/streamer asked, or one mod "
+                "wraps every read; enable TextureExactCaller to tell them apart)");
+
+        // The always-present tail: frames that are on every chain, so they are NOT
+        // the requester. Printed separately so they are not mistaken for the culprit.
+        if (!common.empty())
+        {
+            WriteFrameTime(
+                "    also on stack every time (main-loop hook chain, NOT the "
+                "requester): %s",
+                common.c_str());
+        }
+
         // The chain method is the same for every texture under it, so it is stated
         // once, from the first entry that has one.
-        const auto& group = byChain[chain];
         for (const auto* entry : group)
         {
             if (!entry->second.chainVia.empty())
             {
                 WriteFrameTime("    chain via: %s", entry->second.chainVia.c_str());
+                break;
+            }
+        }
+
+        // A "partial" scan (fewer than half the frames confirmed by an E8 call)
+        // is a weak chain, so say so instead of presenting it as fact.
+        for (const auto* entry : group)
+        {
+            const std::string& via = entry->second.chainVia;
+            if (via.find("partial") != std::string::npos)
+            {
+                WriteFrameTime(
+                    "    note: this chain is only partially verified (most frames "
+                    "are not confirmed call sites), so treat the order with caution");
                 break;
             }
         }
@@ -1383,7 +1520,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         "    exact caller: %s  (direct caller of RwTextureRead, seen "
                         "at its entry hook)",
                         entry->second.exactCaller.c_str());
-                else
+                else if (hasRequester)
                     WriteFrameTime(
                         "    probable caller: %s  (nearest mod frame on the stack - a "
                         "strong hint, not the direct caller)",
@@ -1423,6 +1560,25 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                 static_cast<unsigned>(entry->second.lastUptimeSec),
                 entry->second.lastScript.empty() ? "?" : entry->second.lastScript.c_str()
             );
+
+            // Name the model/txd being streamed (StreamingModelNames=1). This is
+            // the file to look at: the texture was referenced by the model loaded
+            // at that moment, so a missing/misnamed texture points at this file.
+            if (entry->second.streamingModelId >= 0)
+            {
+                if (!entry->second.streamingModel.empty())
+                    WriteFrameTime(
+                        "        streamed model: %s (id %d) - the .txd/.dff that "
+                        "referenced this texture",
+                        entry->second.streamingModel.c_str(),
+                        entry->second.streamingModelId
+                    );
+                else
+                    WriteFrameTime(
+                        "        streamed model id: %d (name not in the IMG index)",
+                        entry->second.streamingModelId
+                    );
+            }
         }
     }
 
@@ -1478,7 +1634,8 @@ void DebugUtils::VerifyWatches()
 {
     // Nothing installed -> nothing to verify; skip even the tick check.
     if (!m_fileWatchInstalled && !m_textureReadCbInstalled &&
-        !m_textureWatchInstalled && !m_textureEntryHookInstalled)
+        !m_textureWatchInstalled && !m_textureEntryHookInstalled &&
+        !m_streamingHookInstalled)
         return;
 
     const DWORD now = GetTickCount();
@@ -1550,6 +1707,25 @@ void DebugUtils::VerifyWatches()
             );
             m_textureEntryHookInstalled = false;
             m_textureEntryTarget = nullptr;
+        }
+    }
+
+    if (m_streamingHookInstalled && m_streamingTarget != nullptr)
+    {
+        const BYTE* at = reinterpret_cast<const BYTE*>(m_streamingTarget);
+        INT32 presentRel = 0;
+        memcpy(&presentRel, at + 1, sizeof(presentRel));
+        const DWORD expected =
+            reinterpret_cast<DWORD>(&DebugUtils::ConvertBufferToObjectWatch) -
+            (reinterpret_cast<DWORD>(m_streamingTarget) + 5);
+        if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
+        {
+            WriteFrameTime(
+                "[streaming] our ConvertBufferToObject hook was replaced by another "
+                "hook; the streamed-model name is no longer captured (not re-installed)"
+            );
+            m_streamingHookInstalled = false;
+            m_streamingTarget = nullptr;
         }
     }
 }

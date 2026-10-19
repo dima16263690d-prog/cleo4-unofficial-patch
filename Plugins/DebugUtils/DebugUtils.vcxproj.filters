@@ -21,6 +21,7 @@
     <ClCompile Include="DebugUtils.StackScan.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Watches.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Leak.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Streaming.cpp"><Filter>source</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h"><Filter>source</Filter></ClInclude>

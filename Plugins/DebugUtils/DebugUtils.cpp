@@ -238,6 +238,7 @@ DebugUtils::~DebugUtils()
 
     RemoveFileOpenWatch();
     RemoveTextureReadWatch();
+    RemoveStreamingModelWatch();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -578,6 +579,25 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "  0x4C7510 у plugin-sdk - ошибка, это CVehicleModelInfo::FindTextureCB)."
             : "  0x4C7510 is a mistake - that is CVehicleModelInfo::FindTextureCB).");
     kv("DebugUtils.Errors", "TextureEntryAddress", "0");
+    line("");
+    desc(ru ? "StreamingModelNames: 1 = назвать модель/TXD, которая стримится, когда"
+            : "StreamingModelNames: 1 = name the model/TXD being streamed when a");
+    desc(ru ? "  чтение текстуры не удалось (для ошибок вида E_RW_READTEXMASK из"
+            : "  texture read fails (for errors like E_RW_READTEXMASK coming from the");
+    desc(ru ? "  потокового пути RwTextureStreamRead). Ставит хук на"
+            : "  RwTextureStreamRead stream path). Hooks CStreaming::ConvertBufferToObject");
+    desc(ru ? "  CStreaming::ConvertBufferToObject и строит индекс имён моделей из"
+            : "  and builds a model-name index from the IMG archives, so the report says");
+    desc(ru ? "  IMG-архивов: отчёт называет файл (напр. comptwall36), а не только"
+            : "  the file (e.g. comptwall36), not just the texture name. Второй патч кода;");
+    desc(ru ? "  имя текстуры. Требует TextureWatch=1. Второй патч кода; по умолчанию 0."
+            : "  requires TextureWatch=1. A second code patch; off by default.");
+    kv("DebugUtils.Errors", "StreamingModelNames", "0");
+    desc(ru ? "StreamingModelAddress: адрес ConvertBufferToObject (0 = встроенный"
+            : "StreamingModelAddress: ConvertBufferToObject address (0 = built-in");
+    desc(ru ? "  0x40C6B0, GTA SA 1.0 US)."
+            : "  default 0x40C6B0, GTA SA 1.0 US).");
+    kv("DebugUtils.Errors", "StreamingModelAddress", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -1013,6 +1033,23 @@ void DebugUtils::LoadConfig()
     // install time (the log is open there), so a bad value cannot disable the hook.
     m_textureEntryAddress = static_cast<DWORD>(GetPrivateProfileIntA(
         "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str()));
+
+    // Streaming-model attribution: hook CStreaming::ConvertBufferToObject so a
+    // failed texture read during streaming names the model/txd being loaded, and
+    // build the modelId -> file-name index from the IMG archives. Opt-in: it is a
+    // second code patch, so it is off unless asked for.
+    m_streamingModelNamesEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "StreamingModelNames",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Optional override of the hooked entry (default 0x40C6B0, SA 1.0 US). 0 = use
+    // the built-in default. Validated at install time (the log is open there), so a
+    // bad value cannot disable the hook.
+    m_streamingModelAddress = static_cast<DWORD>(GetPrivateProfileIntA(
+        "DebugUtils.Errors", "StreamingModelAddress", 0, path.c_str()));
 
     // Failed-open report. Default 1: when FileWatch is on, naming the file that
     // failed is the whole point. Set 0 to keep the rwfopen hook but stop the

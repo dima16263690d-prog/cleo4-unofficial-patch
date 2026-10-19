@@ -195,6 +195,7 @@ void __stdcall DebugUtils::OnGameBegin()
     }
     s_instance->InstallFileOpenWatch();
     s_instance->InstallTextureReadWatch();
+    s_instance->InstallStreamingModelWatch();
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
@@ -222,6 +223,7 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteTextureReadReport(true);
     s_instance->RemoveFileOpenWatch();
     s_instance->RemoveTextureReadWatch();
+    s_instance->RemoveStreamingModelWatch();
     // Do NOT sample here: CLEO dispatches GAME_END only after it has already run
     // RemoveAllCustomScripts() and Memory().OnGameEnd(), so the owner arena is
     // empty and a sample would retire every tracked script as RELEASED with 0
