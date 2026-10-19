@@ -193,6 +193,10 @@ void __stdcall DebugUtils::OnGameBegin()
         s_instance->m_textureReadFailures.clear();
         s_instance->m_textureReadOrder.clear();
     }
+    // The IMG files can change between sessions (a different install), so the
+    // name index must be rebuilt, not carried over from the previous game.
+    s_instance->m_modelNames.clear();
+    s_instance->m_modelNameIndexBuilt = false;
     s_instance->InstallFileOpenWatch();
     s_instance->InstallTextureReadWatch();
     s_instance->InstallStreamingModelWatch();
