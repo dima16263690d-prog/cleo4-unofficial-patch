@@ -24,6 +24,8 @@
 //
 // Verdicts are conservative and explained in the report:
 //   LEAK       - monotonic growth over several samples, never released.
+//   PLATEAU    - net growth, but the last several samples did not move (a pool
+//                or one-off buffer that filled, not an ongoing leak).
 //   SUSPECTED  - net growth over several samples but not strictly monotonic.
 //   STABLE     - it grows and shrinks (normal churn) or never moved.
 //   RELEASED   - it held memory before and has since dropped back to zero.
@@ -61,7 +63,33 @@ void DebugUtils::UpdateLeakEntry(
     }
 
     LeakScriptState& state = it->second;
-    if (!name.empty() && name != "none")
+
+    // A script pointer can be reused: CLEO frees a script and loads a new one at
+    // the same arena slot. The name is the only identity we have, so if it changed
+    // this is a DIFFERENT script - keeping the old history would blame the new
+    // script for the old one's growth. Retire the old state and start fresh.
+    const bool hasName = !name.empty() && name != "none";
+    if (hasName && !state.name.empty() && state.name != name)
+    {
+        LeakScriptState previous = state;
+        previous.releasedSince = true;
+        m_leakRetired[state.name] = std::move(previous);
+
+        LeakScriptState fresh;
+        fresh.name = name;
+        fresh.firstBytes = bytes;
+        fresh.lastBytes = bytes;
+        fresh.peakBytes = bytes;
+        fresh.firstBlocks = blocks;
+        fresh.lastBlocks = blocks;
+        fresh.firstUptimeSec = (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        fresh.lastUptimeSec = fresh.firstUptimeSec;
+        fresh.samples = 1;
+        state = std::move(fresh);
+        return;
+    }
+
+    if (hasName)
         state.name = name;
 
     state.lastUptimeSec = (GetTickCount() - m_memorySessionStartTick) / 1000u;
@@ -111,12 +139,16 @@ double DebugUtils::LeakConfidencePercent(
     double score = 0.0;
 
     // 1) Monotonicity - the dominant signal (up to 55 points). A release caps this
-    //    at a low value: a script that frees memory is churning, not leaking.
+    //    at a low value: a script that frees memory is churning, not leaking. A
+    //    flat tail (growth stopped several samples ago) decays the credit too, so
+    //    a pool that filled and plateaued does not keep scoring like a live leak.
     if (state.shrinkCount == 0)
     {
         const double streak = static_cast<double>(state.growthStreak);
         const double mono = streak / (streak + 2.0);   // 0.6 at 3, 0.83 at 10, 0.94 at 30
-        score += 55.0 * mono;
+        const double flat = static_cast<double>(state.flatStreak);
+        const double flatDecay = 1.0 / (1.0 + flat / 3.0); // 1 at 0, 0.5 at 3, 0.23 at 10
+        score += 55.0 * mono * flatDecay;
     }
     else
     {
@@ -436,14 +468,30 @@ void DebugUtils::WriteLeakReport(const char* reason)
             return;
         }
 
-        // Monotonic (never dropped) and grew on at least the required number of
-        // consecutive samples: that is the strong signature.
-        if (state.growthStreak >= kLeakMinSamples && state.flatStreak == 0)
+        // Monotonic (never dropped) AND grew on at least the required number of
+        // consecutive samples: that is the strong signature. A single release
+        // anywhere in the history disqualifies the LEAK verdict - a script that
+        // frees memory is churning, not leaking (it can still be SUSPECTED).
+        if (state.growthStreak >= kLeakMinSamples && state.flatStreak == 0 &&
+            state.shrinkCount == 0)
+        {
             verdict = "LEAK";
+        }
+        else if (state.shrinkCount == 0 && state.flatStreak >= kLeakMinSamples)
+        {
+            // Net growth but the last several samples did not move: a pool or
+            // one-off buffer that filled, not an ongoing leak. Without this it
+            // was reported as SUSPECTED forever.
+            verdict = "PLATEAU";
+        }
         else if (growthBytes >= m_leakMinGrowthBytes)
+        {
             verdict = "SUSPECTED";
+        }
         else
+        {
             verdict = "STABLE";
+        }
     };
 
     auto addRow = [&](const LeakScriptState& state)
@@ -738,12 +786,14 @@ void DebugUtils::WriteLeakReport(const char* reason)
 
     WriteMemory(
         "[leak] verdict guide: LEAK = grew every sample and was never released; "
+        "PLATEAU = grew then stopped (pool/buffer that filled, not a live leak); "
         "SUSPECTED = net growth but not monotonic; STABLE = normal churn; "
         "RELEASED = held memory earlier and has since freed it"
     );
     WriteMemory(
         "[leak] confidence%% = how sure this is a real leak: 100%% needs many "
         "consecutive growing samples, zero releases and a large growth; every "
-        "release (releases=N) cuts it hard, so a churning script scores low"
+        "release (releases=N) cuts it hard, and a flat tail (growth stopped) "
+        "decays it, so a churning or plateaued script scores low"
     );
 }

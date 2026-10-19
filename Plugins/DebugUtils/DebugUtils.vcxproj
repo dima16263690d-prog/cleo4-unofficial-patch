@@ -107,6 +107,7 @@
     <ClInclude Include="DebugUtils.Internal.h" />
     <ClInclude Include="DebugUtils.OpcodeNames.h" />
     <ClInclude Include="DebugUtils.RwErrorNames.h" />
+    <ClInclude Include="DebugUtils.X86Decoder.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h" />

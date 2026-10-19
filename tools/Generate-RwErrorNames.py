@@ -26,10 +26,17 @@ Run from the repository root:
 """
 
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_DIR = os.path.join(ROOT, "tools", "rw-error-names")
 OUT = os.path.join(ROOT, "Plugins", "DebugUtils", "DebugUtils.RwErrorNames.h")
+
+# The RenderWare messages are printf templates ("Error opening the file %s").
+# The monitor prints them as data (never as a format string), so the specifiers
+# are harmless - but they are meaningless in the log because the arguments were
+# never captured. Replace them with a neutral marker so the text reads cleanly.
+_FORMAT_SPEC = re.compile(r"%[-+ #0]*[0-9]*(?:\.[0-9]+)?[a-zA-Z%]")
 
 # The common-error enum starts at E_RW_NOERROR = 0x80000000 and then splices in
 # errcom.def, so entry i has value 0x80000000 + i.
@@ -58,6 +65,13 @@ def load_entries(path):
         for piece in rest.split('"')[1::2]:
             parts.append(piece)
         message = " ".join(parts)
+        message = " ".join(message.split())
+        # Drop printf specifiers: the captured arguments do not exist here, so
+        # "%s" in the log is noise. Do this before escaping quotes/backslashes.
+        message = _FORMAT_SPEC.sub("<?>", message)
+        # The .def strings embed literal "\n" for line breaks; in a single log
+        # line they would print as a backslash-n pair, so fold them to a space.
+        message = message.replace("\\n", " ")
         message = " ".join(message.split())
         message = message.replace("\\", "\\\\").replace('"', '\\"')
         entries.append((name, message))

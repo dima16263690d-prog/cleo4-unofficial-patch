@@ -63,12 +63,74 @@ namespace
     // 0x80000000 + index in the generated table.
     constexpr unsigned int kRwCommonErrorBit = 0x80000000u;
 
-    // Pack a RenderWare error pair into one dedup key. pluginID and errorCode are
-    // each small enough that 20/12 bits never collide in practice.
-    unsigned int RwKey(int pluginId, int errorCode)
+    // Are the RwErrorGet/Set addresses plausibly the SA 1.0 US build? The
+    // addresses come from plugin-sdk (already wrong once for RwTextureRead), so
+    // check that both pages are committed, executable and inside the game image.
+    // This cannot prove the function is right, but it rejects an address that
+    // points at data, a freed page, or another module - which is what a version
+    // mismatch looks like.
+    bool RwErrorAddressesLookValid()
     {
-        return (static_cast<unsigned int>(pluginId) << 12) ^
-               (static_cast<unsigned int>(errorCode) & 0xFFFu);
+        const HMODULE image = GetModuleHandleA(nullptr);
+        if (image == nullptr)
+            return false;
+
+        const DWORD addresses[2] = { kGtaSa10RwErrorGet, kGtaSa10RwErrorSet };
+        for (DWORD address : addresses)
+        {
+            MEMORY_BASIC_INFORMATION info{};
+            if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) == 0 ||
+                info.State != MEM_COMMIT ||
+                (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                 PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0 ||
+                info.Type != MEM_IMAGE ||
+                info.AllocationBase != image)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // SEH-guarded calls. Kept as free functions taking/returning POD only: a
+    // __try block in a function that also owns C++ objects with destructors
+    // (std::string etc.) is C2712 under /EHsc, so the guarded call must not share
+    // a frame with the reporting code.
+    bool RwErrorGetGuarded(RwErrorPair& out)
+    {
+        __try
+        {
+            reinterpret_cast<RwErrorGetFn>(kGtaSa10RwErrorGet)(&out);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    bool RwErrorSetGuarded(const RwErrorPair& pair)
+    {
+        RwErrorPair copy = pair;
+        __try
+        {
+            reinterpret_cast<RwErrorSetFn>(kGtaSa10RwErrorSet)(&copy);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    // Pack a RenderWare error pair into one 64-bit dedup key: pluginID in the high
+    // 32 bits, errorCode in the low 32. No collisions (the old 20/12-bit XOR mix
+    // could alias two different pairs) and it fits both fields losslessly.
+    unsigned long long RwKey(int pluginId, int errorCode)
+    {
+        return (static_cast<unsigned long long>(
+                    static_cast<unsigned int>(pluginId)) << 32) |
+               static_cast<unsigned int>(errorCode);
     }
 
     // Resolve a RenderWare error pair to a name and a human-readable text.
@@ -164,45 +226,77 @@ void DebugUtils::PollRenderWareError()
         return;
     }
 
-    const auto rwErrorGet = reinterpret_cast<RwErrorGetFn>(kGtaSa10RwErrorGet);
-    RwErrorPair error{};
-    rwErrorGet(&error);
+    // The addresses come from plugin-sdk, which has already been wrong once for
+    // RwTextureRead, so do not trust them blindly: verify both functions look
+    // like the expected prologues before calling them, and guard the call with
+    // SEH. A mismatch just disables the watch (the rest of DebugUtils keeps
+    // working) instead of crashing the game.
+    if (!RwErrorAddressesLookValid())
+    {
+        if (!m_rwErrorPrimed)
+        {
+            m_rwErrorPrimed = true;
+            WriteFrameTime(
+                "[rw] error watch disabled: RwErrorGet/Set at 0x%08X/0x%08X do not "
+                "look like the expected code (signature check failed)",
+                static_cast<unsigned>(kGtaSa10RwErrorGet),
+                static_cast<unsigned>(kGtaSa10RwErrorSet)
+            );
+        }
+        return;
+    }
 
-    // RwErrorGet clears the global error as a side effect. Put it straight back
-    // so the monitor is transparent: the game's own RwErrorGet still sees it.
-    // RwErrorSet only stores when the global is currently E_RW_NOERROR, which it
-    // now is, so this restores exactly the pair that was just read.
-    const auto rwErrorSet = reinterpret_cast<RwErrorSetFn>(kGtaSa10RwErrorSet);
-    rwErrorSet(&error);
+    RwErrorPair error{};
+    if (!RwErrorGetGuarded(error))
+    {
+        if (!m_rwErrorReportedFault)
+        {
+            m_rwErrorReportedFault = true;
+            WriteFrameTime(
+                "[rw] error watch disabled: RwErrorGet faulted (0x%08X); the "
+                "address is not the SA 1.0 US build",
+                static_cast<unsigned>(kGtaSa10RwErrorGet)
+            );
+        }
+        return;
+    }
+
+    // RwErrorGet *copies and clears* the global error as a side effect (verified
+    // in RenderWare plcore/baerr.c: it reads the pair, then resets the global to
+    // E_RW_NOERROR). RwErrorSet only stores when the global is currently NOERROR,
+    // which it now is, so putting the pair straight back is exactly the state the
+    // game would have seen: the monitor stays transparent. If the restore faults
+    // the pair is lost to the game, but it is still reported below.
+    RwErrorSetGuarded(error);
 
     const unsigned int pluginId = static_cast<unsigned int>(error.pluginID);
     const unsigned int errorCode = static_cast<unsigned int>(error.errorCode);
 
-    // Prime on the first poll so a pre-existing error is not reported as if it
-    // had just happened.
+    // No error in the global this frame: nothing to report. {0, 0} and the
+    // common E_RW_NOERROR are the same "clean" state.
+    const bool noError =
+        (pluginId == 0 && errorCode == 0) || (errorCode == kRwCommonErrorBit);
+
     if (!m_rwErrorPrimed)
     {
+        // Report the very first observation even if it is a real error: an error
+        // already in the global at startup is worth seeing, not discarding.
         m_rwErrorPrimed = true;
         m_rwLastPluginId = pluginId;
         m_rwLastErrorCode = errorCode;
-        return;
+        if (noError)
+            return;
+        // Fall through and record it.
     }
-
-    if (pluginId == m_rwLastPluginId && errorCode == m_rwLastErrorCode)
-        return;
-
-    m_rwLastPluginId = pluginId;
-    m_rwLastErrorCode = errorCode;
-
-    // RwErrorGet is a *consuming* read: once it has handed back a real error,
-    // RenderWare resets the global to E_RW_NOERROR, so that value is observed
-    // exactly once after every real error and is never itself an error. {0, 0}
-    // is the same "no error" state. Reporting either would turn each real error
-    // into a phantom E_RW_NOERROR record.
-    const bool noError =
-        (pluginId == 0 && errorCode == 0) || (errorCode == kRwCommonErrorBit);
-    if (noError)
-        return;
+    else
+    {
+        if (pluginId == m_rwLastPluginId && errorCode == m_rwLastErrorCode)
+            return;
+        m_rwLastPluginId = pluginId;
+        m_rwLastErrorCode = errorCode;
+        if (noError)
+            return;
+    }
 
     const char* resolvedName = nullptr;
     const char* resolvedText = nullptr;
@@ -226,7 +320,7 @@ void DebugUtils::PollRenderWareError()
 }
 
 void DebugUtils::RecordError(
-    unsigned int key,
+    unsigned long long key,
     const std::string& name,
     unsigned int pluginId,
     unsigned int errorCode,
@@ -236,12 +330,18 @@ void DebugUtils::RecordError(
 )
 {
     // Bound the number of distinct records so a storm of unique messages cannot
-    // grow the map without limit. Once full, only existing keys are counted.
+    // grow the map without limit. Once full, new keys are dropped - and counted,
+    // so the report can say how many were lost instead of silently truncating.
     constexpr size_t kMaxDistinctErrors = 128;
 
+    // Take ONE consistent snapshot of the script state, before the lock. Calling
+    // CurrentScriptName() and CurrentScriptOpcode() separately (one outside, one
+    // inside the lock) could pair a script with another script's opcode; both go
+    // through the same CLEO snapshot, so read them once, here, and use the pair.
     // A RenderWare error is noticed on the next frame's poll, so the script and
-    // opcode active now are not the ones that raised it; leave the opcode unset
-    // so the report does not print a misleading "last opcode" line for it.
+    // opcode active now are not the ones that raised it: leave the opcode unset
+    // for those so the report does not print a misleading "last opcode" line.
+    const std::string scriptNow = CurrentScriptName();
     const DWORD opcode = renderWare ? 0xFFFFFFFFu : CurrentScriptOpcode();
 
     std::lock_guard<std::mutex> lock(m_errorMutex);
@@ -250,7 +350,10 @@ void DebugUtils::RecordError(
     if (it == m_errorRecords.end())
     {
         if (m_errorRecords.size() >= kMaxDistinctErrors)
+        {
+            ++m_errorRecordsDropped;
             return;
+        }
 
         ErrorRecord record;
         record.key = key;
@@ -263,7 +366,7 @@ void DebugUtils::RecordError(
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
         record.firstUptimeSec = record.lastUptimeSec;
         record.count = 1;
-        record.lastScript = CurrentScriptName();
+        record.lastScript = scriptNow;
         record.lastOpcode = opcode;
         record.modules = modules;
         record.renderWare = renderWare;
@@ -281,7 +384,7 @@ void DebugUtils::RecordError(
         record.lastTick = GetTickCount();
         record.lastUptimeSec =
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
-        record.lastScript = CurrentScriptName();
+        record.lastScript = scriptNow;
         record.lastOpcode = opcode;
         for (const auto& module : modules)
         {
@@ -313,7 +416,7 @@ void DebugUtils::WriteErrorReport(const char* reason)
     {
         std::lock_guard<std::mutex> lock(m_errorMutex);
         records.reserve(m_errorOrder.size());
-        for (unsigned int key : m_errorOrder)
+        for (unsigned long long key : m_errorOrder)
         {
             auto it = m_errorRecords.find(key);
             if (it != m_errorRecords.end())
@@ -350,12 +453,24 @@ void DebugUtils::WriteErrorReport(const char* reason)
     WriteFrameTime("================= errors (%s) =================",
         reason ? reason : "interval");
     WriteFrameTime(
-        "cleo errors=%llu warnings=%llu | distinct=%zu | suspect modules=%zu",
+        "cleo errors=%llu warnings=%llu | distinct=%zu | suspect modules=%zu%s",
         cleoErrors,
         cleoWarnings,
         records.size(),
-        suspectModules.size()
+        suspectModules.size(),
+        m_errorRecordsDropped != 0
+            ? " | DROPPED (table full): see note below"
+            : ""
     );
+
+    if (m_errorRecordsDropped != 0)
+    {
+        WriteFrameTime(
+            "[errors] WARNING: %llu distinct error(s) were dropped because the "
+            "record table (128) was full - the counts below are incomplete",
+            m_errorRecordsDropped
+        );
+    }
 
     if (records.empty() && cleoErrors == 0 && cleoWarnings == 0)
     {
@@ -586,6 +701,11 @@ void DebugUtils::WriteErrorReport(const char* reason)
             "[errors] note: 'suspect module' is the first non-game/non-CLEO module on the "
             "stack at the error, or the script active then; it points at the likely source, "
             "not a proven root cause"
+        );
+        WriteFrameTime(
+            "[errors] note: for a RenderWare row, count is how many times the polled "
+            "{pluginID, errorCode} pair CHANGED (the pair is polled once per frame), "
+            "not the number of errors raised - RenderWare keeps only the last error"
         );
         m_errorNotePrinted = true;
     }

@@ -27,6 +27,7 @@
     <ClInclude Include="DebugUtils.Internal.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="DebugUtils.OpcodeNames.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="DebugUtils.RwErrorNames.h"><Filter>source</Filter></ClInclude>
+    <ClInclude Include="DebugUtils.X86Decoder.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h"><Filter>sdk</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h"><Filter>sdk</Filter></ClInclude>
   </ItemGroup>

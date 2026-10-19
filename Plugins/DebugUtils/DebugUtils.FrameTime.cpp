@@ -458,10 +458,11 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
 
     // Percentiles and low-FPS: the numbers that describe smoothness rather than
     // raw average. low_1%_fps is the average of the slowest 1% of frames.
+    const double medianFps = p50 > 0.0 ? 1000.0 / p50 : 0.0;
     WriteFrameTime(
         "period_ms p50=%.2f p95=%.2f p99=%.2f p99.9=%.2f | jitter_ms=%.2f (stddev) | "
-        "fps_1%%low=%.1f fps_0.1%%low=%.1f",
-        p50, p95, p99, p999, jitterMs, low1Fps, low01Fps
+        "fps_median=%.1f fps_1%%low=%.1f fps_0.1%%low=%.1f",
+        p50, p95, p99, p999, jitterMs, medianFps, low1Fps, low01Fps
     );
 
     WriteFrameTime(
@@ -486,6 +487,24 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             : 0.0,
         m_frameTimeStutterLostMs
     );
+
+    // Hitch frequency per minute: "how often does it stutter", which the count
+    // alone does not convey (10 hitches in a 5 s interval is constant stutter;
+    // 10 in 5 min is occasional). Uses the interval span, so it is independent of
+    // how long the interval happened to be.
+    if (frames > 0.0 && m_frameTimeStutterCount > 0 && m_frameTimeIntervalMs > 0.0)
+    {
+        const double spanMin = m_frameTimeIntervalMs / 60000.0;
+        if (spanMin > 0.0)
+        {
+            WriteFrameTime(
+                "[fps] hitch rate: %.1f per minute (%llu in %.1f s)",
+                static_cast<double>(m_frameTimeStutterCount) / spanMin,
+                m_frameTimeStutterCount,
+                m_frameTimeIntervalMs / 1000.0
+            );
+        }
+    }
 
     // Cause split across ALL frames, not just the worst one: what share of frames
     // were logic/script bound (the logic tick used >= 80% of the frame) versus

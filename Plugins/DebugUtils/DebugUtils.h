@@ -399,7 +399,7 @@ private:
 
     struct ErrorRecord
     {
-        unsigned int key = 0;          // unique id for dedup (rw: plugin<<12 ^ code)
+        unsigned long long key = 0;     // unique id for dedup (rw: plugin<<32 | code)
         DWORD count = 0;               // occurrences since game begin
         DWORD firstTick = 0;           // GetTickCount of the first occurrence
         DWORD lastTick = 0;            // GetTickCount of the most recent
@@ -417,8 +417,8 @@ private:
         std::string text;              // human-readable meaning when known
     };
 
-    std::map<unsigned int, ErrorRecord> m_errorRecords; // keyed by record.key
-    std::vector<unsigned int> m_errorOrder;             // first-seen order
+    std::map<unsigned long long, ErrorRecord> m_errorRecords; // keyed by record.key
+    std::vector<unsigned long long> m_errorOrder;      // first-seen order
     std::mutex m_errorMutex;
 
     // Failed RenderWare file opens captured by the open watch (see below).
@@ -508,21 +508,11 @@ private:
     void* m_textureEntryTarget = nullptr;    // RwTextureRead entry (game image)
     BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
     void* m_textureEntryTrampoline = nullptr; // executable stub: saved bytes + JMP back
-    std::string m_lastTextureExactCaller;    // captured by the wrapper, read by Record
-    // The direct caller of RwTextureRead labelled even when it is the game or
-    // CLEO. The exact-caller field stays empty for engine-initiated reads (the
-    // engine loads the .txd, not the mod), so this says "GTA_SA.exe+0x..." and
-    // the report can explain why the answer is only the scanned mod frame.
-    std::string m_lastTextureDirectCallerRaw;
-    // True while RwTextureRead's entry hook is running its trampoline. The read
-    // callback fires inside that window; it must then NOT record the failure
-    // itself, or every failed read would be counted twice (once by the callback,
-    // once by the entry hook on return).
-    bool m_textureInEntryHook = false;
     // How many times the entry hook was invoked. Lets the report say whether the
     // hook is actually on the call path (a mod may read textures through a path
-    // that never reaches 0x4C7510), instead of leaving it ambiguous.
-    unsigned long long m_textureEntryHookCalls = 0;
+    // that never reaches 0x7F3AC0), instead of leaving it ambiguous. Atomic
+    // because a texture read can happen on a non-game thread.
+    std::atomic<unsigned long long> m_textureEntryHookCalls{0};
     struct TextureReadFailure
     {
         DWORD count = 0;
@@ -550,10 +540,13 @@ private:
     std::mutex m_textureReadMutex;
     void InstallTextureReadWatch();
     void RemoveTextureReadWatch();
-    // `exactCaller`, when non-null, is the return address of the mod that called
-    // RwTextureRead directly (from the entry hook); it is resolved to a
-    // "mod.asi+0x1a2b" label and stored as the row's exact caller.
-    void RecordTextureReadFailure(const char* textureName, const void* exactCaller = nullptr);
+    // Record a failed texture read. `caller` is the address to attribute it to:
+    // the direct caller of RwTextureRead when `callerIsDirect` (from the entry
+    // hook), otherwise a weaker in-game address (from the callback path) that the
+    // scanned mod frame may override. Default: the stream path, no caller.
+    void RecordTextureReadFailure(
+        const char* textureName, const void* caller = nullptr,
+        bool callerIsDirect = false);
     void WriteTextureReadReport(bool forceAll);
     static void* __cdecl TextureReadCallbackWatch(const char* name, const char* maskName);
     static int __cdecl TextureReadWatchRead(void* stream, void** texture, int length);
@@ -570,6 +563,10 @@ private:
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;
+    bool m_rwErrorReportedFault = false;               // one-shot: RwErrorGet faulted
+    // Distinct error keys dropped once m_errorRecords hit its cap. Reported so a
+    // storm of unique errors is visible instead of silently truncated.
+    unsigned long long m_errorRecordsDropped = 0;
     // Counters may be bumped from any thread that logs through CLEO (the core
     // debug callback is not game-thread bound), so they are interlocked.
     volatile LONG m_cleoErrorCount = 0;                 // CLEO error-level messages
@@ -581,7 +578,7 @@ private:
 
     void PollRenderWareError();
     void RecordError(
-        unsigned int key,
+        unsigned long long key,
         const std::string& name,
         unsigned int pluginId,
         unsigned int errorCode,
