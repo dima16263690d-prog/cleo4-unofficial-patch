@@ -60,6 +60,7 @@ void DebugUtils::ResetFrameTimeInterval()
     // Frame-quality accumulators.
     m_frameTimePeriodCount = 0;
     m_frameTimePeriodNext = 0;
+    m_frameTimePeriodSamples = 0;
     m_frameTimeSumPeriodSqMs = 0.0;
     m_frameTimeSpike33 = 0;
     m_frameTimeSpike50 = 0;
@@ -189,6 +190,7 @@ void DebugUtils::BeginFrameTimeFrame()
         m_frameTimeSumPeriodMs += periodMs;
         m_frameTimeIntervalMs += periodMs;
         m_frameTimeSumPeriodSqMs += periodMs * periodMs;
+        ++m_frameTimePeriodSamples;
 
         // The frame that just finished (parked at EndFrameTimeFrame) now has its
         // real period, so pair the period and logic time of the SAME frame and
@@ -424,7 +426,12 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     }
 
     const double frames = static_cast<double>(m_frameTimeFrames);
-    const double avgPeriod = m_frameTimeSumPeriodMs / frames;
+    // Average period over the frames that actually have one (the first frame has
+    // no start-to-start period). Using `frames` here understated the period and
+    // inflated fps_avg by one sample's worth.
+    const double periodCount = static_cast<double>(m_frameTimePeriodSamples);
+    const double avgPeriod =
+        periodCount > 0.0 ? m_frameTimeSumPeriodMs / periodCount : 0.0;
     const double avgLogic = m_frameTimeSumLogicMs / frames;
     const double avgFps = avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0;
 
@@ -437,7 +444,11 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     const double low01Fps = FrameTimeLowFps(0.001);
 
     // Jitter = standard deviation of the frame period (variance = E[x^2]-E[x]^2).
-    const double meanSq = m_frameTimeSumPeriodSqMs / frames;
+    // Both moments use the number of periods actually recorded: the first frame
+    // has no period (start-to-start), so dividing by `frames` would fold in an
+    // implicit 0 ms sample and report nonzero jitter even for a steady sequence.
+    const double meanSq =
+        periodCount > 0.0 ? m_frameTimeSumPeriodSqMs / periodCount : 0.0;
     const double variance = meanSq - avgPeriod * avgPeriod;
     const double jitterMs = variance > 0.0 ? std::sqrt(variance) : 0.0;
 

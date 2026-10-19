@@ -315,6 +315,18 @@ void DebugUtils::SampleScriptMemoryLeaks()
     }
 }
 
+void DebugUtils::RetireLeakScript(uintptr_t scriptPtr)
+{
+    auto it = m_leakScripts.find(scriptPtr);
+    if (it == m_leakScripts.end())
+        return;
+
+    LeakScriptState retired = it->second;
+    retired.releasedSince = true;
+    m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
+    m_leakScripts.erase(it);
+}
+
 void DebugUtils::WriteLeakReport(const char* reason)
 {
     if (!m_leakTrackerEnabled || !m_memoryLogEnabled)

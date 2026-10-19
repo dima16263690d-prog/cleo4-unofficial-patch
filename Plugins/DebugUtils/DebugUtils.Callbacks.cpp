@@ -127,6 +127,11 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastModuleMapTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_lastFrameTimeReportTick = s_instance->m_lastMemoryLogTick;
+    // Drop the previous game's interval trend: otherwise the new game's first
+    // frame-time report compares FPS against the old game's final interval and can
+    // print a misleading slowdown.
+    s_instance->m_frameTimeHaveLastInterval = false;
+    s_instance->m_frameTimeLastIntervalAvgPeriodMs = 0.0;
     s_instance->m_frameTimeHaveLast = false;
     s_instance->m_frameTimeLastPeriodMs = 0.0;
     s_instance->m_frameTimeScriptsLast = 0;
@@ -217,7 +222,10 @@ void __stdcall DebugUtils::OnGameEnd()
     s_instance->WriteTextureReadReport(true);
     s_instance->RemoveFileOpenWatch();
     s_instance->RemoveTextureReadWatch();
-    s_instance->SampleScriptMemoryLeaks();
+    // Do NOT sample here: CLEO dispatches GAME_END only after it has already run
+    // RemoveAllCustomScripts() and Memory().OnGameEnd(), so the owner arena is
+    // empty and a sample would retire every tracked script as RELEASED with 0
+    // bytes - erasing the evidence. Report the last live interval sample instead.
     s_instance->WriteLeakReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
@@ -485,6 +493,13 @@ void __stdcall DebugUtils::OnScriptDeleted(CScriptThread* thread)
     s_instance->m_seenScripts.erase(scriptPtr);
     if (s_instance->m_currentScriptPtr == scriptPtr)
         s_instance->m_currentScriptPtr = 0;
+
+    // Retire the leak state now, at the moment the script is destroyed, instead of
+    // waiting for the next sample. CLEO can reuse the freed script slot before the
+    // next 5-30s sample; without this, the new script would inherit the old one's
+    // first-bytes baseline and growth streak and be reported as a false leak.
+    if (s_instance->m_leakTrackerEnabled)
+        s_instance->RetireLeakScript(scriptPtr);
 
     s_instance->m_breakpoints.erase(
         std::remove_if(

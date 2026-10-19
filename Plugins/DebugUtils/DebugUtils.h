@@ -234,6 +234,9 @@ private:
     std::set<uintptr_t> m_leakSeenThisSample;
 
     void SampleScriptMemoryLeaks();
+    // Retire a tracked script's leak state the moment it is destroyed, so a script
+    // that reuses the freed pointer before the next sample is not mistaken for it.
+    void RetireLeakScript(uintptr_t scriptPtr);
     void WriteLeakReport(const char* reason);
     // Confidence that a tracked script is really leaking, 0-100%. Combines the
     // strength of the evidence (sample count, monotonic growth streak, growth
@@ -302,6 +305,11 @@ private:
     std::array<float, kFrameTimePeriodSamples> m_frameTimePeriodRing{};
     size_t m_frameTimePeriodCount = 0;     // valid entries in the ring
     size_t m_frameTimePeriodNext = 0;      // next write slot
+    // Periods recorded this interval. Unlike m_frameTimePeriodCount (capped at
+    // the ring size) this keeps counting, so the jitter/mean denominators match
+    // the period sums even for a long interval. The first frame has no period
+    // (period is start-to-start), so this is one less than m_frameTimeFrames.
+    unsigned long long m_frameTimePeriodSamples = 0;
     double m_frameTimeSumPeriodSqMs = 0.0; // sum of period^2, for the stddev
     unsigned long long m_frameTimeSpike33 = 0;  // period >= 33.3 ms (< 30 FPS)
     unsigned long long m_frameTimeSpike50 = 0;  // period >= 50 ms   (< 20 FPS)

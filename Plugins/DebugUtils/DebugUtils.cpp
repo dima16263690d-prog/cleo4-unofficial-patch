@@ -51,9 +51,13 @@ DebugUtils::DebugUtils()
         m_crashHandlerInstalled = m_vectoredHandler != nullptr;
     }
 
-    CLEO_DebugSetCrashSnapshotEnabled(
-        m_crashEnabled ? TRUE : FALSE
-    );
+    // The error diagnostics need script+opcode attribution for CLEO/RenderWare
+    // errors even when crash reporting is off, so enable the (lightweight) core
+    // snapshot whenever either feature wants it. With crash off and errors off it
+    // stays off.
+    const bool needSnapshot =
+        m_crashEnabled || (m_errorDiagEnabled && m_frameTimeEnabled);
+    CLEO_DebugSetCrashSnapshotEnabled(needSnapshot ? TRUE : FALSE);
 
     OpenLogs();
     WriteCore("[debugutils] configuration=%s", ConfigPath().c_str());
