@@ -65,10 +65,10 @@ namespace
 
     // Are the RwErrorGet/Set addresses plausibly the SA 1.0 US build? The
     // addresses come from plugin-sdk (already wrong once for RwTextureRead), so
-    // check that both pages are committed, executable and inside the game image.
-    // This cannot prove the function is right, but it rejects an address that
-    // points at data, a freed page, or another module - which is what a version
-    // mismatch looks like.
+    // check both the page attributes (committed, executable, inside the game
+    // image) AND the first code byte. This cannot prove the function is right,
+    // but it rejects an address that points at data, a freed page, another
+    // module, or padding - which is what a version mismatch looks like.
     bool RwErrorAddressesLookValid()
     {
         const HMODULE image = GetModuleHandleA(nullptr);
@@ -87,6 +87,23 @@ namespace
                 info.AllocationBase != image)
             {
                 return false;
+            }
+
+            // A real function entry does not start with padding/return bytes. This
+            // catches an address that is committed and executable but is not code
+            // (int3 filler, a data blob in an executable section, a `ret` stub).
+            const BYTE first = *reinterpret_cast<const BYTE*>(address);
+            switch (first)
+            {
+                case 0x00:   // not a valid first opcode byte here
+                case 0x90:   // nop
+                case 0xCC:   // int3
+                case 0xC3:   // ret
+                case 0xC2:   // ret imm16
+                case 0xCB:   // retf
+                    return false;
+                default:
+                    break;
             }
         }
         return true;
@@ -179,32 +196,46 @@ namespace
 
 std::string DebugUtils::CurrentScriptName()
 {
-    CLEO_CrashSnapshot snapshot{};
-    if (CLEO_DebugGetCrashSnapshot(&snapshot) && snapshot.scriptPtr != 0)
-    {
-        char name[9];
-        memcpy(name, snapshot.scriptName, 8);
-        name[8] = '\0';
-
-        // Trim trailing spaces/nulls so the log is tidy.
-        size_t len = strlen(name);
-        while (len > 0 && (name[len - 1] == ' ' || name[len - 1] == '\0'))
-            name[--len] = '\0';
-
-        if (len > 0)
-            return std::string(name, len);
-    }
-
-    return "none";
+    std::string name;
+    DWORD opcode = 0;
+    CurrentScriptSnapshot(name, opcode);
+    return name;
 }
 
 DWORD DebugUtils::CurrentScriptOpcode()
 {
-    CLEO_CrashSnapshot snapshot{};
-    if (CLEO_DebugGetCrashSnapshot(&snapshot) && snapshot.scriptPtr != 0)
-        return snapshot.opcode;
+    std::string name;
+    DWORD opcode = 0;
+    CurrentScriptSnapshot(name, opcode);
+    return opcode;
+}
 
-    return 0xFFFFFFFFu;
+// Read the CLEO crash snapshot ONCE and derive both the script name and the
+// opcode from that single read. Calling CurrentScriptName() and
+// CurrentScriptOpcode() separately invokes CLEO_DebugGetCrashSnapshot twice, and
+// the two reads can observe different scripts (the game thread advances between
+// them), pairing one script's name with another's opcode. One snapshot, one pair.
+void DebugUtils::CurrentScriptSnapshot(std::string& name, DWORD& opcode)
+{
+    name = "none";
+    opcode = 0xFFFFFFFFu;
+
+    CLEO_CrashSnapshot snapshot{};
+    if (!CLEO_DebugGetCrashSnapshot(&snapshot) || snapshot.scriptPtr == 0)
+        return;
+
+    char raw[9];
+    memcpy(raw, snapshot.scriptName, 8);
+    raw[8] = '\0';
+
+    // Trim trailing spaces/nulls so the log is tidy.
+    size_t len = strlen(raw);
+    while (len > 0 && (raw[len - 1] == ' ' || raw[len - 1] == '\0'))
+        raw[--len] = '\0';
+
+    if (len > 0)
+        name.assign(raw, len);
+    opcode = snapshot.opcode;
 }
 
 void DebugUtils::PollRenderWareError()
@@ -228,36 +259,41 @@ void DebugUtils::PollRenderWareError()
 
     // The addresses come from plugin-sdk, which has already been wrong once for
     // RwTextureRead, so do not trust them blindly: verify both functions look
-    // like the expected prologues before calling them, and guard the call with
-    // SEH. A mismatch just disables the watch (the rest of DebugUtils keeps
-    // working) instead of crashing the game.
-    if (!RwErrorAddressesLookValid())
+    // like real code before calling them, and guard the call with SEH. A mismatch
+    // disables the watch for the session (the rest of DebugUtils keeps working)
+    // instead of crashing the game. The check is cached: two VirtualQuery calls
+    // per frame is pure overhead when the answer never changes.
+    if (m_rwErrorWatchDisabled)
+        return;
+    if (!m_rwErrorAddressCheckDone)
     {
-        if (!m_rwErrorPrimed)
-        {
-            m_rwErrorPrimed = true;
-            WriteFrameTime(
-                "[rw] error watch disabled: RwErrorGet/Set at 0x%08X/0x%08X do not "
-                "look like the expected code (signature check failed)",
-                static_cast<unsigned>(kGtaSa10RwErrorGet),
-                static_cast<unsigned>(kGtaSa10RwErrorSet)
-            );
-        }
+        m_rwErrorAddressCheckDone = true;
+        m_rwErrorAddressesValid = RwErrorAddressesLookValid();
+    }
+    if (!m_rwErrorAddressesValid)
+    {
+        m_rwErrorWatchDisabled = true;
+        WriteFrameTime(
+            "[rw] error watch disabled: RwErrorGet/Set at 0x%08X/0x%08X do not "
+            "look like real code in the game image",
+            static_cast<unsigned>(kGtaSa10RwErrorGet),
+            static_cast<unsigned>(kGtaSa10RwErrorSet)
+        );
         return;
     }
 
     RwErrorPair error{};
     if (!RwErrorGetGuarded(error))
     {
-        if (!m_rwErrorReportedFault)
-        {
-            m_rwErrorReportedFault = true;
-            WriteFrameTime(
-                "[rw] error watch disabled: RwErrorGet faulted (0x%08X); the "
-                "address is not the SA 1.0 US build",
-                static_cast<unsigned>(kGtaSa10RwErrorGet)
-            );
-        }
+        // Disable the watch outright: the address is not the SA 1.0 US build, so
+        // every poll would raise the same SEH exception. Returning without this
+        // flag would fault once per frame for the whole session.
+        m_rwErrorWatchDisabled = true;
+        WriteFrameTime(
+            "[rw] error watch disabled: RwErrorGet faulted (0x%08X); the "
+            "address is not the SA 1.0 US build",
+            static_cast<unsigned>(kGtaSa10RwErrorGet)
+        );
         return;
     }
 
@@ -335,14 +371,17 @@ void DebugUtils::RecordError(
     constexpr size_t kMaxDistinctErrors = 128;
 
     // Take ONE consistent snapshot of the script state, before the lock. Calling
-    // CurrentScriptName() and CurrentScriptOpcode() separately (one outside, one
-    // inside the lock) could pair a script with another script's opcode; both go
-    // through the same CLEO snapshot, so read them once, here, and use the pair.
+    // CurrentScriptName() and CurrentScriptOpcode() separately would read the CLEO
+    // snapshot twice and could pair a script with another script's opcode; both
+    // come from the same read here, so the name and the opcode always agree.
+    //
     // A RenderWare error is noticed on the next frame's poll, so the script and
     // opcode active now are not the ones that raised it: leave the opcode unset
     // for those so the report does not print a misleading "last opcode" line.
-    const std::string scriptNow = CurrentScriptName();
-    const DWORD opcode = renderWare ? 0xFFFFFFFFu : CurrentScriptOpcode();
+    std::string scriptNow;
+    DWORD opcodeNow = 0;
+    CurrentScriptSnapshot(scriptNow, opcodeNow);
+    const DWORD opcode = renderWare ? 0xFFFFFFFFu : opcodeNow;
 
     std::lock_guard<std::mutex> lock(m_errorMutex);
 
@@ -410,7 +449,7 @@ void DebugUtils::WriteErrorReport(const char* reason)
     // Snapshot the records and the module set under the lock, then format
     // outside it.
     std::vector<ErrorRecord> records;
-    std::vector<std::pair<unsigned int, DWORD>> reportedCounts;
+    std::vector<std::pair<unsigned long long, DWORD>> reportedCounts;
     std::set<std::string> suspectModules;
     size_t changedCount = 0;
     {

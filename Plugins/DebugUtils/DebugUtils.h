@@ -198,9 +198,13 @@ private:
     uint64_t m_leakFirstStreamUsedBytes = 0;
     bool m_leakHaveStreamBaseline = false;
 
+    // Public so the anonymous-namespace key helper in DebugUtils.Leak.cpp can name
+    // the type; it holds only tracking state, not secrets.
+public:
     struct LeakScriptState
     {
         std::string name;
+        uintptr_t scriptPtr = 0;             // identity; survives a name change
         unsigned long long firstBytes = 0;   // live bytes at the first sample
         unsigned long long lastBytes = 0;    // live bytes at the most recent sample
         unsigned long long peakBytes = 0;
@@ -214,10 +218,19 @@ private:
         DWORD shrinkCount = 0;               // times the live bytes fell (churn proof)
         DWORD breakStreak = 0;               // consecutive growth runs broken by a drop
         bool releasedSince = false;          // it ever dropped back to zero
+        // What the previous report printed for this script, so an unchanged row is
+        // not repeated every interval (the report was otherwise a full dump each
+        // time, which buried the one row that changed).
+        unsigned long long lastReportedGrowth = 0;
+        std::string lastReportedVerdict;
     };
 
+private:
     std::map<uintptr_t, LeakScriptState> m_leakScripts; // keyed by script pointer
-    std::map<std::string, LeakScriptState> m_leakRetired; // by name, after unload
+    // Retired scripts, keyed by "<name>@0x<ptr>" rather than by name alone: a name
+    // can be reused by a different script (or the same pointer by a different
+    // name), and keying by name overwrote the earlier history.
+    std::map<std::string, LeakScriptState> m_leakRetired;
     std::set<uintptr_t> m_leakSeenThisSample;
 
     void SampleScriptMemoryLeaks();
@@ -505,9 +518,13 @@ private:
     bool m_textureEntryHookEnabled = false;
     DWORD m_textureEntryAddress = 0;         // 0 = use the built-in default
     bool m_textureEntryHookInstalled = false;
+    // Periodic integrity re-check for the data-only watches: a mod may re-install
+    // its own callback/table entry over ours after we set it (installs happen once
+    // at game begin), silently disabling the watch for the rest of the session.
+    DWORD m_lastWatchVerifyTick = 0;
+    void VerifyWatches();
     void* m_textureEntryTarget = nullptr;    // RwTextureRead entry (game image)
     BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
-    void* m_textureEntryTrampoline = nullptr; // executable stub: saved bytes + JMP back
     // How many times the entry hook was invoked. Lets the report say whether the
     // hook is actually on the call path (a mod may read textures through a path
     // that never reaches 0x7F3AC0), instead of leaving it ambiguous. Atomic
@@ -533,6 +550,11 @@ private:
         // caller is NOT a mod - explains why exactCaller had to fall back to the
         // scan ("the engine read this .txd, not a mod").
         std::string directCallerRaw;
+        // The caller label the last stack scan was taken for. The chain is
+        // re-scanned when this changes, so a texture first requested by the engine
+        // (or by one mod) and later requested by a different mod shows the current
+        // requester instead of freezing the first one forever.
+        std::string lastScanCaller;
         bool modulesScanned = false;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
@@ -563,7 +585,14 @@ private:
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
     bool m_rwErrorPrimed = false;
-    bool m_rwErrorReportedFault = false;               // one-shot: RwErrorGet faulted
+    // The address validation runs two VirtualQuery calls; cache the verdict so it
+    // is not repeated every frame. `Checked` means the answer in `Valid` is final.
+    bool m_rwErrorAddressCheckDone = false;
+    bool m_rwErrorAddressesValid = false;
+    // Set once the watch has been disabled for good (bad addresses, or a faulting
+    // RwErrorGet). Without this the poll would re-run the SEH call every frame and
+    // take the same exception forever.
+    bool m_rwErrorWatchDisabled = false;
     // Distinct error keys dropped once m_errorRecords hit its cap. Reported so a
     // storm of unique errors is visible instead of silently truncated.
     unsigned long long m_errorRecordsDropped = 0;
@@ -589,6 +618,10 @@ private:
     void WriteErrorReport(const char* reason);
     static std::string CurrentScriptName();
     static DWORD CurrentScriptOpcode();
+    // Read the CLEO crash snapshot once and fill both the name and the opcode from
+    // that single read, so a record can never pair one script with another's
+    // opcode. CurrentScriptName()/CurrentScriptOpcode() are thin wrappers.
+    static void CurrentScriptSnapshot(std::string& name, DWORD& opcode);
     // Scans the live stack for return addresses in third-party modules. When
     // `strictCount`/`totalCount` are non-null they receive how many accepted
     // frames were verified by a near CALL (E8) and how many were accepted in

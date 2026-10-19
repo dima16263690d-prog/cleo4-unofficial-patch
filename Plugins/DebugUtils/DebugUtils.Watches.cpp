@@ -386,6 +386,23 @@ void DebugUtils::RemoveFileOpenWatch()
 
     auto* table = reinterpret_cast<RwFileFunctionsHead*>(m_fileWatchTable);
 
+    // Only restore if our wrapper is still in the slot. If a later hook (another
+    // ASI, or a mod that re-reads the interface) put its own rwfopen there,
+    // overwriting it with the original would silently delete that hook and break
+    // whoever installed it.
+    if (table->rwfopen != reinterpret_cast<void*>(&DebugUtils::FileOpenWatchFopen))
+    {
+        WriteFrameTime(
+            "[filewatch] NOT removed: RenderWare rwfopen no longer holds our hook "
+            "(another hook took the slot); leaving it untouched"
+        );
+        m_fileWatchInstalled = false;
+        m_fileWatchTable = nullptr;
+        m_fileWatchOriginalFopen = nullptr;
+        g_rwFopenOriginal = nullptr;
+        return;
+    }
+
     DWORD oldProtect = 0;
     if (VirtualProtect(&table->rwfopen, sizeof(void*), PAGE_READWRITE, &oldProtect))
     {
@@ -606,10 +623,20 @@ namespace
     typedef RwTextureCallBackFindFn(__cdecl* RwTextureGetFindCallBackFn)(void);
 
     typedef int(__cdecl* RwNativeTextureReadFn)(void* stream, void** texture, int length);
+    // RwTextureRead itself: RwTexture* cdecl (const char* name, const char* maskName).
+    typedef void* (__cdecl* RwTextureReadFn)(const char*, const char*);
 
     // Assigned during InstallTextureReadWatch, read on every intercepted call.
     RwNativeTextureReadFn g_rwTextureReadOriginal = nullptr;
     RwTextureCallBackReadFn g_rwTextureReadCbOriginal = nullptr;
+
+    // The exact-caller entry hook's trampoline (displaced prologue + JMP back).
+    // A GLOBAL, not a DebugUtils instance field: the 5-byte JMP stays in the
+    // game's code until RemoveTextureEntryHook restores it, and TextureReadEntryWatch
+    // must reach the original prologue even when s_instance is null (plugin being
+    // unloaded, or the hook left in place because another hook took the slot).
+    // Never VirtualFree'd, so it stays valid for the process lifetime.
+    RwTextureReadFn g_textureEntryTrampoline = nullptr;
 
 }
 
@@ -654,7 +681,14 @@ void* __cdecl DebugUtils::TextureReadCallbackWatch(const char* name, const char*
 // for a NULL result and reports the exact caller recorded here.
 void* __cdecl DebugUtils::TextureReadEntryWatch(const char* name, const char* maskName)
 {
-    if (s_instance == nullptr)
+    // Reach the trampoline through the GLOBAL, not s_instance: the JMP stays in
+    // the game's code until RemoveTextureEntryHook restores the prologue, so this
+    // wrapper can be entered after the plugin unloaded (s_instance == null) or
+    // when another hook took the slot and we deliberately left ours in place.
+    // Returning NULL in those cases would make every texture read fail; running
+    // the trampoline keeps the game working even when we can no longer report.
+    RwTextureReadFn trampoline = g_textureEntryTrampoline;
+    if (trampoline == nullptr)
         return nullptr;
 
     // Keep only the raw return address; it is turned into a module label later,
@@ -662,19 +696,15 @@ void* __cdecl DebugUtils::TextureReadEntryWatch(const char* name, const char* ma
     // std::string) on every successful read was pure overhead on the hottest path.
     const void* caller = _ReturnAddress();
 
-    typedef void* (__cdecl* RwTextureReadFn)(const char*, const char*);
-    auto trampoline = reinterpret_cast<RwTextureReadFn>(s_instance->m_textureEntryTrampoline);
-    if (trampoline == nullptr)
-        return nullptr;
-
     // Mark the window so the read callback (fired inside) does not record the
     // failure as well - this function records it with the exact caller below.
     g_textureReadInEntryHook = true;
-    s_instance->m_textureEntryHookCalls.fetch_add(1, std::memory_order_relaxed);
+    if (s_instance != nullptr)
+        s_instance->m_textureEntryHookCalls.fetch_add(1, std::memory_order_relaxed);
     void* texture = trampoline(name, maskName);
     g_textureReadInEntryHook = false;
 
-    if (texture == nullptr)
+    if (texture == nullptr && s_instance != nullptr)
         s_instance->RecordTextureReadFailure(name, caller, true);
 
     return texture;
@@ -859,7 +889,24 @@ void DebugUtils::RemoveTextureReadWatch()
     {
         auto setReadCallback = reinterpret_cast<RwTextureSetReadCallBackFn>(
             kGtaSa10RwTextureSetReadCallBack);
-        setReadCallback(reinterpret_cast<RwTextureCallBackReadFn>(m_textureReadCbOriginal));
+        auto getReadCallback = reinterpret_cast<RwTextureGetReadCallBackFn>(
+            kGtaSa10RwTextureGetReadCallBack);
+
+        // Only restore if the current callback is still ours. Another mod may have
+        // re-installed its own callback after us; blindly writing the original back
+        // would silently remove that mod's callback.
+        if (getReadCallback() == &DebugUtils::TextureReadCallbackWatch)
+        {
+            setReadCallback(reinterpret_cast<RwTextureCallBackReadFn>(m_textureReadCbOriginal));
+        }
+        else
+        {
+            WriteFrameTime(
+                "[texturewatch] NOT removed: the RwTextureRead callback no longer "
+                "holds our hook (another mod replaced it); leaving it untouched"
+            );
+        }
+
         m_textureReadCbInstalled = false;
         m_textureReadCbOriginal = nullptr;
         g_rwTextureReadCbOriginal = nullptr;
@@ -869,11 +916,22 @@ void DebugUtils::RemoveTextureReadWatch()
     {
         auto* slot = reinterpret_cast<void**>(m_textureWatchSlot);
 
-        DWORD oldProtect = 0;
-        if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+        // Same guard: restore the stream slot only if our wrapper is still there.
+        if (*slot == reinterpret_cast<void*>(&DebugUtils::TextureReadWatchRead))
         {
-            *slot = m_textureWatchOriginalRead;
-            VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+            DWORD oldProtect = 0;
+            if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+            {
+                *slot = m_textureWatchOriginalRead;
+                VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+            }
+        }
+        else
+        {
+            WriteFrameTime(
+                "[texturewatch] NOT removed: RwGlobals.stdFunc[26] no longer holds "
+                "our hook (another mod replaced it); leaving it untouched"
+            );
         }
 
         m_textureWatchInstalled = false;
@@ -1056,7 +1114,7 @@ void DebugUtils::InstallTextureEntryHook()
     FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(target), 5);
 
     m_textureEntryTarget = reinterpret_cast<void*>(target);
-    m_textureEntryTrampoline = tramp;
+    g_textureEntryTrampoline = reinterpret_cast<RwTextureReadFn>(tramp);
     m_textureEntryHookInstalled = true;
 
     WriteFrameTime(
@@ -1074,10 +1132,10 @@ void DebugUtils::RemoveTextureEntryHook()
     // Only undo the patch if our own JMP is still there. If another hook was
     // installed on top of ours, restoring the saved prologue would silently
     // delete the other hook's patch; leave it alone and say so instead.
+    const DWORD target = reinterpret_cast<DWORD>(m_textureEntryTarget);
     const BYTE* at = reinterpret_cast<const BYTE*>(m_textureEntryTarget);
     const DWORD expected =
-        reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) -
-        (m_textureEntryTarget + 5);
+        reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) - (target + 5);
     INT32 presentRel = 0;
     memcpy(&presentRel, at + 1, sizeof(presentRel));
     if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
@@ -1085,7 +1143,7 @@ void DebugUtils::RemoveTextureEntryHook()
         WriteFrameTime(
             "[texturewatch] exact caller NOT removed: 0x%08X no longer holds our "
             "hook (another hook took the slot); leaving it untouched",
-            static_cast<unsigned>(m_textureEntryTarget)
+            static_cast<unsigned>(target)
         );
         m_textureEntryHookInstalled = false;
         m_textureEntryTarget = nullptr;
@@ -1104,8 +1162,10 @@ void DebugUtils::RemoveTextureEntryHook()
     // right now (the JMP that sent it there was still live until the line above),
     // and freeing the page under a running thread crashes the game. The prologue
     // bytes plus a JMP are a few dozen bytes, so leaking it is the safe choice.
-    m_textureEntryTrampoline = nullptr;
-
+    // The global trampoline pointer is deliberately NOT cleared either: if our JMP
+    // is somehow still reachable (another hook copied it, or the slot was only
+    // partly restored), TextureReadEntryWatch must still be able to run the
+    // original instead of returning NULL for every texture read.
     m_textureEntryHookInstalled = false;
     m_textureEntryTarget = nullptr;
 }
@@ -1160,13 +1220,18 @@ void DebugUtils::RecordTextureReadFailure(
         failure.lastScript = script;
     }
 
-    // Capture the chain only on the first failure of that texture, while the
-    // raising frame is still on the stack; the scan cost is paid once per name.
+    // Capture the requester chain the first time this texture fails AND again
+    // whenever the caller changes: a texture can be requested by the engine at
+    // load and later by a mod (or by a different mod), and freezing the first scan
+    // would report the wrong requester for every later failure. The scan cost is
+    // paid only when the caller label actually changes, not per failure.
     TextureReadFailure& stored = it->second;
 
-    if (!stored.modulesScanned)
+    const std::string callerKey = callerIsDirect ? modCaller : rawCaller;
+    if (!stored.modulesScanned || stored.lastScanCaller != callerKey)
     {
         stored.modulesScanned = true;
+        stored.lastScanCaller = callerKey;
         if (m_errorModuleScanEnabled)
         {
             const char* via = nullptr;
@@ -1399,5 +1464,92 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         std::lock_guard<std::mutex> lock(m_textureReadMutex);
         for (auto& entry : m_textureReadFailures)
             entry.second.lastReportedCount = entry.second.count;
+    }
+}
+
+// The data-only watches install once at game begin, but a mod can re-install its
+// own callback/table entry over ours afterwards, which silently disables the
+// watch for the rest of the session (no failure is captured, and the report looks
+// like "nothing failed"). Re-check each slot on a slow cadence and, if ours was
+// displaced, report it and stop claiming the watch is active. The slot is NOT
+// re-patched: another module now owns it, and fighting over it would be worse
+// than losing the capture. The check is read-only, so it is cheap.
+void DebugUtils::VerifyWatches()
+{
+    // Nothing installed -> nothing to verify; skip even the tick check.
+    if (!m_fileWatchInstalled && !m_textureReadCbInstalled &&
+        !m_textureWatchInstalled && !m_textureEntryHookInstalled)
+        return;
+
+    const DWORD now = GetTickCount();
+    if (now - m_lastWatchVerifyTick < 5000)
+        return;
+    m_lastWatchVerifyTick = now;
+
+    if (m_fileWatchInstalled && m_fileWatchTable != nullptr)
+    {
+        auto* table = reinterpret_cast<RwFileFunctionsHead*>(m_fileWatchTable);
+        if (table->rwfopen != reinterpret_cast<void*>(&DebugUtils::FileOpenWatchFopen))
+        {
+            WriteFrameTime(
+                "[filewatch] our rwfopen hook was replaced by another module; the "
+                "file-open watch is no longer capturing (not re-installed)"
+            );
+            m_fileWatchInstalled = false;
+            m_fileWatchTable = nullptr;
+            m_fileWatchOriginalFopen = nullptr;
+            g_rwFopenOriginal = nullptr;
+        }
+    }
+
+    if (m_textureReadCbInstalled)
+    {
+        auto getReadCallback = reinterpret_cast<RwTextureGetReadCallBackFn>(
+            kGtaSa10RwTextureGetReadCallBack);
+        if (getReadCallback() != &DebugUtils::TextureReadCallbackWatch)
+        {
+            WriteFrameTime(
+                "[texturewatch] our RwTextureRead callback was replaced by another "
+                "module; the texture-read watch is no longer capturing (not re-installed)"
+            );
+            m_textureReadCbInstalled = false;
+            m_textureReadCbOriginal = nullptr;
+            g_rwTextureReadCbOriginal = nullptr;
+        }
+    }
+
+    if (m_textureWatchInstalled && m_textureWatchSlot != nullptr)
+    {
+        auto* slot = reinterpret_cast<void**>(m_textureWatchSlot);
+        if (*slot != reinterpret_cast<void*>(&DebugUtils::TextureReadWatchRead))
+        {
+            WriteFrameTime(
+                "[texturewatch] our RwGlobals.stdFunc[26] hook was replaced by "
+                "another module; the stream watch is no longer capturing (not re-installed)"
+            );
+            m_textureWatchInstalled = false;
+            m_textureWatchSlot = nullptr;
+            m_textureWatchOriginalRead = nullptr;
+            g_rwTextureReadOriginal = nullptr;
+        }
+    }
+
+    if (m_textureEntryHookInstalled && m_textureEntryTarget != nullptr)
+    {
+        const BYTE* at = reinterpret_cast<const BYTE*>(m_textureEntryTarget);
+        INT32 presentRel = 0;
+        memcpy(&presentRel, at + 1, sizeof(presentRel));
+        const DWORD expected =
+            reinterpret_cast<DWORD>(&DebugUtils::TextureReadEntryWatch) -
+            (reinterpret_cast<DWORD>(m_textureEntryTarget) + 5);
+        if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
+        {
+            WriteFrameTime(
+                "[texturewatch] our exact-caller entry hook was replaced by another "
+                "hook; the exact caller is no longer captured (not re-installed)"
+            );
+            m_textureEntryHookInstalled = false;
+            m_textureEntryTarget = nullptr;
+        }
     }
 }

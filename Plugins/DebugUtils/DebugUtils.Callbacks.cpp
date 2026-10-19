@@ -148,6 +148,14 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_leakLastPrivateBytes = 0;
     s_instance->m_leakLastUptimeSec = 0;
     s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
+    // Drop the previous session's per-script leak history: the script pointers are
+    // recycled by a new game, and keeping them would attribute the old run's growth
+    // to whatever script lands on the same pointer now.
+    s_instance->m_leakScripts.clear();
+    s_instance->m_leakRetired.clear();
+    s_instance->m_leakSeenThisSample.clear();
+    s_instance->m_leakHaveStreamBaseline = false;
+    s_instance->m_leakFirstStreamUsedBytes = 0;
     // Error records are cumulative for the session; clear them and the one-shot
     // note flag so a new game starts from a clean error table.
     {
@@ -158,6 +166,9 @@ void __stdcall DebugUtils::OnGameBegin()
     }
     s_instance->m_errorNotePrinted = false;
     s_instance->m_rwErrorPrimed = false;
+    s_instance->m_rwErrorAddressCheckDone = false;
+    s_instance->m_rwErrorAddressesValid = false;
+    s_instance->m_rwErrorWatchDisabled = false;
     s_instance->m_cleoErrorCount = 0;
     s_instance->m_cleoWarningCount = 0;
     s_instance->m_lastReportedCleoErrors = 0;
@@ -309,6 +320,12 @@ void __stdcall DebugUtils::OnGameProcessAfter()
         s_instance->SampleScriptMemoryLeaks();
         s_instance->WriteLeakReport("interval");
     }
+
+    // Data-only watches install once; a mod can displace them later. Re-check on a
+    // slow cadence so a silently-disabled watch is reported instead of looking
+    // like "nothing failed". Self-gated (returns unless a watch is installed and
+    // 5s elapsed), so calling it every frame is cheap.
+    s_instance->VerifyWatches();
 }
 
 BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)

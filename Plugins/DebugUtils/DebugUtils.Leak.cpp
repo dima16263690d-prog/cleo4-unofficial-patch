@@ -34,6 +34,20 @@ namespace
 {
     // Minimum number of samples with net growth before a script is called a leak.
     constexpr DWORD kLeakMinSamples = 3;
+
+    // Retired-state key. A name alone is not unique: two different scripts can
+    // share a name, and one arena pointer can be reused under a new name. Keying
+    // by "name@pointer" keeps both histories instead of overwriting one.
+    std::string LeakRetireKey(const DebugUtils::LeakScriptState& state)
+    {
+        char buf[80];
+        std::snprintf(
+            buf, sizeof(buf), "%s@0x%08llX",
+            state.name.empty() ? "?" : state.name.c_str(),
+            static_cast<unsigned long long>(state.scriptPtr)
+        );
+        return std::string(buf);
+    }
 }
 
 void DebugUtils::UpdateLeakEntry(
@@ -49,6 +63,7 @@ void DebugUtils::UpdateLeakEntry(
     {
         LeakScriptState state;
         state.name = name;
+        state.scriptPtr = scriptPtr;
         state.firstBytes = bytes;
         state.lastBytes = bytes;
         state.peakBytes = bytes;
@@ -73,10 +88,11 @@ void DebugUtils::UpdateLeakEntry(
     {
         LeakScriptState previous = state;
         previous.releasedSince = true;
-        m_leakRetired[state.name] = std::move(previous);
+        m_leakRetired[LeakRetireKey(previous)] = std::move(previous);
 
         LeakScriptState fresh;
         fresh.name = name;
+        fresh.scriptPtr = scriptPtr;
         fresh.firstBytes = bytes;
         fresh.lastBytes = bytes;
         fresh.peakBytes = bytes;
@@ -216,6 +232,29 @@ void DebugUtils::SampleScriptMemoryLeaks()
             }
         }
     }
+    else
+    {
+        // If the process ever settles BELOW the recorded baseline (a level unload,
+        // a freed cache, GC), the old baseline is stale: keeping it makes the next
+        // report measure growth from a point the process will never return to and
+        // overstate it. Lower the baseline to the new low-water mark, and reset the
+        // uptime so the "%/min" is computed over the window that actually applies.
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                sizeof(pmc)))
+        {
+            const uint64_t privateNow = static_cast<uint64_t>(pmc.PrivateUsage);
+            if (privateNow < m_leakFirstPrivateBytes)
+            {
+                m_leakFirstPrivateBytes = privateNow;
+                m_leakFirstPrivateUptimeSec =
+                    (GetTickCount() - m_memorySessionStartTick) / 1000u;
+            }
+        }
+    }
 
     // Owner enumeration has the same game-thread affinity as the memory stats.
     DWORD ownerCount = CLEO_DebugGetScriptMemoryOwners(nullptr, 0);
@@ -228,7 +267,7 @@ void DebugUtils::SampleScriptMemoryLeaks()
             {
                 LeakScriptState retired = it->second;
                 retired.releasedSince = true;
-                m_leakRetired[it->second.name] = std::move(retired);
+                m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
             }
             it = m_leakScripts.erase(it);
         }
@@ -264,9 +303,9 @@ void DebugUtils::SampleScriptMemoryLeaks()
     {
         if (m_leakSeenThisSample.find(it->first) == m_leakSeenThisSample.end())
         {
-            it->second.releasedSince = true;
-            if (!it->second.name.empty())
-                m_leakRetired[it->second.name] = it->second;
+            LeakScriptState retired = it->second;
+            retired.releasedSince = true;
+            m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
             it = m_leakScripts.erase(it);
         }
         else
@@ -426,7 +465,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
 
     struct Row
     {
-        const LeakScriptState* state;
+        LeakScriptState* state;
         unsigned long long growth;
         double growthPctArena;
         double growthPctProcess;
@@ -471,17 +510,20 @@ void DebugUtils::WriteLeakReport(const char* reason)
         // Monotonic (never dropped) AND grew on at least the required number of
         // consecutive samples: that is the strong signature. A single release
         // anywhere in the history disqualifies the LEAK verdict - a script that
-        // frees memory is churning, not leaking (it can still be SUSPECTED).
+        // frees memory is churning, not leaking.
         if (state.growthStreak >= kLeakMinSamples && state.flatStreak == 0 &&
             state.shrinkCount == 0)
         {
             verdict = "LEAK";
         }
-        else if (state.shrinkCount == 0 && state.flatStreak >= kLeakMinSamples)
+        else if (state.flatStreak >= kLeakMinSamples)
         {
             // Net growth but the last several samples did not move: a pool or
-            // one-off buffer that filled, not an ongoing leak. Without this it
-            // was reported as SUSPECTED forever.
+            // one-off buffer that filled, not an ongoing leak. This applies even
+            // after a sawtooth (shrinkCount > 0): once the tail is flat the script
+            // has stopped growing, so it is a plateau, not a live leak. Without
+            // checking the flat tail first, a churning-then-settled script stayed
+            // SUSPECTED forever.
             verdict = "PLATEAU";
         }
         else if (growthBytes >= m_leakMinGrowthBytes)
@@ -494,7 +536,7 @@ void DebugUtils::WriteLeakReport(const char* reason)
         }
     };
 
-    auto addRow = [&](const LeakScriptState& state)
+    auto addRow = [&](LeakScriptState& state)
     {
         const unsigned long long growth =
             state.lastBytes >= state.firstBytes
@@ -546,9 +588,9 @@ void DebugUtils::WriteLeakReport(const char* reason)
         rows.push_back(row);
     };
 
-    for (const auto& entry : m_leakScripts)
+    for (auto& entry : m_leakScripts)
         addRow(entry.second);
-    for (const auto& entry : m_leakRetired)
+    for (auto& entry : m_leakRetired)
         addRow(entry.second);
 
     // Biggest growth first, so the report leads with what matters.
@@ -559,10 +601,28 @@ void DebugUtils::WriteLeakReport(const char* reason)
     );
 
     size_t index = 0;
+    size_t printedRows = 0;
+    size_t unchangedRows = 0;
+    // A full dump on every interval buried the rows that changed. Print only the
+    // rows whose growth or verdict moved since the last report; game_end forces a
+    // full dump so the final log is complete.
+    const bool forceAllRows = reason != nullptr && strcmp(reason, "game_end") == 0;
     for (const auto& row : rows)
     {
         ++index;
-        const auto& state = *row.state;
+        auto& state = *row.state;
+
+        const bool changed = forceAllRows ||
+            row.growth != state.lastReportedGrowth ||
+            state.lastReportedVerdict != row.verdict;
+        if (!changed)
+        {
+            ++unchangedRows;
+            continue;
+        }
+        state.lastReportedGrowth = row.growth;
+        state.lastReportedVerdict = row.verdict;
+        ++printedRows;
 
         WriteMemory(
             "%-3zu %-9s %12s %12s %8s %9.2f%% %8u %5.0f%% %-10s",
@@ -632,6 +692,16 @@ void DebugUtils::WriteLeakReport(const char* reason)
                 );
             }
         }
+    }
+
+    if (unchangedRows > 0)
+    {
+        WriteMemory(
+            "[leak] %zu row(s) unchanged since the last report (not repeated); "
+            "%zu row(s) shown",
+            unchangedRows,
+            printedRows
+        );
     }
 
     // Headline suspect: the single script to look at first. Rows are already
