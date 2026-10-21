@@ -617,9 +617,10 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             // contradict the per-frame cause split, which reports such a frame as
             // render/streaming bound.
             WriteFrameTime(
-                "worst_frame logic_ms=%.2f period_ms=%.2f cause=logic overrun/stall "
+                "worst logic tick: logic_ms=%.2f period_ms=%.2f cause=logic overrun/stall "
                 "(logic tick ran %.1fx its own frame period - a one-off hitch inside "
-                "logic, not steady script load)",
+                "logic, not steady script load; see the 'worst frames' table below, "
+                "which ranks by frame PERIOD, not by logic time)",
                 m_frameTimeWorstLogicMs,
                 m_frameTimeWorstLogicPeriodMs,
                 ratio
@@ -631,7 +632,9 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
                 ? "logic/script bound"
                 : (ratio >= 0.4 ? "mixed" : "render/streaming bound");
             WriteFrameTime(
-                "worst_frame logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% cause=%s",
+                "worst logic tick: logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% "
+                "cause=%s (the 'worst frames' table below ranks by frame PERIOD, "
+                "not by logic time)",
                 m_frameTimeWorstLogicMs,
                 m_frameTimeWorstLogicPeriodMs,
                 100.0 * ratio,

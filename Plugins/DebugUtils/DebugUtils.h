@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <unordered_map>
+#include <utility>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -572,6 +573,12 @@ private:
         // empty name is normal for a non-streaming (engine/script) read.
         std::string streamingModel;   // e.g. "comptwall36"
         int streamingModelId = -1;
+        // The .txd the streamed model should load the texture from (its TXD slot
+        // resolved to a name), and whether the model is a LOD model. A LOD model
+        // legitimately references a REDUCED texture set, so a miss there is often
+        // the engine's normal LOD probe, not a broken file - worth saying so.
+        std::string streamingTxd;     // e.g. "lodlasruff"
+        bool streamingIsLod = false;
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
     std::vector<std::string> m_textureReadOrder;
@@ -634,6 +641,11 @@ private:
     static int CurrentStreamingModelId();
     // The file name behind a model id, or "" when unknown.
     std::string ModelNameForId(int modelId);
+    // The TXD slot and LOD flag of a model, in one cached lookup.
+    static std::pair<int, bool> ModelTxdIndexAndLod(int modelId);
+    // Model-id base for texture dictionaries (RESOURCE_ID_TXD): a TXD slot N maps
+    // to model id kTxdModelBase + N, which is how the name index keys them.
+    static constexpr int kTxdModelBase = 20000;
 
     unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
     unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;

@@ -1282,6 +1282,11 @@ void DebugUtils::RecordTextureReadFailure(
     {
         stored.streamingModelId = streamingModelId;
         stored.streamingModel = ModelNameForId(streamingModelId);
+        const auto txdAndLod = ModelTxdIndexAndLod(streamingModelId);
+        stored.streamingIsLod = txdAndLod.second;
+        stored.streamingTxd = txdAndLod.first >= 0
+            ? ModelNameForId(kTxdModelBase + txdAndLod.first)
+            : std::string();
     }
 
     const std::string callerKey = callerIsDirect ? modCaller : rawCaller;
@@ -1516,15 +1521,36 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
             if (!entry->second.exactCaller.empty())
             {
                 if (entry->second.exactCallerDirect)
+                {
                     WriteFrameTime(
                         "    exact caller: %s  (direct caller of RwTextureRead, seen "
                         "at its entry hook)",
                         entry->second.exactCaller.c_str());
+                }
+                else if (alwaysOnStack.count(entry->second.exactCaller) != 0 &&
+                         hasRequester)
+                {
+                    // The recorded nearest frame is a module that is on EVERY chain
+                    // (a main-loop hook/wrapper), so it is NOT the requester - it is
+                    // the same tail printed above. Use the nearest DISTINCTIVE frame
+                    // instead, which is the first link of the "requested by" chain.
+                    const size_t sep = chain.find(" <- ");
+                    const std::string nearest =
+                        sep == std::string::npos ? chain : chain.substr(0, sep);
+                    WriteFrameTime(
+                        "    probable caller: %s  (nearest mod frame that is not the "
+                        "always-present hook chain; %s was on every chain, so it is "
+                        "not the requester)",
+                        nearest.c_str(),
+                        entry->second.exactCaller.c_str());
+                }
                 else if (hasRequester)
+                {
                     WriteFrameTime(
                         "    probable caller: %s  (nearest mod frame on the stack - a "
                         "strong hint, not the direct caller)",
                         entry->second.exactCaller.c_str());
+                }
                 break;
             }
         }
@@ -1568,16 +1594,30 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
             {
                 if (!entry->second.streamingModel.empty())
                     WriteFrameTime(
-                        "        streamed model: %s (id %d) - the .txd/.dff that "
-                        "referenced this texture",
+                        "        streamed model: %s (id %d)%s - the .dff being loaded",
                         entry->second.streamingModel.c_str(),
-                        entry->second.streamingModelId
-                    );
+                        entry->second.streamingModelId,
+                        entry->second.streamingIsLod ? " [LOD]" : "");
                 else
                     WriteFrameTime(
-                        "        streamed model id: %d (name not in the IMG index)",
-                        entry->second.streamingModelId
-                    );
+                        "        streamed model id: %d%s (name not in the IMG index)",
+                        entry->second.streamingModelId,
+                        entry->second.streamingIsLod ? " [LOD]" : "");
+
+                // The dictionary that should hold the texture. This is the FILE to
+                // open: a missing texture is either absent from this .txd or the
+                // .txd itself is missing/corrupt.
+                if (!entry->second.streamingTxd.empty())
+                    WriteFrameTime(
+                        "        its texture dictionary: %s.txd - the texture should "
+                        "be inside this file",
+                        entry->second.streamingTxd.c_str());
+
+                if (entry->second.streamingIsLod)
+                    WriteFrameTime(
+                        "        note: this is a LOD model; LODs use a reduced texture "
+                        "set, so a miss here is often the engine's normal LOD probe "
+                        "and not a broken file");
             }
         }
     }

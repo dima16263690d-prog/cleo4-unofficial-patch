@@ -39,16 +39,25 @@ namespace
     constexpr DWORD kGtaSa10TxdPool = 0xC8800C;           // CPool<TxdDef>* ms_pTxdPool
 
     constexpr int kStreamingFileCount = 8;
-    constexpr int kTxdModelBase = 20000;   // RESOURCE_ID_TXD
     constexpr int kMaxModelInfos = 65536;  // sanity bound on a corrupt count
     constexpr int kMaxImgEntries = 200000; // sanity bound on a corrupt header
 
-    // CBaseModelInfo prefix: a vtable pointer, then the name hash.
+    // CBaseModelInfo prefix: a vtable pointer, the name hash, refcount and the
+    // index of the texture dictionary (TXD) the model uses. The TXD index is how
+    // a failed texture is tied to the .txd file that should contain it.
     struct BaseModelInfoHead
     {
-        void* vtable;
-        unsigned int key;
+        void* vtable;            // 0x00
+        unsigned int key;        // 0x04  m_nKey (name hash)
+        unsigned short refCount; // 0x08  m_nRefCount
+        short txdIndex;          // 0x0A  m_nTxdIndex (slot in CTxdStore, -1 if none)
+        unsigned char alpha;     // 0x0C
+        unsigned char num2d;     // 0x0D
+        short effect2d;          // 0x0E
+        short objectInfo;        // 0x10
+        unsigned short flags;    // 0x12  m_nFlags (bit 5 = bIsLod)
     };
+    constexpr unsigned short kModelFlagIsLod = 1u << 5;
 
     // tStreamingFileDesc: name at offset 0, flags/handle after. Only the name is
     // read here, but the full prefix is declared so the layout is asserted.
@@ -95,6 +104,41 @@ namespace
     // The model being converted on THIS thread, or -1. thread_local because a
     // texture read can happen on a non-game thread (a mod's loader).
     thread_local int g_streamingModelId = -1;
+
+    // Cache: modelId -> model facts (TXD slot + LOD flag), filled on demand from
+    // the live model-info array so it tracks the current game.
+    struct ModelFacts
+    {
+        int txdIndex;
+        bool isLod;
+    };
+    std::unordered_map<int, ModelFacts> g_modelFacts;
+}
+
+// The TXD slot and LOD flag of a model (a single lookup, cached). The slot names
+// the .txd file a failed texture should have come from; the LOD flag lets the
+// report say that a reduced LOD texture set is expected.
+std::pair<int, bool> DebugUtils::ModelTxdIndexAndLod(int modelId)
+{
+    if (modelId < 0)
+        return {-1, false};
+
+    const auto cached = g_modelFacts.find(modelId);
+    if (cached != g_modelFacts.end())
+        return {cached->second.txdIndex, cached->second.isLod};
+
+    ModelFacts facts{-1, false};
+    auto** infos = *reinterpret_cast<BaseModelInfoHead***>(kGtaSa10ModelInfoPtrsRef);
+    const int modelInfoCount = *reinterpret_cast<const int*>(kGtaSa10ModelInfoCount);
+    if (infos != nullptr && modelId < modelInfoCount && modelInfoCount <= kMaxModelInfos &&
+        infos[modelId] != nullptr)
+    {
+        facts.txdIndex = infos[modelId]->txdIndex;
+        facts.isLod = (infos[modelId]->flags & kModelFlagIsLod) != 0;
+    }
+
+    g_modelFacts.emplace(modelId, facts);
+    return {facts.txdIndex, facts.isLod};
 }
 
 char __cdecl DebugUtils::ConvertBufferToObjectWatch(char* fileBuffer, int modelId, int channelIndex)
@@ -222,6 +266,11 @@ void DebugUtils::EnsureModelNameIndex()
     if (m_modelNameIndexBuilt)
         return;
     m_modelNameIndexBuilt = true; // set first: a failure must not retry every frame
+
+    // The rebuild is also the per-game reset point (OnGameBegin clears
+    // m_modelNameIndexBuilt): the model-info array is rebuilt for the new game, so
+    // the cached TXD/LOD facts from the previous game must not survive.
+    g_modelFacts.clear();
 
     std::unordered_map<unsigned int, int> modelByKey;
     auto** infos = *reinterpret_cast<BaseModelInfoHead***>(kGtaSa10ModelInfoPtrsRef);

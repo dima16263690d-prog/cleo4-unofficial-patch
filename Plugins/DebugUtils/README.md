@@ -443,6 +443,52 @@ the error stack (or the script active then) is a strong suspect, not proof. The
 point is to point a human at the right DLL or .cs file, not to claim a root
 cause.
 
+#### Filtering the always-present hook chain
+
+A module that appears on **every** captured chain is not the requester — it is a
+hook or wrapper that sits on the stack no matter what asked for the texture (the
+nested main-loop hooks of a loader, a HUD ASI, a SilentPatch-style mod). Naming it
+as the requester sends you after the wrong mod, so the report pulls it out and
+labels it separately:
+
+```
+      requested by: MenuUI.asi+0x6E47 <- VehDeform.SA.asi+0x10615 <- modloader.asi+0x1F224
+      also on stack every time (main-loop hook chain, NOT the requester): moneychangehud.sa.asi+0xC4B5
+      probable caller: MenuUI.asi+0x6E47  (nearest mod frame that is not the always-present hook chain; ...)
+```
+
+A module counts as "always present" when it is on at least 80% of the captured
+chains (and there are at least 3 chains to compare). The "probable caller" line
+never names an always-present module: when the nearest frame would be one, the
+report walks to the nearest *distinctive* frame instead.
+
+#### Naming the streamed model and its TXD (StreamingModelNames)
+
+`E_RW_READTEXMASK` from the streaming path (`RwTextureStreamRead`) is raised while
+the engine loads a model. Set `[DebugUtils.Errors] StreamingModelNames=1` (with
+`TextureWatch=1`) and DebugUtils hooks `CStreaming::ConvertBufferToObject`
+(SA 1.0 US `0x40C6B0`, opt-in, the same audited 5-byte `JMP` as the exact-caller
+hook) to record which model is being converted, and builds a `modelId -> file
+name` index from the IMG archives (the game keeps only a name hash in memory, so
+the name is read from the archive directories). A failed read then names the file:
+
+```
+    comptwall36   count=1  first=0  last=0  script=main
+        streamed model: lod711block02 (id 5530) [LOD] - the .dff being loaded
+        its texture dictionary: lod711 - the texture should be inside this file
+        note: this is a LOD model; LODs use a reduced texture set, so a miss here
+              is often the engine's normal LOD probe and not a broken file
+```
+
+- `streamed model` is the `.dff` (or TXD) being loaded when the texture was
+  referenced — the model to look at.
+- `its texture dictionary` is the `.txd` that should contain the texture, from the
+  model's TXD slot (`CBaseModelInfo::m_nTxdIndex` resolved to a name) — the file
+  to open.
+- `[LOD]` marks a LOD model, whose reduced texture set makes a miss here normal.
+  A `streamed model` line is only printed when the read happened *inside* a model
+  conversion; an engine/script read at another moment has none.
+
 ### Per-script memory-leak tracker
 
 [DebugUtils.Logs] LeakTracker=1 samples CLEO's script-memory arena (the
