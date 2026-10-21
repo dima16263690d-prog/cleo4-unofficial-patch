@@ -530,17 +530,20 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
               static_cast<double>(m_frameTimeStutterCount)
             : 0.0;
 
-        // The dominant cause is decided by the STUTTERS when there are any (they
-        // are the frames that hurt), and only by the overall share when the
-        // interval was smooth. Otherwise a mostly-smooth interval with all its
-        // few hitches in logic would still be labelled "render bound" and send
-        // the reader after the wrong subsystem.
+        // The dominant cause is decided by the STUTTERS when there are enough of
+        // them (they are the frames that hurt), and by the overall share when the
+        // interval was smooth or produced too few stutters to attribute. One
+        // stutter is always "100% logic-bound", which would claim "logic/script
+        // bound (most stutters)" from a single sample - so a minimum count is
+        // required before the stutter-dominance path is trusted.
+        const bool fewStutters =
+            m_frameTimeStutterCount > 0 && m_frameTimeStutterCount < kFrameTimeMinStutterForCause;
         const char* dominant;
         if (m_frameTimeSlowFrames == 0)
             // No frame even missed the 50 FPS floor: nothing to blame. Saying
             // "render/streaming bound" here would be a false lead.
             dominant = "smooth (no slow frames)";
-        else if (m_frameTimeStutterCount > 0)
+        else if (m_frameTimeStutterCount >= kFrameTimeMinStutterForCause)
         {
             if (stutterLogicPct >= 50.0)
                 dominant = "logic/script bound (most stutters)";
@@ -569,6 +572,14 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             kFrameTimeSlowMs,
             dominant
         );
+
+        if (fewStutters)
+            WriteFrameTime(
+                "[fps] note: only %llu stutter frame(s) in this interval - too few to "
+                "attribute the cause to the hitches, so the split over ALL frames is "
+                "used instead of the stutter share",
+                m_frameTimeStutterCount
+            );
     }
 
     // Auto frame-pacing verdict: one greppable line that needs no configuration.
