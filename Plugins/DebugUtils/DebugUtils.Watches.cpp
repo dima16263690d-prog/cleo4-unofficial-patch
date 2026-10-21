@@ -1230,9 +1230,14 @@ void DebugUtils::RecordTextureReadFailure(
     // Key by texture name so the report says *which* texture failed as well as
     // which mod asked for it. An unnamed read (stream path) has no name, so it is
     // keyed by the caller too - otherwise every stream failure, whoever caused it,
-    // collapsed into one "(unnamed texture read)" row with the first caller.
+    // collapsed into one "(unnamed texture read)" row with the first caller. A
+    // distinct caller therefore gets its own row, but the caller is ALSO stored as
+    // a field (unnamedVia) and printed on its own line: the key is not shown, so
+    // the fixed-width name column is not filled with the long caller string (e.g.
+    // "gta_sa.exe+0x404841 (RwTextureStreamRead+0x161)").
+    const bool unnamed = (textureName == nullptr || textureName[0] == '\0');
     std::string key;
-    if (textureName != nullptr && textureName[0] != '\0')
+    if (!unnamed)
     {
         key = textureName;
     }
@@ -1271,6 +1276,15 @@ void DebugUtils::RecordTextureReadFailure(
     // would report the wrong requester for every later failure. The scan cost is
     // paid only when the caller label actually changes, not per failure.
     TextureReadFailure& stored = it->second;
+
+    // For an unnamed read, keep the caller in its own field so the report can print
+    // it on a dedicated line instead of inside the name column.
+    if (unnamed)
+    {
+        stored.unnamed = true;
+        if (!rawCaller.empty())
+            stored.unnamedVia = rawCaller;
+    }
 
     // Which model was being converted on this thread when the read failed? Set by
     // the ConvertBufferToObject hook; -1 when the streaming hook is off or the read
@@ -1574,7 +1588,9 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
 
         for (const auto* entry : group)
         {
-            std::string name = entry->first;
+            std::string name = entry->second.unnamed
+                ? std::string("(unnamed texture read)")
+                : entry->first;
             if (name.size() > 34)
                 name = std::string("...") + name.substr(name.size() - 31);
 
@@ -1587,22 +1603,48 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                 entry->second.lastScript.empty() ? "?" : entry->second.lastScript.c_str()
             );
 
+            // The caller of an unnamed (stream-path) read: the callback had no
+            // texture name, so the caller is the only lead. Printed on its own line
+            // rather than in the name column.
+            if (entry->second.unnamed && !entry->second.unnamedVia.empty())
+                WriteFrameTime(
+                    "        read via: %s (the callback had no texture name)",
+                    entry->second.unnamedVia.c_str());
+
             // Name the model/txd being streamed (StreamingModelNames=1). This is
             // the file to look at: the texture was referenced by the model loaded
             // at that moment, so a missing/misnamed texture points at this file.
             if (entry->second.streamingModelId >= 0)
             {
-                if (!entry->second.streamingModel.empty())
+                // The engine names distant level-of-detail models with a "_lod"
+                // suffix ("gaz18law2_LOD") - the reliable signal. The m_nFlags LOD
+                // bit is a second opinion only: its position is disputed across the
+                // public headers and the engine defaults it SET, so it is never
+                // used to assert LOD. A disagreement with the name is reported, but
+                // the name wins.
+                const bool nameKnown = !entry->second.streamingModel.empty();
+                const bool lodByName = NameLooksLikeLod(entry->second.streamingModel);
+                const bool isLod = nameKnown && lodByName;
+                const char* lodTag = isLod ? " [LOD]" : "";
+
+                if (nameKnown)
                     WriteFrameTime(
                         "        streamed model: %s (id %d)%s - the .dff being loaded",
                         entry->second.streamingModel.c_str(),
                         entry->second.streamingModelId,
-                        entry->second.streamingIsLod ? " [LOD]" : "");
+                        lodTag);
                 else
                     WriteFrameTime(
-                        "        streamed model id: %d%s (name not in the IMG index)",
-                        entry->second.streamingModelId,
-                        entry->second.streamingIsLod ? " [LOD]" : "");
+                        "        streamed model id: %d (name not in the IMG index)",
+                        entry->second.streamingModelId);
+
+                if (nameKnown && entry->second.streamingIsLod != lodByName)
+                    WriteFrameTime(
+                        "        note: the m_nFlags LOD bit is %s but the name ends in "
+                        "_lod is %s; the name was trusted (the bit's position is "
+                        "disputed across SDK headers and it defaults set)",
+                        entry->second.streamingIsLod ? "set" : "clear",
+                        lodByName ? "set" : "clear");
 
                 // The dictionary that should hold the texture. This is the FILE to
                 // open: a missing texture is either absent from this .txd or the
@@ -1613,7 +1655,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         "be inside this file",
                         entry->second.streamingTxd.c_str());
 
-                if (entry->second.streamingIsLod)
+                if (isLod)
                     WriteFrameTime(
                         "        note: this is a LOD model; LODs use a reduced texture "
                         "set, so a miss here is often the engine's normal LOD probe "
@@ -1626,23 +1668,39 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
     // fault) or by a mod (so the mod is)? The direct caller captured by the entry
     // hook tells them apart, which is the difference between "install the missing
     // .txd" and "fix the mod that asks for the wrong texture".
+    //
+    // Three cases, not two. A mod can ask for a texture through a script-facing
+    // engine API (CSprite2d::SetTexture, the 038E/0A6B sprite draw path) - the
+    // DIRECT caller is then the game, but the request is still mod/script-driven,
+    // so calling it "engine-initiated (the file is at fault)" sends the reader
+    // after the wrong thing. Classify by WHICH engine function reached the read.
     {
-        size_t engineInitiated = 0;
-        size_t modInitiated = 0;
+        size_t engineInitiated = 0;   // the streaming loader loading a .txd/.dff
+        size_t scriptInitiated = 0;   // a mod/script asked by name via an engine API
+        size_t modInitiated = 0;      // a mod called RwTextureRead directly
         for (const auto* entry : changed)
         {
             if (entry->second.exactCallerDirect)
+            {
                 ++modInitiated;
+            }
             else if (!entry->second.directCallerRaw.empty())
-                ++engineInitiated;
+            {
+                if (IsScriptTextureApi(entry->second.directCallerRaw))
+                    ++scriptInitiated;
+                else
+                    ++engineInitiated;
+            }
         }
-        if (engineInitiated > 0 || modInitiated > 0)
+        if (engineInitiated > 0 || scriptInitiated > 0 || modInitiated > 0)
         {
             WriteFrameTime(
-                "[texturewatch] %zu of %zu changed read(s): engine-initiated "
-                "(a missing/corrupt resource), %zu mod-initiated (the mod asked for "
-                "the texture)",
-                engineInitiated, changed.size(), modInitiated
+                "[texturewatch] %zu of %zu changed read(s): %zu engine-initiated "
+                "(the game loading a .txd/.dff), %zu script/API-initiated (a "
+                "mod/script asked for the texture by name), %zu mod-initiated (a "
+                "mod called RwTextureRead directly)",
+                engineInitiated + scriptInitiated + modInitiated, changed.size(),
+                engineInitiated, scriptInitiated, modInitiated
             );
             if (engineInitiated > 0)
             {
@@ -1651,6 +1709,15 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                     "that should contain the texture is missing, not renamed, or "
                     "corrupt - check the mod that replaced the model/archive, not "
                     "the nearest mod frame in the stack."
+                );
+            }
+            if (scriptInitiated > 0)
+            {
+                WriteFrameTime(
+                    "    hint: a script/API-initiated failed read means a mod or CLEO "
+                    "script asked for this texture by name (e.g. a sprite draw) and "
+                    "it is not in the loaded .txd - the mod/script is the requester, "
+                    "and the texture name is the thing to check."
                 );
             }
         }

@@ -343,6 +343,10 @@ private:
     // Worst frames with an uptime below this (seconds) are treated as startup /
     // world-load hitches, not steady-state stutter, and said so in the report.
     static constexpr DWORD kFrameTimeStartupSec = 12;
+    // Minimum number of stutter frames in an interval before the cause is allowed
+    // to be attributed to the stutters (rather than to the split over all frames).
+    // One stutter is always 100% one-sided, so a lone hitch must not decide.
+    static constexpr unsigned long long kFrameTimeMinStutterForCause = 4;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction
@@ -579,6 +583,12 @@ private:
         // the engine's normal LOD probe, not a broken file - worth saying so.
         std::string streamingTxd;     // e.g. "lodlasruff"
         bool streamingIsLod = false;
+        // True when the read callback fired with no texture name (the TXD-internal
+        // / stream path). The name column then shows a clean "(unnamed texture
+        // read)" and the caller is printed on its own line, instead of the caller
+        // being smuggled into the key and truncated into a garbage name.
+        bool unnamed = false;
+        std::string unnamedVia;       // the caller, for an unnamed read
     };
     std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
     std::vector<std::string> m_textureReadOrder;
@@ -643,6 +653,10 @@ private:
     std::string ModelNameForId(int modelId);
     // The TXD slot and LOD flag of a model, in one cached lookup.
     static std::pair<int, bool> ModelTxdIndexAndLod(int modelId);
+    // True when a model name follows the engine's LOD convention (a "_lod"/
+    // "_LOD" suffix, e.g. "gaz18law2_LOD"). Used to corroborate the m_nFlags LOD
+    // bit, whose position is disputed across the public SDK headers.
+    static bool NameLooksLikeLod(const std::string& name);
     // Model-id base for texture dictionaries (RESOURCE_ID_TXD): a TXD slot N maps
     // to model id kTxdModelBase + N, which is how the name index keys them.
     static constexpr int kTxdModelBase = 20000;
@@ -712,6 +726,12 @@ private:
     // into something a reader can act on, and shows whether the engine (not a mod)
     // reached the read.
     static std::string GameFunctionForAddress(DWORD address);
+    // True when a "direct caller of RwTextureRead" label names a script-facing
+    // engine API - a texture fetch a mod/script drove by name (CSprite2d::
+    // SetTexture and friends), as opposed to the streaming loader reading a
+    // .txd/.dff. Used to separate "the game loaded the archive" from "a mod asked
+    // for this texture" when the direct caller is the game either way.
+    static bool IsScriptTextureApi(const std::string& label);
     static std::string FormatFrameLabel(DWORD address);
     static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
     // Turns a raw frame list (from any walker) into module labels, dropping the

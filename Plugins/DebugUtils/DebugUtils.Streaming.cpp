@@ -55,9 +55,17 @@ namespace
         unsigned char num2d;     // 0x0D
         short effect2d;          // 0x0E
         short objectInfo;        // 0x10
-        unsigned short flags;    // 0x12  m_nFlags (bit 5 = bIsLod)
+        unsigned short flags;    // 0x12  m_nFlags
     };
-    constexpr unsigned short kModelFlagIsLod = 1u << 5;
+    // The LOD bit's position in m_nFlags is disputed: the workspace plugin-sdk
+    // (citing a dead MTA 1.3.4 URL) puts bIsLod at bit 5, while current MTA and
+    // gta-reversed put it at bit 7 (and disagree on that bit's *name*: bIsLod vs
+    // bIsColLoaded). The engine also defaults it SET in CBaseModelInfo::Init().
+    // So the flag is used only as a low-confidence fallback, and the reliable LOD
+    // signal is the engine's own "_lod" model-name suffix (see NameLooksLikeLod).
+    // Both candidate bits are tested so a LOD that only carries the legacy bit is
+    // still labelled. Verified offset: m_nTxdIndex is 0x0A (gta-reversed).
+    constexpr unsigned short kModelFlagIsLodMask = (1u << 5) | (1u << 7);
 
     // tStreamingFileDesc: name at offset 0, flags/handle after. Only the name is
     // read here, but the full prefix is declared so the layout is asserted.
@@ -134,7 +142,7 @@ std::pair<int, bool> DebugUtils::ModelTxdIndexAndLod(int modelId)
         infos[modelId] != nullptr)
     {
         facts.txdIndex = infos[modelId]->txdIndex;
-        facts.isLod = (infos[modelId]->flags & kModelFlagIsLod) != 0;
+        facts.isLod = (infos[modelId]->flags & kModelFlagIsLodMask) != 0;
     }
 
     g_modelFacts.emplace(modelId, facts);
@@ -316,6 +324,20 @@ std::string DebugUtils::ModelNameForId(int modelId)
     EnsureModelNameIndex();
     const auto it = m_modelNames.find(modelId);
     return it == m_modelNames.end() ? std::string() : it->second;
+}
+
+// The engine names every distant level-of-detail model with a "_lod" suffix
+// ("gaz18law2_LOD", "gravelground_lod"). Used only to corroborate the LOD bit
+// read out of m_nFlags: the two independent header layouts that agree on the
+// flag's *position* disagree on its *name* (bIsLod vs bIsColLoaded), so the name
+// is a second opinion, not the primary signal. The bit is still trusted on its
+// own; this only lets the report say "the name confirms it".
+bool DebugUtils::NameLooksLikeLod(const std::string& name)
+{
+    if (name.size() < 5)
+        return false;
+    const size_t at = name.size() - 4;
+    return _stricmp(name.c_str() + at, "_lod") == 0;
 }
 
 void DebugUtils::InstallStreamingModelWatch()

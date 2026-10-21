@@ -181,7 +181,33 @@ bool DebugUtils::IsIgnoredModuleHandle(HMODULE module)
         return reinterpret_cast<DWORD>(self);
     }();
 
-    return base == selfBase;
+    if (base == selfBase)
+        return true;
+
+    // Framework/loader modules from THIS install: not the mod a player added, so
+    // never "the mod to blame". Mod Loader's own handler plugins (gta3\std.*.dll -
+    // the streaming/data/text/sprites compilers it runs while loading a mod's
+    // files) and this fork's CLEO+ plugin sit on the stack of every intercepted
+    // call; naming them sends the reader after their own install instead of the
+    // mod that triggered the read. Matched by file name so a build in a different
+    // folder is still recognised.
+    char name[MAX_PATH] = {};
+    if (GetModuleFileNameA(module, name, MAX_PATH) != 0)
+    {
+        const char* file = strrchr(name, '\\');
+        file = file != nullptr ? file + 1 : name;
+        if (_stricmp(file, "CLEO+.cleo") == 0)
+            return true;
+        // gta3\std.<something>.dll - Mod Loader's bundled handler plugins.
+        if (_strnicmp(file, "std.", 4) == 0)
+        {
+            const size_t len = strlen(file);
+            if (len > 4 && _stricmp(file + len - 4, ".dll") == 0)
+                return true;
+        }
+    }
+
+    return false;
 }
 
 // True when the module's file lives under the Windows directory (or is one of
@@ -301,6 +327,28 @@ std::string DebugUtils::GameFunctionForAddress(DWORD address)
     }
 
     return {};
+}
+
+// Script-facing engine APIs that fetch a texture BY NAME on a mod/script's behalf.
+// When RwTextureRead's direct caller is one of these, the read is mod/script-driven
+// even though the caller is the game: the mod asked for the texture (a sprite, a
+// HUD image), so blaming "the archive is missing a file" is the wrong lead.
+bool DebugUtils::IsScriptTextureApi(const std::string& label)
+{
+    // Match on the symbol name inside the "gta_sa.exe+0x... (Name+0x..)" label, so
+    // it works whether the address is the function entry or inside it.
+    static const char* kApis[] =
+    {
+        "CSprite2d::SetTexture",
+        "CSprite2d::Draw",
+        "CSprite2d::DrawRect",
+    };
+    for (const char* api : kApis)
+    {
+        if (label.find(api) != std::string::npos)
+            return true;
+    }
+    return false;
 }
 
 // "mod.asi+0x1a2b" - the module plus the offset inside it.
