@@ -35,6 +35,20 @@ namespace
     // Minimum number of samples with net growth before a script is called a leak.
     constexpr DWORD kLeakMinSamples = 3;
 
+    // Growth measured while the process uptime is below this is dominated by world
+    // loading (the streaming pool fills, textures and models stream in), not a leak.
+    // The report says so and does NOT project a "time to the 2 GB limit" from it: a
+    // single 30 s window taken during loading extrapolates the load fill to a false
+    // "out of memory in ~19 min" (seen in a real log at uptime 61 s).
+    constexpr DWORD kLeakStartupSec = 120;
+
+    // Minimum length of the measurement window before the interval trend and the
+    // limit projection are trusted. One interval (the default 30 s) is not a trend:
+    // with a single interval "recent rate == average rate" is trivially true, so the
+    // trend line always read "steady (leak-like)" - a confident answer from one data
+    // point.
+    constexpr unsigned long long kLeakMinReportWindowSec = 60;
+
     // Retired-state key. A name alone is not unique: two different scripts can
     // share a name, and one arena pointer can be reused under a new name. Keying
     // by "name@pointer" keeps both histories instead of overwriting one.
@@ -402,7 +416,11 @@ void DebugUtils::WriteLeakReport(const char* reason)
         // streaming fill that is plateauing (not a leak). Comparing to the
         // average rather than to the previous interval avoids a false
         // "accelerating" when the previous interval happened to be flat.
-        if (m_leakLastPrivateBytes != 0 && uptimeSeconds > m_leakLastUptimeSec)
+        // With a single interval, recent rate == average rate by construction, so
+        // the trend cannot be told apart and is skipped until a second window
+        // exists (windowSec must span at least two samples).
+        if (m_leakLastPrivateBytes != 0 && uptimeSeconds > m_leakLastUptimeSec &&
+            windowSec >= kLeakMinReportWindowSec)
         {
             const unsigned long long prevWindow =
                 uptimeSeconds - m_leakLastUptimeSec;
@@ -752,13 +770,13 @@ void DebugUtils::WriteLeakReport(const char* reason)
         // how long until the address-space limit (2 GB, or 4 GB with the LAA
         // patch), which is the number that actually matters for a 32-bit game.
         unsigned long long privateGrowth = 0;
+        unsigned long long windowSec = 0;
         double privateRatePerMin = 0.0;
         if (m_leakFirstPrivateBytes != 0 && privateBytes >= m_leakFirstPrivateBytes &&
             uptimeSeconds > m_leakFirstPrivateUptimeSec)
         {
             privateGrowth = privateBytes - m_leakFirstPrivateBytes;
-            const unsigned long long windowSec =
-                uptimeSeconds - m_leakFirstPrivateUptimeSec;
+            windowSec = uptimeSeconds - m_leakFirstPrivateUptimeSec;
             const double bytesPerSec =
                 static_cast<double>(privateGrowth) / static_cast<double>(windowSec);
             privateRatePerMin = bytesPerSec * 60.0 / (1024.0 * 1024.0);
@@ -810,34 +828,90 @@ void DebugUtils::WriteLeakReport(const char* reason)
             const unsigned long long kAddressSpaceBytes = largeAddressAware
                 ? 4ull * 1024ull * 1024ull * 1024ull
                 : 2ull * 1024ull * 1024ull * 1024ull;
-            if (privateRatePerMin > 0.0 && privateBytes < kAddressSpaceBytes)
+            // During world load the private bytes climb fast because the streaming
+            // pool, textures and models are being filled - extrapolating that slope
+            // to the address-space limit gives a false "out of memory in ~19 min"
+            // (a real log did exactly that at uptime 61 s, then the growth stopped).
+            // So the projection is only printed once the process is past the load
+            // phase AND the growth has been measured over more than one window.
+            const bool loadPhase = uptimeSeconds < kLeakStartupSec;
+            if (loadPhase)
             {
-                const double headroomMb =
-                    static_cast<double>(kAddressSpaceBytes - privateBytes) /
-                    (1024.0 * 1024.0);
-                const double minutesToLimit = headroomMb / privateRatePerMin;
-                if (minutesToLimit < 24.0 * 60.0)
+                WriteMemory(
+                    "[leak] the process is still loading the world (uptime %us < %us), "
+                    "so this growth is the streaming/texture fill, not a leak - no "
+                    "limit projection is made yet",
+                    static_cast<unsigned>(uptimeSeconds),
+                    static_cast<unsigned>(kLeakStartupSec)
+                );
+            }
+            else if (privateBytes < kAddressSpaceBytes &&
+                     windowSec >= kLeakMinReportWindowSec)
+            {
+                // Project from the CURRENT interval's slope, not the average since
+                // the first sample: after a load-time spike the average stays high
+                // for a long time and would keep predicting a limit that the
+                // (already plateaued) recent rate no longer supports.
+                const unsigned long long prevWindow = m_leakLastPrivateBytes != 0 &&
+                    uptimeSeconds > m_leakLastUptimeSec
+                        ? uptimeSeconds - m_leakLastUptimeSec
+                        : 0;
+                const long long deltaBytes = prevWindow != 0
+                    ? static_cast<long long>(privateBytes) -
+                      static_cast<long long>(m_leakLastPrivateBytes)
+                    : 0;
+                const double recentRatePerMin = prevWindow != 0
+                    ? static_cast<double>(deltaBytes) /
+                      static_cast<double>(prevWindow) * 60.0 / (1024.0 * 1024.0)
+                    : 0.0;
+
+                if (recentRatePerMin > 0.0)
                 {
-                    WriteMemory(
-                        "[leak] at this rate the %.2f GB limit (%s) is reached in ~%.0f "
-                        "min (%.1f h) - %s headroom left",
-                        static_cast<double>(kAddressSpaceBytes) /
-                            (1024.0 * 1024.0 * 1024.0),
-                        largeAddressAware ? "4GB patch / LAA" : "no LAA (2GB)",
-                        minutesToLimit,
-                        minutesToLimit / 60.0,
-                        MemoryBytes(kAddressSpaceBytes - privateBytes).c_str()
-                    );
+                    const double headroomMb =
+                        static_cast<double>(kAddressSpaceBytes - privateBytes) /
+                        (1024.0 * 1024.0);
+                    const double minutesToLimit = headroomMb / recentRatePerMin;
+                    if (minutesToLimit < 24.0 * 60.0)
+                    {
+                        WriteMemory(
+                            "[leak] at the current rate (%.2f MB/min) the %.2f GB limit "
+                            "(%s) is reached in ~%.0f min (%.1f h) - %s headroom left",
+                            recentRatePerMin,
+                            static_cast<double>(kAddressSpaceBytes) /
+                                (1024.0 * 1024.0 * 1024.0),
+                            largeAddressAware ? "4GB patch / LAA" : "no LAA (2GB)",
+                            minutesToLimit,
+                            minutesToLimit / 60.0,
+                            MemoryBytes(kAddressSpaceBytes - privateBytes).c_str()
+                        );
+                    }
                 }
             }
         }
         else
         {
-            WriteMemory(
-                "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
-                "LEAK/SUSPECTED verdict, and process private is not climbing",
-                MemoryBytes(m_leakMinGrowthBytes).c_str()
-            );
+            // Private bytes are climbing but below the reporting threshold: say what
+            // is happening rather than a flat "not climbing", which would be wrong
+            // (a slow climb still ends at the 2 GB limit, it just takes longer).
+            if (privateGrowth > 0)
+            {
+                WriteMemory(
+                    "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+                    "LEAK/SUSPECTED verdict. Process private did grow by %s, but below "
+                    "the reporting threshold (below %s/interval)",
+                    MemoryBytes(m_leakMinGrowthBytes).c_str(),
+                    MemoryBytes(privateGrowth).c_str(),
+                    MemoryBytes(m_leakMinGrowthBytes).c_str()
+                );
+            }
+            else
+            {
+                WriteMemory(
+                    "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+                    "LEAK/SUSPECTED verdict, and process private is not climbing",
+                    MemoryBytes(m_leakMinGrowthBytes).c_str()
+                );
+            }
         }
     }
 
