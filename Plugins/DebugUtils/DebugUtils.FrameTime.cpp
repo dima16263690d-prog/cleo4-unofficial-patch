@@ -608,9 +608,12 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
                 m_frameTimeStutterCount
             );
 
-        // Spell out the low-logic split when it is what drove the verdict, so the
-        // number behind "present/GPU bound" is visible rather than asserted.
-        if (m_frameTimeSlowFrames > 0 && slowLowLogicPct >= 60.0)
+        // Spell out the low-logic split only when it drove the verdict, so the
+        // number behind "present/GPU bound" is visible rather than asserted. When
+        // the stutter-dominance path decided (enough stutters), that verdict stands
+        // and this note would contradict it, so it is skipped.
+        if (m_frameTimeSlowFrames > 0 && slowLowLogicPct >= 60.0 &&
+            m_frameTimeStutterCount < kFrameTimeMinStutterForCause)
             WriteFrameTime(
                 "[fps] note: %llu of %llu slow frames (%.0f%%) had almost no logic "
                 "time (< %.0f%% of the frame), so the slowdown is outside the script/"
