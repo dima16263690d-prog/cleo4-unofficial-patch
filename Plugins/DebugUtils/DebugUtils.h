@@ -338,6 +338,12 @@ private:
     // present/GPU path, not a script. A frame that also lands at a near-integer
     // multiple of the median period is a missed present (shown a vsync late).
     unsigned long long m_frameTimeSlowLowLogic = 0;
+    // Frames whose period reached kFrameTimeFreezeMs: the process was not running
+    // (alt-tab/minimize, a debugger break, a multi-second disk stall), so these are
+    // freezes, not rendering hitches. Reported on their own line and kept out of
+    // the cause split.
+    unsigned long long m_frameTimeFreezeFrames = 0;
+    double m_frameTimeFreezeMaxMs = 0.0;
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
     bool m_frameTimeHaveLastInterval = false;
     // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
@@ -356,6 +362,11 @@ private:
     // to be attributed to the stutters (rather than to the split over all frames).
     // One stutter is always 100% one-sided, so a lone hitch must not decide.
     static constexpr unsigned long long kFrameTimeMinStutterForCause = 4;
+    // A frame at or above this period is a FREEZE, not a hitch: the process was
+    // not running (alt-tab/minimize, debugger break, disk stall). Counting it as a
+    // 60 FPS sample would report "fps_avg=12.6" and "present/GPU bound" for a game
+    // that was simply paused.
+    static constexpr double kFrameTimeFreezeMs = 1000.0;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction

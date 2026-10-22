@@ -376,10 +376,14 @@ void DebugUtils::InstallStreamingModelWatch()
     {
         WriteFrameTime(
             "[streaming] StreamingModelAddress=0x%08X is outside the game image "
-            "(base 0x%08X); using the built-in default 0x%08X instead",
+            "(base 0x%08X); using the built-in default 0x%08X instead%s",
             static_cast<unsigned>(target),
             static_cast<unsigned>(imageBase),
-            static_cast<unsigned>(kGtaSa10ConvertBufferToObject)
+            static_cast<unsigned>(kGtaSa10ConvertBufferToObject),
+            target <= 1
+                ? " - this key expects an ADDRESS (0 = use the built-in default), "
+                  "not an on/off value"
+                : ""
         );
         target = kGtaSa10ConvertBufferToObject;
     }

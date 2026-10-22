@@ -75,6 +75,8 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeLogicBoundFrames = 0;
     m_frameTimeSlowFrames = 0;
     m_frameTimeSlowLowLogic = 0;
+    m_frameTimeFreezeFrames = 0;
+    m_frameTimeFreezeMaxMs = 0.0;
     m_frameTimeStutterLogicBound = 0;
 }
 
@@ -180,6 +182,23 @@ void DebugUtils::BeginFrameTimeFrame()
     {
         const double periodMs = FrameTimeMs(m_frameTimeLastBefore, m_frameTimeLogicStart);
         m_frameTimeLastPeriodMs = periodMs;
+
+        // A period of a second or more is a FREEZE, not a hitch: the process was
+        // not running (alt-tab/minimize, a debugger break, a multi-second disk
+        // stall). Counting it as a frame would make fps_avg and the percentiles
+        // describe a paused game and would report "present/GPU bound" for what was
+        // simply a pause - so it is counted on its own and left out of every other
+        // statistic. The parked frame is dropped too (its period spans the freeze).
+        if (periodMs >= kFrameTimeFreezeMs)
+        {
+            ++m_frameTimeFreezeFrames;
+            if (periodMs > m_frameTimeFreezeMaxMs)
+                m_frameTimeFreezeMaxMs = periodMs;
+            m_frameTimeHavePending = false;
+            m_frameTimeLastBefore = m_frameTimeLogicStart;
+            m_frameTimeHaveLast = true;
+            return;
+        }
 
         // The first period arrives when the second frame begins (frames == 1);
         // seed the minimum there, otherwise it would stay at its 0.0 initial.
@@ -507,6 +526,21 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             : 0.0,
         m_frameTimeStutterLostMs
     );
+
+    // Freezes (period >= 1 s): the process was not running. Kept out of the frame
+    // statistics above, so they describe the running game; named here instead, or
+    // a 8.8 s pause would silently vanish from a report that says "60 FPS smooth".
+    if (m_frameTimeFreezeFrames > 0)
+    {
+        WriteFrameTime(
+            "[fps] freeze: %llu frame(s) >= %.0fms (max %.0fms) excluded from the "
+            "stats above - the process was not running (alt-tab/minimize, a debugger "
+            "break or a long disk stall), not a rendering hitch",
+            m_frameTimeFreezeFrames,
+            kFrameTimeFreezeMs,
+            m_frameTimeFreezeMaxMs
+        );
+    }
 
     // Hitch frequency per minute: "how often does it stutter", which the count
     // alone does not convey (10 hitches in a 5 s interval is constant stutter;

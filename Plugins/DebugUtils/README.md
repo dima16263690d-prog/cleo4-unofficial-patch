@@ -140,6 +140,11 @@ Each report shows, for the interval:
   low logic time points at streaming/driver/render, not at scripts; a high logic
   time points at the scripts (or CLEO opcodes);
 - stutter count/share/lost_ms — frames at or above WarnMs, and the time lost;
+- a freeze line — frames of a second or more (the process was not running:
+  alt-tab/minimize, a debugger break, a long disk stall). These are counted on
+  their own and excluded from every statistic above, so an alt-tab does not
+  report "fps_avg=12.6" or a bogus "present/GPU bound" for a game that was simply
+  paused; the line names the count and the longest freeze;
 - a period histogram with fixed edges (16.6/20/25/33.3/50/100/250 ms);
 - frame-quality statistics from a bounded ring of every period: p50/p95/p99/p99.9
   percentiles, jitter_ms (standard deviation of the period), fps_1%low and

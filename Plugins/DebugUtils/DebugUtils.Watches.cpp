@@ -1162,10 +1162,14 @@ void DebugUtils::InstallTextureEntryHook()
     {
         WriteFrameTime(
             "[texturewatch] TextureEntryAddress=0x%08X is outside the game image "
-            "(base 0x%08X); using the built-in default 0x%08X instead",
+            "(base 0x%08X); using the built-in default 0x%08X instead%s",
             static_cast<unsigned>(target),
             static_cast<unsigned>(imageBase),
-            static_cast<unsigned>(kGtaSa10RwTextureRead)
+            static_cast<unsigned>(kGtaSa10RwTextureRead),
+            target <= 1
+                ? " - this key expects an ADDRESS (0 = use the built-in default), "
+                  "not an on/off value"
+                : ""
         );
         target = kGtaSa10RwTextureRead;
     }
