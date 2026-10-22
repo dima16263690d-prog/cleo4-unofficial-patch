@@ -338,6 +338,11 @@ private:
     // present/GPU path, not a script. A frame that also lands at a near-integer
     // multiple of the median period is a missed present (shown a vsync late).
     unsigned long long m_frameTimeSlowLowLogic = 0;
+    // Slow frames that happened during world load (uptime < kFrameTimeStartupSec).
+    // A world-load hitch is not steady-state stutter, so the pacing verdict must
+    // not call an interval that is ALL load "uneven pacing" - the per-frame cause
+    // line already separates them, and this makes the verdict agree.
+    unsigned long long m_frameTimeSlowFramesLoad = 0;
     // Frames whose period reached kFrameTimeFreezeMs: the process was not running
     // (alt-tab/minimize, a debugger break, a multi-second disk stall), so these are
     // freezes, not rendering hitches. Reported on their own line and kept out of

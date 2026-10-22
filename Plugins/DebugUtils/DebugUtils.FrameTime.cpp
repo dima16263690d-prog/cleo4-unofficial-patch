@@ -75,6 +75,7 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeLogicBoundFrames = 0;
     m_frameTimeSlowFrames = 0;
     m_frameTimeSlowLowLogic = 0;
+    m_frameTimeSlowFramesLoad = 0;
     m_frameTimeFreezeFrames = 0;
     m_frameTimeFreezeMaxMs = 0.0;
     m_frameTimeStutterLogicBound = 0;
@@ -258,9 +259,14 @@ void DebugUtils::BeginFrameTimeFrame()
 
         // Frames that missed the target (slow frames), regardless of cause, so the
         // report can say "smooth" when there were none instead of always blaming a
-        // subsystem.
+        // subsystem. The load-phase subset is tracked too: a burst of big frames
+        // while the world loads is not steady-state stutter.
         if (periodMs >= kFrameTimeSlowMs)
+        {
             ++m_frameTimeSlowFrames;
+            if (m_frameTimePending.uptimeSec < kFrameTimeStartupSec)
+                ++m_frameTimeSlowFramesLoad;
+        }
 
         // Of the slow frames, count the ones with little logic time: they cannot be
         // script-bound, so a majority of them points at the present/GPU path. This
@@ -669,7 +675,18 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     {
         const double smoothness = low1Fps > 0.0 ? low1Fps / avgFps : 0.0;
         const bool lowAvg = avgFps < 55.0;            // below a 60 FPS target
-        const bool uneven = low1Fps > 0.0 && smoothness < 0.75;
+        bool uneven = low1Fps > 0.0 && smoothness < 0.75;
+
+        // A load-phase hitch is not steady-state stutter. When every slow frame of
+        // the interval happened while the world was loading, the 1%-low is dragged
+        // down by the load, not by ongoing stutter - so do not call it "uneven
+        // pacing" (that reads as a standing problem). Say so instead, and let the
+        // steady-state intervals give the real verdict.
+        const bool loadOnly =
+            m_frameTimeSlowFrames > 0 &&
+            m_frameTimeSlowFramesLoad == m_frameTimeSlowFrames;
+        if (loadOnly)
+            uneven = false;
 
         const char* pacing = "smooth";
         if (lowAvg && uneven)
@@ -679,7 +696,18 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         else if (uneven)
             pacing = "uneven pacing (hitches despite a good average)";
 
-        if (lowAvg || uneven)
+        if (loadOnly && (lowAvg || (low1Fps > 0.0 && smoothness < 0.75)))
+        {
+            WriteFrameTime(
+                "[fps] VERDICT: load-time only - every slow frame (%llu) happened "
+                "while the world was loading (uptime < %us), so this interval's low "
+                "1%%-low is load, not steady-state stutter - fps_avg=%.1f "
+                "fps_1%%low=%.1f",
+                m_frameTimeSlowFramesLoad, static_cast<unsigned>(kFrameTimeStartupSec),
+                avgFps, low1Fps
+            );
+        }
+        else if (lowAvg || uneven)
         {
             WriteFrameTime(
                 "[fps] VERDICT: %s - fps_avg=%.1f fps_1%%low=%.1f (%.0f%% of average)",

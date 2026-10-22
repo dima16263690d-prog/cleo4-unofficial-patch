@@ -1484,8 +1484,41 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         const auto& group = byChain[chain];
         const bool hasRequester = chain != "(no requester frame captured)";
         const std::string& common = commonByChain[chain];
+
+        // Classify the whole group so the header does not call a mod the requester
+        // when the read was actually engine/CLEO-initiated (the direct caller is
+        // the game loading a .txd). Calling a mod "requested by" and then printing
+        // "the mod named above is only the nearest frame, not the requester" one
+        // line later is contradictory and sends the reader after the wrong mod.
+        size_t groupEngine = 0;
+        size_t groupScript = 0;
+        size_t groupMod = 0;
+        for (const auto* entry : group)
+        {
+            if (entry->second.exactCallerDirect)
+                ++groupMod;
+            else if (!entry->second.directCallerRaw.empty())
+            {
+                if (IsScriptTextureApi(entry->second.directCallerRaw))
+                    ++groupScript;
+                else
+                    ++groupEngine;
+            }
+        }
+        const bool engineInitiatedGroup =
+            groupEngine > 0 && groupMod == 0 && groupScript == 0;
+
         if (hasRequester)
-            WriteFrameTime("  requested by: %s", chain.c_str());
+        {
+            if (engineInitiatedGroup)
+                WriteFrameTime(
+                    "  on stack when it happened (NOT the requester - the direct "
+                    "caller is the engine loading a .txd/.dff, so no mod asked for "
+                    "this texture; these frames are only context): %s",
+                    chain.c_str());
+            else
+                WriteFrameTime("  requested by: %s", chain.c_str());
+        }
         else if (common.empty())
             WriteFrameTime(
                 "  requested by: (no mod frame captured - enable ModuleScan to "
@@ -1546,7 +1579,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         entry->second.exactCaller.c_str());
                 }
                 else if (alwaysOnStack.count(entry->second.exactCaller) != 0 &&
-                         hasRequester)
+                         hasRequester && !engineInitiatedGroup)
                 {
                     // The recorded nearest frame is a module that is on EVERY chain
                     // (a main-loop hook/wrapper), so it is NOT the requester - it is
@@ -1562,7 +1595,7 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         nearest.c_str(),
                         entry->second.exactCaller.c_str());
                 }
-                else if (hasRequester)
+                else if (hasRequester && !engineInitiatedGroup)
                 {
                     WriteFrameTime(
                         "    probable caller: %s  (nearest mod frame on the stack - a "
@@ -1576,16 +1609,26 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
         // When the direct caller of RwTextureRead was the engine or CLEO (not a
         // mod), say which one: it means the engine loaded the .txd itself, so no
         // mod is to blame and the mod frame above is only the requester's context.
+        // A script-facing engine API (CSprite2d::SetTexture, the 038E/0A6B sprite
+        // path) is called BY a mod/script, so it is NOT "engine-initiated" - say so,
+        // to agree with the summary line below (which classifies it separately).
         for (const auto* entry : group)
         {
             if (entry->second.exactCallerDirect == false &&
                 !entry->second.directCallerRaw.empty())
             {
-                WriteFrameTime(
-                    "    direct caller of RwTextureRead: %s (engine/CLEO-initiated "
-                    "read - the mod named above is only the nearest frame, not the "
-                    "requester)",
-                    entry->second.directCallerRaw.c_str());
+                if (IsScriptTextureApi(entry->second.directCallerRaw))
+                    WriteFrameTime(
+                        "    direct caller of RwTextureRead: %s (a script/engine-API "
+                        "read - a mod or CLEO script asked for this texture by name, "
+                        "e.g. a sprite draw; the mod is the requester)",
+                        entry->second.directCallerRaw.c_str());
+                else
+                    WriteFrameTime(
+                        "    direct caller of RwTextureRead: %s (engine/CLEO-initiated "
+                        "read - the mod named above is only the nearest frame, not the "
+                        "requester)",
+                        entry->second.directCallerRaw.c_str());
                 break;
             }
         }
@@ -1709,6 +1752,14 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                 engineInitiated + scriptInitiated + modInitiated, changed.size(),
                 engineInitiated, scriptInitiated, modInitiated
             );
+            if (modInitiated == 0 && scriptInitiated == 0 && engineInitiated > 0)
+            {
+                WriteFrameTime(
+                    "    VERDICT: no mod asked for these textures - every failed read "
+                    "is the engine's own .txd/.dff load, so the fix is a resource file "
+                    "(the model/.txd above), not a mod."
+                );
+            }
             if (engineInitiated > 0)
             {
                 WriteFrameTime(
