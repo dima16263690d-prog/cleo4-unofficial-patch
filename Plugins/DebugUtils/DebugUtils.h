@@ -332,10 +332,19 @@ private:
     // Frames slower than kFrameTimeSlowMs (missed the 50 FPS floor). Used to tell
     // a genuinely smooth interval from one whose hitches were only mild.
     unsigned long long m_frameTimeSlowFrames = 0;
+    // Of those slow frames, the ones whose logic tick was a small share of the
+    // period (kFrameTimeLowLogicShare). A slow frame with almost no logic time is
+    // not script-bound; when most slow frames look like that, the cause is the
+    // present/GPU path, not a script. A frame that also lands at a near-integer
+    // multiple of the median period is a missed present (shown a vsync late).
+    unsigned long long m_frameTimeSlowLowLogic = 0;
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
     bool m_frameTimeHaveLastInterval = false;
     // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
     static constexpr double kFrameTimeLogicShare = 0.8;
+    // A slow frame whose logic used less than this share of the period was not
+    // script-bound: the stall was outside the logic tick (present/GPU/streaming).
+    static constexpr double kFrameTimeLowLogicShare = 0.35;
     // A frame must be at least this slow (ms) before its cause is worth counting:
     // a logic-heavy frame that still hits 60 FPS is not a problem, and counting it
     // would mislabel a smooth interval as "logic/script bound". 20 ms = 50 FPS.

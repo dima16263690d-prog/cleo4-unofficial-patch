@@ -171,7 +171,11 @@ Each report shows, for the interval:
   overall label is decided by the stutters when there are any (they are the frames
   that hurt), falling back to the whole-frame share on a smooth interval - so a
   smooth interval whose few hitches are all in logic is not mislabelled "render
-  bound";
+  bound". When most slow frames carry almost no logic time (<35% of the period),
+  the cause is reported as present/vsync bound (a frame shown a vsync late) rather
+  than a vague "render/streaming bound"; the raw count is printed too. The
+  "worst logic tick" line is informational only when the interval had no slow
+  frames, so a smooth 60 FPS interval is never given a subsystem verdict;
 - an automatic frame-pacing verdict: a single `[fps] VERDICT:` line (no
   configuration needed) that flags a low average (below 55 FPS) and uneven pacing
   (1%-low below 75% of the average) separately, so "average is fine but it
@@ -486,6 +490,12 @@ the name is read from the archive directories). A failed read then names the fil
   model's TXD slot (`CBaseModelInfo::m_nTxdIndex` resolved to a name) — the file
   to open.
 - `[LOD]` marks a LOD model, whose reduced texture set makes a miss here normal.
+  A model is a LOD when its name follows the engine convention: a `lod` prefix
+  (`lod711block02`, `lodgaz18_law`) or an `_lod` suffix (`gaz18law2_LOD`). The
+  `m_nFlags` LOD bit is deliberately NOT trusted - the engine sets it by default
+  (`CBaseModelInfo::Init`), so every plain model carries it, and the public
+  headers disagree on that bit's name - so the name decides, and the bit is only
+  mentioned when the name says LOD but the bit is clear.
   A `streamed model` line is only printed when the read happened *inside* a model
   conversion; an engine/script read at another moment has none.
 

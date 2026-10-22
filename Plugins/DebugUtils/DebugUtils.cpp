@@ -175,6 +175,17 @@ DebugUtils::DebugUtils()
             static_cast<unsigned>(m_leakMinGrowthBytes / 1024u)
         );
     }
+    else if (m_leakTrackerEnabled && !m_memoryLogEnabled)
+    {
+        // The tracker writes through the memory log, so Memory=0 silently disables
+        // it. Say so once instead of leaving the user with an empty log and no
+        // hint why the leak report never appears. Written to the core log, which
+        // is always open (the memory log is exactly what is off here).
+        WriteCore(
+            "[leak] LeakTracker=1 but [DebugUtils.Logs] Memory=0, so the leak "
+            "report has nowhere to go and is disabled - set Memory=1 to enable it"
+        );
+    }
 
     if (m_diagnosticLogEnabled)
         WriteDiagnostic("//////////////////////// diagnostic ////////////////////////");

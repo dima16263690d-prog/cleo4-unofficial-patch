@@ -74,6 +74,7 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimePending = FrameTimeSample{};
     m_frameTimeLogicBoundFrames = 0;
     m_frameTimeSlowFrames = 0;
+    m_frameTimeSlowLowLogic = 0;
     m_frameTimeStutterLogicBound = 0;
 }
 
@@ -241,6 +242,14 @@ void DebugUtils::BeginFrameTimeFrame()
         // subsystem.
         if (periodMs >= kFrameTimeSlowMs)
             ++m_frameTimeSlowFrames;
+
+        // Of the slow frames, count the ones with little logic time: they cannot be
+        // script-bound, so a majority of them points at the present/GPU path. This
+        // is the "why is a 60 FPS game showing 33 ms frames with 2 ms of logic?"
+        // answer the per-frame cause split alone cannot give.
+        if (periodMs >= kFrameTimeSlowMs &&
+            m_frameTimeLastLogicMs < kFrameTimeLowLogicShare * periodMs)
+            ++m_frameTimeSlowLowLogic;
 
         if (periodMs >= static_cast<double>(m_frameTimeWarnMs))
         {
@@ -538,6 +547,16 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         // required before the stutter-dominance path is trusted.
         const bool fewStutters =
             m_frameTimeStutterCount > 0 && m_frameTimeStutterCount < kFrameTimeMinStutterForCause;
+        // Share of the SLOW frames that had almost no logic time. Those cannot be
+        // script-bound, and in practice they are frames the game presented a vsync
+        // late (period ~= 2x the median, logic ~= the median's) - a present/GPU
+        // pacing miss, not a script. Telling this apart is the whole point of the
+        // split: "render/streaming bound" alone is too vague to act on.
+        const double slowLowLogicPct = m_frameTimeSlowFrames > 0
+            ? 100.0 * static_cast<double>(m_frameTimeSlowLowLogic) /
+              static_cast<double>(m_frameTimeSlowFrames)
+            : 0.0;
+
         const char* dominant;
         if (m_frameTimeSlowFrames == 0)
             // No frame even missed the 50 FPS floor: nothing to blame. Saying
@@ -550,8 +569,16 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             else if (stutterLogicPct >= 20.0)
                 dominant = "mixed";
             else
-                dominant = "render/streaming bound (most stutters)";
+                dominant = "present/GPU bound (most stutters have little logic)";
         }
+        else if (slowLowLogicPct >= 60.0)
+            // Most slow frames carried almost no logic: the cost is outside the
+            // script/logic tick. Timing alone cannot separate a genuine GPU-bound
+            // frame from one shown a vsync late, so both are named instead of the
+            // vague "render/streaming bound".
+            dominant = "present/GPU bound (slow frames have little logic - the cost "
+                       "is outside the script tick: GPU/driver work or a frame shown "
+                       "a vsync late, not a CLEO script)";
         else
         {
             dominant = logicSharePct >= 50.0
@@ -579,6 +606,20 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
                 "attribute the cause to the hitches, so the split over ALL frames is "
                 "used instead of the stutter share",
                 m_frameTimeStutterCount
+            );
+
+        // Spell out the low-logic split when it is what drove the verdict, so the
+        // number behind "present/GPU bound" is visible rather than asserted.
+        if (m_frameTimeSlowFrames > 0 && slowLowLogicPct >= 60.0)
+            WriteFrameTime(
+                "[fps] note: %llu of %llu slow frames (%.0f%%) had almost no logic "
+                "time (< %.0f%% of the frame), so the slowdown is outside the script/"
+                "logic tick - typically GPU/driver work or a frame shown a vsync "
+                "late, not a CLEO script",
+                m_frameTimeSlowLowLogic,
+                m_frameTimeSlowFrames,
+                slowLowLogicPct,
+                kFrameTimeLowLogicShare * 100.0
             );
     }
 
@@ -620,7 +661,24 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
     {
         const double ratio = m_frameTimeWorstLogicMs / m_frameTimeWorstLogicPeriodMs;
 
-        if (ratio > 1.0)
+        if (m_frameTimeSlowFrames == 0)
+        {
+            // No frame missed the target, so there is nothing to blame: naming a
+            // subsystem from the single worst logic tick would report
+            // "render/streaming bound" on a perfectly smooth interval (seen in a
+            // real log: 23.7% share at 59.6 FPS). Report the tick as information
+            // only.
+            WriteFrameTime(
+                "worst logic tick: logic_ms=%.2f period_ms=%.2f logic_share=%.1f%% "
+                "(informational - the interval had no slow frames, so no cause is "
+                "attributed; the 'worst frames' table below ranks by frame PERIOD, "
+                "not by logic time)",
+                m_frameTimeWorstLogicMs,
+                m_frameTimeWorstLogicPeriodMs,
+                100.0 * ratio
+            );
+        }
+        else if (ratio > 1.0)
         {
             // The logic tick outlasted its own frame period: a stall that the
             // period sampling did not span (a one-off hitch inside logic), not a
