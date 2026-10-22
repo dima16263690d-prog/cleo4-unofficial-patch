@@ -1616,12 +1616,13 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
             // at that moment, so a missing/misnamed texture points at this file.
             if (entry->second.streamingModelId >= 0)
             {
-                // The engine names distant level-of-detail models with a "_lod"
-                // suffix ("gaz18law2_LOD") - the reliable signal. The m_nFlags LOD
-                // bit is a second opinion only: its position is disputed across the
-                // public headers and the engine defaults it SET, so it is never
-                // used to assert LOD. A disagreement with the name is reported, but
-                // the name wins.
+                // The engine names distant level-of-detail models with a "lod"
+                // prefix ("lod711block02") or an "_LOD" suffix ("gaz18law2_LOD") -
+                // the reliable signal. The m_nFlags LOD bit is a second opinion
+                // only: its position is disputed across the public headers and the
+                // engine defaults it SET, so it is never used to assert LOD. The
+                // name wins, and the bit is only mentioned when the name says LOD
+                // but the bit is clear (the informative direction).
                 const bool nameKnown = !entry->second.streamingModel.empty();
                 const bool lodByName = NameLooksLikeLod(entry->second.streamingModel);
                 const bool isLod = nameKnown && lodByName;
@@ -1638,13 +1639,15 @@ void DebugUtils::WriteTextureReadReport(bool forceAll)
                         "        streamed model id: %d (name not in the IMG index)",
                         entry->second.streamingModelId);
 
-                if (nameKnown && entry->second.streamingIsLod != lodByName)
+                // The bit defaults SET in CBaseModelInfo::Init(), so "bit set but
+                // the name is not a LOD" is the NORMAL case for an ordinary model
+                // and printing it on every row is pure noise. Only the reverse is
+                // informative: the name says LOD but the engine cleared the bit.
+                if (nameKnown && lodByName && !entry->second.streamingIsLod)
                     WriteFrameTime(
-                        "        note: the m_nFlags LOD bit is %s but the name ends in "
-                        "_lod is %s; the name was trusted (the bit's position is "
-                        "disputed across SDK headers and it defaults set)",
-                        entry->second.streamingIsLod ? "set" : "clear",
-                        lodByName ? "set" : "clear");
+                        "        note: the name marks this a LOD model but the m_nFlags "
+                        "LOD bit is clear; the name was trusted (the bit defaults set "
+                        "and its position is disputed across SDK headers)");
 
                 // The dictionary that should hold the texture. This is the FILE to
                 // open: a missing texture is either absent from this .txd or the

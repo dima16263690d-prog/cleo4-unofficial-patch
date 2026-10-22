@@ -58,13 +58,14 @@ namespace
         unsigned short flags;    // 0x12  m_nFlags
     };
     // The LOD bit's position in m_nFlags is disputed: the workspace plugin-sdk
-    // (citing a dead MTA 1.3.4 URL) puts bIsLod at bit 5, while current MTA and
-    // gta-reversed put it at bit 7 (and disagree on that bit's *name*: bIsLod vs
-    // bIsColLoaded). The engine also defaults it SET in CBaseModelInfo::Init().
-    // So the flag is used only as a low-confidence fallback, and the reliable LOD
-    // signal is the engine's own "_lod" model-name suffix (see NameLooksLikeLod).
-    // Both candidate bits are tested so a LOD that only carries the legacy bit is
-    // still labelled. Verified offset: m_nTxdIndex is 0x0A (gta-reversed).
+    // (citing a dead MTA 1.3.4 URL) puts bIsLod at bit 5, while current MTA names
+    // bit 7 bIsColLoaded and gta-reversed names bit 7 bIsLod (bits 0-6 agree; only
+    // the name differs). Worse, CBaseModelInfo::Init() sets the bit (bit 7) SET by
+    // default, so a plain model carries it too. The flag is therefore NOT a
+    // reliable LOD indicator and is used only as a second opinion; the reliable
+    // signal is the model name (a "lod" prefix or "_lod" suffix - see
+    // NameLooksLikeLod). Both candidate bits are read so the note can still fire.
+    // Verified offset: m_nTxdIndex is 0x0A (gta-reversed).
     constexpr unsigned short kModelFlagIsLodMask = (1u << 5) | (1u << 7);
 
     // tStreamingFileDesc: name at offset 0, flags/handle after. Only the name is
@@ -326,18 +327,31 @@ std::string DebugUtils::ModelNameForId(int modelId)
     return it == m_modelNames.end() ? std::string() : it->second;
 }
 
-// The engine names every distant level-of-detail model with a "_lod" suffix
-// ("gaz18law2_LOD", "gravelground_lod"). Used only to corroborate the LOD bit
-// read out of m_nFlags: the two independent header layouts that agree on the
-// flag's *position* disagree on its *name* (bIsLod vs bIsColLoaded), so the name
-// is a second opinion, not the primary signal. The bit is still trusted on its
-// own; this only lets the report say "the name confirms it".
+// The engine names every distant level-of-detail model after its convention. In
+// GTA SA this is the "lod" PREFIX ("lod711block02", "lodlasruff201",
+// "lodgaz18_law", "lodonstwar_las01") - confirmed against a real cleo_frametime
+// log where every streamed LOD model starts with "lod". Some tools also use an
+// "_LOD"/"_lod" SUFFIX ("gaz18law2_LOD"), so BOTH are accepted. This is the
+// reliable LOD signal: the m_nFlags bit is unreliable (CBaseModelInfo::Init sets
+// it BY DEFAULT, so every plain model carries it, and the two independent header
+// layouts disagree on that bit's name: bIsLod vs bIsColLoaded). The bit is only a
+// second opinion, printed as a note when it disagrees with the name.
 bool DebugUtils::NameLooksLikeLod(const std::string& name)
 {
-    if (name.size() < 5)
+    if (name.size() < 4)
         return false;
-    const size_t at = name.size() - 4;
-    return _stricmp(name.c_str() + at, "_lod") == 0;
+
+    // Prefix "lod" ("lod711block02"). The engine's own LOD model names use it.
+    if (_strnicmp(name.c_str(), "lod", 3) == 0)
+        return true;
+
+    // Suffix "_lod" / "_LOD" ("gaz18law2_LOD") - the convention some map tools
+    // and mods use for a custom LOD.
+    if (name.size() >= 5 &&
+        _stricmp(name.c_str() + name.size() - 4, "_lod") == 0)
+        return true;
+
+    return false;
 }
 
 void DebugUtils::InstallStreamingModelWatch()
