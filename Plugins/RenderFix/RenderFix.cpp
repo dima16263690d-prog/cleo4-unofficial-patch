@@ -85,8 +85,67 @@ void RenderFix::OnGameBegin()
 
 void RenderFix::OnGameProcessBefore()
 {
+    if (s_instance != nullptr)
+        s_instance->UpdateAutoFpsLimit();
+
     if (s_instance != nullptr && s_instance->m_pendingReapply)
         s_instance->ReapplyFrameLimit();
+}
+
+// Runs every frame. Reads the current game state and, when the auto limiter is
+// on, lowers the engine cap for the activities that break at high FPS. The cap
+// is only ever written when it changes, so a mod that owns the limiter is not
+// fought frame by frame.
+void RenderFix::UpdateAutoFpsLimit()
+{
+    if (!m_supportedVersion || !m_autoFpsEnabled)
+        return;
+
+    AutoFpsState state;
+    state.cutsceneRunning = ReadByte(kCutsceneRunningByte) != 0;
+    state.wideScreenOn = ReadByte(kWideScreenByte) != 0;
+    state.pauseMenu = ReadByte(kUserPauseByte) != 0;
+    state.currArea = *reinterpret_cast<const int*>(kCurrAreaInt);
+
+    // threadName is a fixed 8 bytes and not NUL-terminated, so copy each name
+    // into a NUL-terminated buffer. Fixed storage: this runs every frame.
+    char nameBuf[kAutoFpsMaxScripts][9] = {};
+    const char* names[kAutoFpsMaxScripts] = {};
+    int count = 0;
+    const auto* script =
+        *reinterpret_cast<const CScriptThread* const*>(kActiveScriptsPtr);
+    for (; script != nullptr && count < kAutoFpsMaxScripts; script = script->next)
+    {
+        nameBuf[count][8] = '\0';
+        memcpy(nameBuf[count], script->threadName, 8);
+        names[count] = nameBuf[count];
+        ++count;
+    }
+
+    state.scriptNames = names;
+    state.scriptNameCount = count;
+
+    const int overrideCap = DecideAutoFpsLimit(state, m_autoFpsOptions);
+
+    const int desired = EffectiveFpsCap(m_frameLimit, overrideCap);
+
+    if (desired == m_autoFpsCurrent)
+        return;
+
+    if (desired > 0 && desired <= kFrameLimitMax)
+    {
+        const uint8_t value = static_cast<uint8_t>(desired);
+        if (PatchBytes(kFrameLimitByte, &value, sizeof(value)))
+        {
+            WriteLog(
+                "[renderfix] auto FPS limit %d%s (0x%08X)",
+                desired,
+                overrideCap > 0 ? " [activity override]" : " [restored]",
+                kFrameLimitByte
+            );
+            m_autoFpsCurrent = desired;
+        }
+    }
 }
 
 void RenderFix::ApplyFixes()
@@ -102,6 +161,7 @@ void RenderFix::ApplyFixes()
 
     ApplyFrameLimit();
     ApplyFrameDelayRemoval();
+    ApplyMinRefreshRate();
 
     // The engine re-initialises the limiter shortly after the scripts start, so
     // the value written at game begin can be overwritten. Re-apply it once on
@@ -112,15 +172,46 @@ void RenderFix::ApplyFixes()
     WriteLog("[renderfix] done");
 }
 
+void RenderFix::ApplyMinRefreshRate()
+{
+    if (m_minRefreshRate <= 0)
+        return;
+
+    if (!IsValidRefreshRate(m_minRefreshRate))
+    {
+        WriteLog(
+            "[renderfix] MinRefreshRate=%d is out of range (%d..%d); ignored",
+            m_minRefreshRate,
+            kFrameLimitMin,
+            kFrameLimitMax
+        );
+        return;
+    }
+
+    const uint8_t value = static_cast<uint8_t>(m_minRefreshRate);
+    if (PatchBytes(kMinRefreshRateByte, &value, sizeof(value)))
+        WriteLog("[renderfix] minimum refresh rate set to %d Hz (0x%08X)",
+            m_minRefreshRate, kMinRefreshRateByte);
+    else
+        WriteLog("[renderfix] refresh-rate patch failed (0x%08X)", kMinRefreshRateByte);
+}
+
 void RenderFix::ReapplyFrameLimit()
 {
     m_pendingReapply = false;
 
     const uint8_t value = static_cast<uint8_t>(m_frameLimit);
     if (PatchBytes(kFrameLimitByte, &value, sizeof(value)))
+    {
+        // Keep the auto limiter's cache in sync; otherwise it would treat the
+        // value we just wrote as a change and write it again next frame.
+        m_autoFpsCurrent = m_frameLimit;
         WriteLog("[renderfix] frame limit re-applied on first frame: %u FPS", m_frameLimit);
+    }
     else
+    {
         WriteLog("[renderfix] frame limit re-apply failed");
+    }
 }
 
 void RenderFix::ApplyFrameLimit()
@@ -155,6 +246,8 @@ void RenderFix::ApplyFrameLimit()
         static_cast<unsigned>(value),
         kFrameLimitByte
     );
+
+    m_autoFpsCurrent = m_frameLimit;
 }
 
 void RenderFix::ApplyFrameDelayRemoval()
@@ -270,6 +363,23 @@ void RenderFix::LoadConfig()
         GetPrivateProfileIntA("RenderFix.FPS", "FrameLimit", 0, path.c_str());
     m_removeFrameDelay =
         GetPrivateProfileIntA("RenderFix.FPS", "RemoveFrameDelay", 0, path.c_str()) != 0;
+    m_minRefreshRate =
+        GetPrivateProfileIntA("RenderFix.FPS", "MinRefreshRate", 0, path.c_str());
+
+    m_autoFpsEnabled =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "Enabled", 0, path.c_str()) != 0;
+    m_autoFpsOptions.forCutscenes =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForCutscenes", 1, path.c_str()) != 0;
+    m_autoFpsOptions.forScriptedScenes =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForScriptedScenes", 1, path.c_str()) != 0;
+    m_autoFpsOptions.forPauseMenu =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForPauseMenu", 1, path.c_str()) != 0;
+    m_autoFpsOptions.forMinigames =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForMinigames", 1, path.c_str()) != 0;
+    m_autoFpsOptions.forMissions =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForMissions", 1, path.c_str()) != 0;
+    m_autoFpsOptions.forSchools =
+        GetPrivateProfileIntA("RenderFix.AutoLimitFPS", "ForSchools", 1, path.c_str()) != 0;
 
     m_streamingMemoryMb =
         GetPrivateProfileIntA("RenderFix.Streaming", "MemoryMB", 0, path.c_str());
@@ -281,7 +391,9 @@ void RenderFix::LoadConfig()
     const bool fileMissing =
         GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES;
     const bool missingNewKeys =
-        !fileMissing && raw.find("RenderFix.Streaming.MemoryMB") == raw.end();
+        !fileMissing &&
+        (raw.find("RenderFix.Streaming.MemoryMB") == raw.end() ||
+         raw.find("RenderFix.AutoLimitFPS.Enabled") == raw.end());
 
     if (fileMissing || missingNewKeys)
     {
@@ -328,6 +440,28 @@ std::string RenderFix::BuildConfigText(const std::map<std::string, std::string>&
     desc("Remove the engine's ~14 ms per-frame sleep (SilentPatch 'No framedelay').");
     desc("This is what usually unlocks a smooth high FPS. 1 = on, 0 = off.");
     kv("RenderFix.FPS", "RemoveFrameDelay", "0");
+    desc("Minimum monitor refresh rate in Hz (FramerateVigilante 'RefreshRate').");
+    desc("0 = untouched. On a 144 Hz monitor try half (72) for steadier pacing.");
+    kv("RenderFix.FPS", "MinRefreshRate", "0");
+    line("");
+
+    line("[RenderFix.AutoLimitFPS]");
+    desc("Temporarily lower the frame cap while an activity that breaks at high");
+    desc("FPS runs (ported from FramerateVigilante). The cap is restored after.");
+    desc("Requires FrameLimit > 0 to have a base cap to lower.");
+    kv("RenderFix.AutoLimitFPS", "Enabled", "0");
+    desc("Cutscenes: cap 60. 1 = on, 0 = off.");
+    kv("RenderFix.AutoLimitFPS", "ForCutscenes", "1");
+    desc("Scripted scenes (widescreen borders): cap 80.");
+    kv("RenderFix.AutoLimitFPS", "ForScriptedScenes", "1");
+    desc("Pause / options menu: cap 60.");
+    kv("RenderFix.AutoLimitFPS", "ForPauseMenu", "1");
+    desc("Minigames (pool 'POOL2', hot coffee 'GFSEX'): cap 30.");
+    kv("RenderFix.AutoLimitFPS", "ForMinigames", "1");
+    desc("Mission interiors (Big Smoke 'DRUGS1' inside): cap 50.");
+    kv("RenderFix.AutoLimitFPS", "ForMissions", "1");
+    desc("Driving/boat/bike schools ('DSKOOL','BOAT','BSKOOL'): cap 80.");
+    kv("RenderFix.AutoLimitFPS", "ForSchools", "1");
     line("");
 
     line("[RenderFix.Streaming]");

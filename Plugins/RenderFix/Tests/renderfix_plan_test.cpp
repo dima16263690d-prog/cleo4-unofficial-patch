@@ -97,6 +97,103 @@ int main()
           kFrameDelayNop > kFrameDelayPatch2 &&
           kFrameDelayNop - kFrameDelayPatch2 < 0x100);
 
+    // ---- game-state addresses (read-only, must be in the image) ----
+    Check("cutscene ms_running address is in the image", inImage(kCutsceneRunningByte));
+    Check("widescreen byte address is in the image", inImage(kWideScreenByte));
+    Check("user-pause address is in the image", inImage(kUserPauseByte));
+    Check("currArea address is in the image", inImage(kCurrAreaInt));
+    Check("active-scripts pointer is in the image", inImage(kActiveScriptsPtr));
+    Check("min-refresh-rate byte address is in the image", inImage(kMinRefreshRateByte));
+
+    // The wide-screen byte must be exactly TheCamera (0xB6F028) + 0x3D; a wrong
+    // offset would read unrelated camera state as "scripted scene".
+    CheckEq("widescreen byte == TheCamera + 0x3D", kWideScreenByte, 0xB6F028 + 0x3D);
+
+    // ---- refresh-rate validation ----
+    CheckEq("refresh rate 0 is invalid (means 'untouched')", IsValidRefreshRate(0), 0);
+    CheckEq("refresh rate 60 is valid", IsValidRefreshRate(60), 1);
+    CheckEq("refresh rate 144 is valid", IsValidRefreshRate(144), 1);
+    CheckEq("refresh rate 256 is invalid", IsValidRefreshRate(256), 0);
+
+    // ---- Auto FPS limit decision (ported from FramerateVigilante) ----
+    {
+        AutoFpsOptions opt;
+
+        AutoFpsState s;
+        CheckEq("idle: no override", DecideAutoFpsLimit(s, opt), 0);
+
+        s.cutsceneRunning = true;
+        CheckEq("cutscene -> 60", DecideAutoFpsLimit(s, opt), 60);
+        s.cutsceneRunning = false;
+
+        s.wideScreenOn = true;
+        CheckEq("scripted scene -> 80", DecideAutoFpsLimit(s, opt), 80);
+        s.wideScreenOn = false;
+
+        s.pauseMenu = true;
+        CheckEq("pause menu -> 60", DecideAutoFpsLimit(s, opt), 60);
+        s.pauseMenu = false;
+
+        // Cutscene beats a scripted scene beats the pause menu (FV precedence).
+        AutoFpsState both;
+        both.cutsceneRunning = true;
+        both.wideScreenOn = true;
+        both.pauseMenu = true;
+        CheckEq("cutscene beats scene and pause", DecideAutoFpsLimit(both, opt), 60);
+
+        const char* pool[] = { "POOL2" };
+        AutoFpsState mg;
+        mg.scriptNames = pool;
+        mg.scriptNameCount = 1;
+        CheckEq("pool minigame -> 30", DecideAutoFpsLimit(mg, opt), 30);
+
+        const char* gfsex[] = { "GFSEX" };
+        mg.scriptNames = gfsex;
+        CheckEq("hot coffee -> 30", DecideAutoFpsLimit(mg, opt), 30);
+
+        const char* dskool[] = { "DSKOOL" };
+        mg.scriptNames = dskool;
+        CheckEq("driving school -> 80", DecideAutoFpsLimit(mg, opt), 80);
+
+        const char* boat[] = { "BOAT" };
+        mg.scriptNames = boat;
+        CheckEq("boat school -> 80", DecideAutoFpsLimit(mg, opt), 80);
+
+        // DRUGS1 only caps inside an interior (currArea != 0).
+        const char* drugs[] = { "DRUGS1" };
+        mg.scriptNames = drugs;
+        mg.currArea = 0;
+        CheckEq("DRUGS1 outside -> no override", DecideAutoFpsLimit(mg, opt), 0);
+        mg.currArea = 1;
+        CheckEq("DRUGS1 inside -> 50", DecideAutoFpsLimit(mg, opt), 50);
+
+        // A name that merely starts with a known one must not match.
+        const char* notPool[] = { "POOL2X" };
+        mg.currArea = 0;
+        mg.scriptNames = notPool;
+        CheckEq("POOL2X does not match POOL2", DecideAutoFpsLimit(mg, opt), 0);
+
+        // Options can disable individual overrides.
+        AutoFpsOptions noCut = opt;
+        noCut.forCutscenes = false;
+        AutoFpsState cut;
+        cut.cutsceneRunning = true;
+        CheckEq("cutscene override disabled -> none", DecideAutoFpsLimit(cut, noCut), 0);
+
+        AutoFpsOptions noMini = opt;
+        noMini.forMinigames = false;
+        mg.scriptNames = pool;
+        CheckEq("minigame override disabled -> none", DecideAutoFpsLimit(mg, noMini), 0);
+    }
+
+    // ---- Effective cap: an override can only lower the base ----
+    CheckEq("no base, no override -> 0", EffectiveFpsCap(0, 0), 0);
+    CheckEq("base 60, no override -> 60", EffectiveFpsCap(60, 0), 60);
+    CheckEq("no base, override 30 -> 30", EffectiveFpsCap(0, 30), 30);
+    CheckEq("base 60, override 30 -> 30", EffectiveFpsCap(60, 30), 30);
+    CheckEq("base 30, override 60 -> 30 (never raise)", EffectiveFpsCap(30, 60), 30);
+    CheckEq("base 60, override 80 -> 60 (never raise)", EffectiveFpsCap(60, 80), 60);
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

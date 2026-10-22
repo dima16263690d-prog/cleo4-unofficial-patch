@@ -2,6 +2,7 @@
 
 #include "CLEO.h"
 #include "CLEO_Debug.h"
+#include "RenderFix.Patch.h"
 
 #include <windows.h>
 #include <cstdarg>
@@ -38,19 +39,28 @@ private:
     int m_streamingMemoryMb = 0;     // streaming budget; 0 = untouched, -1 = auto
     bool m_logEnabled = true;
 
+    // Auto FPS limit (ported from FramerateVigilante). When enabled, the cap is
+    // lowered only while a cutscene / scripted scene / minigame / etc. runs.
+    bool m_autoFpsEnabled = false;
+    int m_minRefreshRate = 0;        // 0 = leave the engine's refresh rate alone
+    RenderFixPlan::AutoFpsOptions m_autoFpsOptions;
+
     // ---- runtime state ----
     bool m_supportedVersion = false;
     bool m_pendingReapply = false;
+    int m_autoFpsCurrent = -1;       // last cap written by the auto limiter; -1 = none
     std::ofstream m_log;
     std::mutex m_logMutex;
 
     void LoadConfig();
     void ApplyFixes();
     void ReapplyFrameLimit();
+    void UpdateAutoFpsLimit();
 
     void ApplyFrameLimit();
     void ApplyFrameDelayRemoval();
     void ApplyStreamingMemory();
+    void ApplyMinRefreshRate();
 
     void WriteLog(const char* format, ...);
 
