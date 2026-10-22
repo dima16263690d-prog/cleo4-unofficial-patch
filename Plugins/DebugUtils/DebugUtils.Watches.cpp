@@ -1893,4 +1893,23 @@ void DebugUtils::VerifyWatches()
             m_streamingTarget = nullptr;
         }
     }
+
+    if (m_rwErrorHookInstalled && m_rwErrorTarget != nullptr)
+    {
+        const BYTE* at = reinterpret_cast<const BYTE*>(m_rwErrorTarget);
+        INT32 presentRel = 0;
+        memcpy(&presentRel, at + 1, sizeof(presentRel));
+        const DWORD expected =
+            reinterpret_cast<DWORD>(&DebugUtils::RwErrorSetWatch) -
+            (reinterpret_cast<DWORD>(m_rwErrorTarget) + 5);
+        if (at[0] != 0xE9 || static_cast<DWORD>(presentRel) != expected)
+        {
+            WriteFrameTime(
+                "[rw] our RwErrorSet hook was replaced by another hook; the exact "
+                "RenderWare error cause is no longer captured (not re-installed)"
+            );
+            m_rwErrorHookInstalled = false;
+            m_rwErrorTarget = nullptr;
+        }
+    }
 }

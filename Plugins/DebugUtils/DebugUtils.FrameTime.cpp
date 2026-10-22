@@ -79,6 +79,9 @@ void DebugUtils::ResetFrameTimeInterval()
     m_frameTimeFreezeFrames = 0;
     m_frameTimeFreezeMaxMs = 0.0;
     m_frameTimeStutterLogicBound = 0;
+    m_frameTimeSlowWithError = 0;
+    InterlockedExchange(&m_frameTimeRwErrors, 0);
+    InterlockedExchange(&m_frameTimeErrorPending, 0);
 }
 
 double DebugUtils::FrameTimePeriodPercentile(double p) const
@@ -266,6 +269,10 @@ void DebugUtils::BeginFrameTimeFrame()
             ++m_frameTimeSlowFrames;
             if (m_frameTimePending.uptimeSec < kFrameTimeStartupSec)
                 ++m_frameTimeSlowFramesLoad;
+            // Slow frame that also had a RenderWare error raised in it: the
+            // "renderer complains while it stutters" signal.
+            if (m_frameTimePending.hadError)
+                ++m_frameTimeSlowWithError;
         }
 
         // Of the slow frames, count the ones with little logic time: they cannot be
@@ -372,6 +379,12 @@ void DebugUtils::EndFrameTimeFrame()
         (GetTickCount() - m_memorySessionStartTick) / 1000u);
     sample.streamUsed = streamUsed;
     sample.streamReq = streamReq;
+    // Read-and-clear the error flag: a RenderWare error raised since the last frame
+    // end (during this logic tick or the previous frame's render) tags this frame.
+    // Attribution to "the frame around the error" is what the correlation needs;
+    // an error raised during rendering lands on the next logic tick, which is the
+    // closest frame boundary available.
+    sample.hadError = InterlockedExchange(&m_frameTimeErrorPending, 0) != 0;
     // Park the finished frame: its period is only measured at the next frame
     // start, and the ranking must pair the period and the logic time of the SAME
     // frame (see m_frameTimePending).
@@ -546,6 +559,50 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
             kFrameTimeFreezeMs,
             m_frameTimeFreezeMaxMs
         );
+    }
+
+    // Renderer health: how many RenderWare errors were raised this interval and how
+    // many slow frames coincided with one. This is the "does the renderer complain
+    // while it stutters?" link between the frame-time stats and the error report -
+    // a stutter with renderer errors in it points at a mod/texture/model, a stutter
+    // with none points at the present/GPU path.
+    {
+        // Read-and-clear so "raised this interval" is per-interval, not cumulative.
+        const unsigned long long rwErrors = static_cast<unsigned long long>(
+            InterlockedExchange(const_cast<volatile LONG*>(&m_frameTimeRwErrors), 0));
+        if (m_errorDiagEnabled && (rwErrors > 0 || m_frameTimeSlowWithError > 0))
+        {
+            const double slowErrorPct = m_frameTimeSlowFrames > 0
+                ? 100.0 * static_cast<double>(m_frameTimeSlowWithError) /
+                  static_cast<double>(m_frameTimeSlowFrames)
+                : 0.0;
+            // Per-frame tagging only works with the RwErrorSet hook (the poll notices
+            // an error a frame late, so it cannot tag the frame it happened in). Say
+            // so instead of implying "errors happened but not in the slow frames".
+            const char* verdict;
+            if (!m_rwErrorHookInstalled)
+                verdict = "per-frame correlation needs [DebugUtils.Errors] "
+                          "RwErrorHook=1 (the poll cannot tag the frame an error "
+                          "happened in)";
+            else if (rwErrors == 0)
+                verdict = "the slowdown is NOT accompanied by renderer errors "
+                          "(present/GPU/driver path, not a bad texture/model)";
+            else if (m_frameTimeSlowWithError == 0)
+                verdict = "renderer errors happened but NOT in the slow frames - they "
+                          "are not the cause of the stutter";
+            else
+                verdict = "slow frames coincide with renderer errors - suspect a "
+                          "mod/texture/model (see the errors block below)";
+            WriteFrameTime(
+                "[fps] renderer: %llu RenderWare error(s) raised this interval; "
+                "%llu of %llu slow frames (%.0f%%) had one -> %s",
+                rwErrors,
+                m_frameTimeSlowWithError,
+                m_frameTimeSlowFrames,
+                slowErrorPct,
+                verdict
+            );
+        }
     }
 
     // Hitch frequency per minute: "how often does it stutter", which the count
@@ -982,13 +1039,13 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
         }
 
         WriteFrameTime("---- worst frames ----");
-        WriteFrameTime("%-3s %12s %12s %8s %9s %11s %8s %-9s",
-            "#", "period_ms", "logic_ms", "scripts", "uptime_s", "stream_MB", "req", "phase");
+        WriteFrameTime("%-3s %12s %12s %8s %9s %11s %8s %-9s %-3s",
+            "#", "period_ms", "logic_ms", "scripts", "uptime_s", "stream_MB", "req", "phase", "err");
         for (size_t i = 0; i < listed; ++i)
         {
             const auto& s = m_frameTimeWorst[i];
             WriteFrameTime(
-                "%-3zu %12.2f %12.2f %8zu %9u %11.1f %8llu %-9s",
+                "%-3zu %12.2f %12.2f %8zu %9u %11.1f %8llu %-9s %-3s",
                 i + 1,
                 s.periodMs,
                 s.logicMs,
@@ -996,7 +1053,8 @@ void DebugUtils::WriteFrameTimeReport(const char* reason)
                 static_cast<unsigned>(s.uptimeSec),
                 static_cast<double>(s.streamUsed) / (1024.0 * 1024.0),
                 s.streamReq,
-                s.uptimeSec < kFrameTimeStartupSec ? "load" : "steady"
+                s.uptimeSec < kFrameTimeStartupSec ? "load" : "steady",
+                s.hadError ? "RW" : ""
             );
         }
 

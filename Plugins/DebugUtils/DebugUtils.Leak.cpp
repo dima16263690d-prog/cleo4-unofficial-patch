@@ -1,5 +1,6 @@
 #include "DebugUtils.h"
 #include "DebugUtils.Internal.h"
+#include "DebugUtils.LeakFit.h"
 #include "resource.h"
 #include <windows.h>
 #include <psapi.h>
@@ -62,6 +63,60 @@ namespace
         );
         return std::string(buf);
     }
+
+    // Append a (uptimeSec, liveBytes) sample to a script's bounded history ring.
+    void LeakPushHistory(
+        DebugUtils::LeakScriptState& state,
+        unsigned int uptimeSec,
+        unsigned long long bytes)
+    {
+        state.histSec[state.histNext] = uptimeSec;
+        state.histBytes[state.histNext] = bytes;
+        state.histNext = (state.histNext + 1) % DebugUtils::LeakScriptState::kHistory;
+        if (state.histCount < DebugUtils::LeakScriptState::kHistory)
+            ++state.histCount;
+    }
+
+    // Least-squares fit of live bytes against uptime over the stored history.
+    // Delegates to the shared, host-tested helper (DebugUtils.LeakFit.h) so the
+    // math that decides "steady leak vs noisy growth" has a unit test. The ring may
+    // wrap; the samples are copied out in chronological order (oldest first) before
+    // the fit. Requires >= 3 samples, else false.
+    bool LeakFitTrend(
+        const DebugUtils::LeakScriptState& state,
+        double& slopeBytesPerSec,
+        double& rSquared)
+    {
+        slopeBytesPerSec = 0.0;
+        rSquared = 0.0;
+        if (state.histCount < 3)
+            return false;
+
+        const size_t n = state.histCount;
+        const size_t first = (state.histCount <
+                              DebugUtils::LeakScriptState::kHistory)
+            ? 0
+            : state.histNext;
+
+        unsigned int xs[DebugUtils::LeakScriptState::kHistory];
+        unsigned long long ys[DebugUtils::LeakScriptState::kHistory];
+        for (size_t i = 0; i < n; ++i)
+        {
+            const size_t idx =
+                (first + i) % DebugUtils::LeakScriptState::kHistory;
+            xs[i] = state.histSec[idx];
+            ys[i] = state.histBytes[idx];
+        }
+
+        const DebugUtilsLeakFit::Fit fit =
+            DebugUtilsLeakFit::LeastSquares(xs, ys, static_cast<unsigned int>(n));
+        if (!fit.ok)
+            return false;
+
+        slopeBytesPerSec = fit.slope;
+        rSquared = fit.rSquared;
+        return true;
+    }
 }
 
 void DebugUtils::UpdateLeakEntry(
@@ -87,6 +142,7 @@ void DebugUtils::UpdateLeakEntry(
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
         state.lastUptimeSec = state.firstUptimeSec;
         state.samples = 1;
+        LeakPushHistory(state, state.firstUptimeSec, bytes);
         m_leakScripts.emplace(scriptPtr, std::move(state));
         return;
     }
@@ -115,6 +171,7 @@ void DebugUtils::UpdateLeakEntry(
         fresh.firstUptimeSec = (GetTickCount() - m_memorySessionStartTick) / 1000u;
         fresh.lastUptimeSec = fresh.firstUptimeSec;
         fresh.samples = 1;
+        LeakPushHistory(fresh, fresh.firstUptimeSec, bytes);
         state = std::move(fresh);
         return;
     }
@@ -149,6 +206,7 @@ void DebugUtils::UpdateLeakEntry(
 
     state.lastBytes = bytes;
     state.lastBlocks = blocks;
+    LeakPushHistory(state, state.lastUptimeSec, bytes);
 }
 
 // How sure are we that this script is leaking, as a percentage?
@@ -161,7 +219,8 @@ void DebugUtils::UpdateLeakEntry(
 double DebugUtils::LeakConfidencePercent(
     const LeakScriptState& state,
     unsigned long long growthBytes,
-    unsigned long long arenaBytes)
+    unsigned long long arenaBytes,
+    double rSquared)
 {
     if (growthBytes == 0)
         return 0.0;
@@ -200,6 +259,28 @@ double DebugUtils::LeakConfidencePercent(
         const double share = 100.0 * static_cast<double>(growthBytes) /
             static_cast<double>(arenaBytes);
         score += 5.0 * (share / (share + 1.0));
+    }
+
+    // 3b) MEASURED fit. The terms above are heuristic; a least-squares line through
+    //     the sample history is evidence. R^2 near 1 means the growth is a straight
+    //     line (a steady leak); R^2 near 0 means the series is noisy and only its
+    //     endpoints differ. With a good fit, pull the score toward 100 by the fit's
+    //     own strength; with a poor fit, damp it - so a "grows on average" script
+    //     that jumps around is not reported as a certain leak. Only applied once
+    //     there is a real history (the fit needs >= 3 samples) and no releases.
+    if (state.histCount >= 3 && state.shrinkCount == 0)
+    {
+        // A confident, well-fitted line: scale by R^2 (and require a positive slope,
+        // which a growing history implies). score*(1-r2) keeps the heuristic part
+        // when the fit is weak instead of discarding it.
+        const double fitWeight = rSquared;             // 0..1
+        const double blended = score * (1.0 - fitWeight) + 100.0 * fitWeight;
+        score = blended;
+    }
+    else if (state.histCount >= 3 && rSquared < 0.5)
+    {
+        // Releases AND a poor fit: the weakest case. Damp hard.
+        score *= 0.5;
     }
 
     // 4) Sample-count gate: below the minimum evidence, halve it. The verdict line
@@ -504,6 +585,11 @@ void DebugUtils::WriteLeakReport(const char* reason)
         double growthPctSelfPerMin;
         double growthPctArenaPerMin;   // leak rate as a share of the whole arena
         double confidencePct;          // how sure this is a leak, 0-100
+        // MEASURED trend from the least-squares fit: bytes/second and R^2 (how
+        // linear the growth is). hasFit is false when there is too little history.
+        double fitSlopeBytesPerSec;
+        double fitRSquared;
+        bool hasFit;
         // Block growth: +N blocks means the script keeps calling allocate_memory
         // (0AC8) without freeing - a leak inside the script itself. A byte growth
         // with a flat block count is not the script leaking, it is one allocation
@@ -611,7 +697,14 @@ void DebugUtils::WriteLeakReport(const char* reason)
                    static_cast<double>(arenaBytes)) *
                   (60.0 / static_cast<double>(windowSec))
             : 0.0;
-        row.confidencePct = LeakConfidencePercent(state, growth, arenaBytes);
+        // Measure the trend once; the confidence uses R^2 and the row prints both.
+        double rSq = 0.0;
+        double fitSlope = 0.0;
+        const bool hasFit = LeakFitTrend(state, fitSlope, rSq);
+        row.confidencePct = LeakConfidencePercent(state, growth, arenaBytes, rSq);
+        row.hasFit = hasFit;
+        row.fitSlopeBytesPerSec = hasFit ? fitSlope : 0.0;
+        row.fitRSquared = hasFit ? rSq : 0.0;
         row.blockGrowth = static_cast<long long>(state.lastBlocks) -
                           static_cast<long long>(state.firstBlocks);
         row.verdict = verdict;
@@ -687,6 +780,27 @@ void DebugUtils::WriteLeakReport(const char* reason)
             row.confidencePct,
             static_cast<unsigned>(state.shrinkCount)
         );
+
+        // Measured trend: the least-squares line through the sample history. This is
+        // the difference between "grew between the first and last sample" (an
+        // endpoint guess) and "grew steadily at N B/s, R^2=0.99" (a fit). A high R^2
+        // with a positive slope is what a real leak looks like; a low R^2 means the
+        // series is noisy and the net growth may just be jitter.
+        if (row.hasFit)
+        {
+            WriteMemory(
+                "      measured: %.1f B/s (least-squares over %u samples), "
+                "R^2=%.3f -> %s",
+                row.fitSlopeBytesPerSec,
+                static_cast<unsigned>(state.histCount),
+                row.fitRSquared,
+                row.fitRSquared >= 0.9
+                    ? "growth is a straight line (steady leak)"
+                    : (row.fitRSquared >= 0.6
+                        ? "growth is mostly linear (likely leak)"
+                        : "growth is noisy (net growth may be jitter, not a leak)")
+            );
+        }
 
         // Where is the growth? More blocks = the script itself keeps allocating
         // (0AC8) without freeing - a leak inside the script. Bytes without more

@@ -55,6 +55,9 @@ Logic that has no Windows dependency is tested on the host with plain `g++`.
 Existing tests:
 
 - `Plugins/DebugUtils/Tests/x86_decoder_test.cpp` — JMP-detour prologue decoder.
+- `Plugins/DebugUtils/Tests/leak_fit_test.cpp` — least-squares leak-trend fit
+  (`DebugUtils.LeakFit.h`): slope and R^2 used to tell a steady leak from noisy
+  growth.
 - `Plugins/RenderFix/Tests/renderfix_plan_test.cpp` — the raw byte patches
   RenderFix applies to the game.
 

@@ -79,6 +79,16 @@ namespace RenderFixPlan
         bool forMinigames = true;
         bool forMissions = true;
         bool forSchools = true;
+
+        // Per-activity caps, configurable from the ini. The constants above are
+        // the FramerateVigilante defaults. Each value must stay in 1..255 to fit
+        // the limiter byte; an out-of-range value is ignored when written.
+        int cutsceneFps = kAutoFpsCutscene;
+        int scriptedSceneFps = kAutoFpsScriptedScene;
+        int pauseMenuFps = kAutoFpsPauseMenu;
+        int minigameFps = kAutoFpsMinigame;
+        int missionInteriorFps = kAutoFpsMissionInterior;
+        int schoolFps = kAutoFpsSchool;
     };
 
     struct AutoFpsState
@@ -109,23 +119,23 @@ namespace RenderFixPlan
     inline int DecideAutoFpsLimit(const AutoFpsState& s, const AutoFpsOptions& o)
     {
         if (s.cutsceneRunning)
-            return o.forCutscenes ? kAutoFpsCutscene : 0;
+            return o.forCutscenes ? o.cutsceneFps : 0;
         if (s.wideScreenOn)
-            return o.forScriptedScenes ? kAutoFpsScriptedScene : 0;
+            return o.forScriptedScenes ? o.scriptedSceneFps : 0;
         if (s.pauseMenu)
-            return o.forPauseMenu ? kAutoFpsPauseMenu : 0;
+            return o.forPauseMenu ? o.pauseMenuFps : 0;
 
         int cap = 0;
         for (int i = 0; i < s.scriptNameCount; ++i)
         {
             const char* n = s.scriptNames[i];
             if (o.forMinigames && (ScriptNameIs(n, "POOL2") || ScriptNameIs(n, "GFSEX")))
-                cap = kAutoFpsMinigame;
+                cap = o.minigameFps;
             else if (o.forMissions && ScriptNameIs(n, "DRUGS1") && s.currArea != 0)
-                cap = kAutoFpsMissionInterior;
+                cap = o.missionInteriorFps;
             else if (o.forSchools &&
                      (ScriptNameIs(n, "DSKOOL") || ScriptNameIs(n, "BOAT") || ScriptNameIs(n, "BSKOOL")))
-                cap = kAutoFpsSchool;
+                cap = o.schoolFps;
         }
         return cap;
     }
@@ -140,5 +150,71 @@ namespace RenderFixPlan
         if (base <= 0)
             return overrideCap;
         return base < overrideCap ? base : overrideCap;
+    }
+
+    // -----------------------------------------------------------------------
+    // Core Fixes (ported from SilentPatch SA, MIT, (c) Adrian Zdanowicz).
+    // Each is an isolated, long-standing byte edit. All OFF by default.
+    // -----------------------------------------------------------------------
+
+    // Stop the game re-initialising the DirectInput mouse device every frame.
+    // SilentPatch turns each of these three calls into a short jump (0xEB).
+    constexpr uintptr_t kMouseReinitPatch[3] = { 0x576CCC, 0x576EBA, 0x576F8A };
+    constexpr int kMouseReinitPatchCount = 3;
+    constexpr uint8_t kMouseReinitByte = 0xEB;
+
+    // RefFix: the reflection renderer loads a scale of 0 and divides by it.
+    // SilentPatch points the value at a 1.0f constant and clears a flag byte.
+    constexpr uintptr_t kRefFixPtr = 0x6FB97A;  // -> &const float 1.0f
+    constexpr uintptr_t kRefFixFlag = 0x6FB9A0; // -> 0
+    constexpr float kRefFixValue = 1.0f;
+
+    // DOUBLE_RWHEELS: fix the RW matrix flags for double rear wheels.
+    // ~(rwMATRIXTYPEMASK | rwMATRIXINTERNALIDENTITY) = ~(0x3 | 0x20000).
+    constexpr uintptr_t kDoubleRwheelsWord = 0x4C9290; // WORD 0xE281
+    constexpr uintptr_t kDoubleRwheelsInt = 0x4C9292;  // int mask
+    constexpr uint16_t kDoubleRwheelsOp = 0xE281;
+    constexpr int kDoubleRwheelsMask = ~(0x00000003 | 0x00020000);
+
+    // -----------------------------------------------------------------------
+    // FPS overlay. The engine calls CHud::Draw (0x58FAE0) through a 5-byte CALL
+    // at 0x53E4FF (this is plugin-sdk's drawHudEvent site). We repoint that call
+    // at our wrapper, which runs the original and then prints the FPS. A
+    // call-for-call swap needs no trampoline and is exactly reversible.
+    // -----------------------------------------------------------------------
+    constexpr uintptr_t kHudDrawCallSite = 0x53E4FF;
+    constexpr uintptr_t kHudDrawOriginal = 0x58FAE0; // CHud::Draw
+    constexpr uint8_t kCallOpcode = 0xE8;
+
+    // CFont (GTA SA 1.0 US). Called through raw pointers so the plugin keeps
+    // linking only cleo.lib, with no plugin-sdk/plugin.lib dependency.
+    constexpr uintptr_t kFontPrintString = 0x71A700;     // PrintString(x, y, text)
+    constexpr uintptr_t kFontSetScale = 0x719380;        // SetScale(w, h)
+    constexpr uintptr_t kFontSetColor = 0x719430;        // SetColor(CRGBA)
+    constexpr uintptr_t kFontSetDropColor = 0x719510;    // SetDropColor(CRGBA)
+    constexpr uintptr_t kFontSetDropShadow = 0x719570;   // SetDropShadowPosition(short)
+    constexpr uintptr_t kFontSetStyle = 0x719490;        // SetFontStyle(short)
+    constexpr uintptr_t kFontSetProportional = 0x7195B0; // SetProportional(bool)
+    constexpr uintptr_t kFontSetBackground = 0x7195C0;   // SetBackground(bool, bool)
+    constexpr uintptr_t kFontSetJustify = 0x719600;      // SetJustify(bool)
+    constexpr uintptr_t kFontSetOrientation = 0x719610;  // SetOrientation(eFontAlignment)
+    constexpr uintptr_t kFontSetRightJustifyWrap = 0x7194F0; // SetRightJustifyWrap(float)
+
+    // RsGlobal (0xC17040): appName, maximumWidth (+4), maximumHeight (+8), ...
+    // Read directly, not through the SDK, to avoid a plugin.lib dependency.
+    constexpr uintptr_t kRsGlobalBase = 0xC17040;
+
+    // CFont enums (1.0 US). ALIGN_RIGHT right-justifies the string at x.
+    constexpr int kFontAlignRight = 2;
+    constexpr int kFontGothic = 0;
+
+    // Packs a CRGBA into the 4 bytes the game pushes for a by-value colour, so
+    // the colour can be passed through a plain 32-bit parameter (same ABI).
+    inline uint32_t Rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+    {
+        return static_cast<uint32_t>(r) |
+               (static_cast<uint32_t>(g) << 8) |
+               (static_cast<uint32_t>(b) << 16) |
+               (static_cast<uint32_t>(a) << 24);
     }
 }

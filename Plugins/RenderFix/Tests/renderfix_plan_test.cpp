@@ -194,6 +194,68 @@ int main()
     CheckEq("base 30, override 60 -> 30 (never raise)", EffectiveFpsCap(30, 60), 30);
     CheckEq("base 60, override 80 -> 60 (never raise)", EffectiveFpsCap(60, 80), 60);
 
+    // ---- configurable auto-FPS caps ----
+    {
+        AutoFpsOptions opt;
+        CheckEq("default cutscene cap is 60", opt.cutsceneFps, 60);
+        CheckEq("default minigame cap is 30", opt.minigameFps, 30);
+
+        opt.cutsceneFps = 45;
+        AutoFpsState s;
+        s.cutsceneRunning = true;
+        CheckEq("custom cutscene cap is used", DecideAutoFpsLimit(s, opt), 45);
+
+        opt.minigameFps = 24;
+        const char* pool[] = { "POOL2" };
+        AutoFpsState mg;
+        mg.scriptNames = pool;
+        mg.scriptNameCount = 1;
+        CheckEq("custom minigame cap is used", DecideAutoFpsLimit(mg, opt), 24);
+    }
+
+    // ---- Core Fixes (SilentPatch ports) ----
+    CheckEq("mouse re-init patch count", kMouseReinitPatchCount, 3);
+    CheckEq("mouse re-init byte is a short jmp", kMouseReinitByte, 0xEB);
+    Check("mouse re-init addresses are in the image",
+          inImage(kMouseReinitPatch[0]) && inImage(kMouseReinitPatch[1]) &&
+          inImage(kMouseReinitPatch[2]));
+    Check("mouse re-init addresses are distinct",
+          kMouseReinitPatch[0] != kMouseReinitPatch[1] &&
+          kMouseReinitPatch[1] != kMouseReinitPatch[2]);
+
+    Check("RefFix pointer address is in the image", inImage(kRefFixPtr));
+    Check("RefFix flag address is in the image", inImage(kRefFixFlag));
+    CheckEq("RefFix value is 1.0f", kRefFixValue == 1.0f, 1);
+
+    // ~(rwMATRIXTYPEMASK | rwMATRIXINTERNALIDENTITY) == ~(0x3 | 0x20000).
+    CheckEq("DOUBLE_RWHEELS mask matches the RW flags", kDoubleRwheelsMask,
+            static_cast<int>(~(0x00000003u | 0x00020000u)));
+    CheckEq("DOUBLE_RWHEELS opcode word", kDoubleRwheelsOp, 0xE281);
+    Check("DOUBLE_RWHEELS addresses are in the image",
+          inImage(kDoubleRwheelsWord) && inImage(kDoubleRwheelsInt));
+
+    // ---- FPS overlay ----
+    Check("CHud::Draw call site is in the image", inImage(kHudDrawCallSite));
+    CheckEq("call opcode is 0xE8", kCallOpcode, 0xE8);
+    Check("CHud::Draw original is in the image", inImage(kHudDrawOriginal));
+    // The overlay repoints a call; the call site and its target must differ.
+    Check("call site differs from CHud::Draw", kHudDrawCallSite != kHudDrawOriginal);
+
+    // CFont entry points must all be in the image and distinct.
+    Check("CFont PrintString address is in the image", inImage(kFontPrintString));
+    Check("CFont SetScale address is in the image", inImage(kFontSetScale));
+    Check("CFont SetColor address is in the image", inImage(kFontSetColor));
+    Check("CFont SetDropShadow address is in the image", inImage(kFontSetDropShadow));
+    Check("CFont PrintString differs from SetScale",
+          kFontPrintString != kFontSetScale);
+    Check("RsGlobal base is in the image", inImage(kRsGlobalBase));
+
+    // RGBA packing must match the in-memory CRGBA layout (r,g,b,a little-endian).
+    CheckEq("Rgba packs r in the low byte", Rgba(0x11, 0x22, 0x33, 0x44) & 0xFF, 0x11);
+    CheckEq("Rgba packs g in byte 1", (Rgba(0x11, 0x22, 0x33, 0x44) >> 8) & 0xFF, 0x22);
+    CheckEq("Rgba packs b in byte 2", (Rgba(0x11, 0x22, 0x33, 0x44) >> 16) & 0xFF, 0x33);
+    CheckEq("Rgba packs a in byte 3", (Rgba(0x11, 0x22, 0x33, 0x44) >> 24) & 0xFF, 0x44);
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

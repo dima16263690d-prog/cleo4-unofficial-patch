@@ -53,6 +53,13 @@ namespace
     constexpr DWORD kGtaSa10RwErrorGet = 0x00808880;
     constexpr DWORD kGtaSa10RwErrorSet = 0x00808820;
 
+    // Trampoline for the RwErrorSet entry hook. A GLOBAL, not a class field: the
+    // 5-byte JMP stays in the game's code until RemoveRwErrorHook restores it, and
+    // RwErrorSetWatch must reach the original prologue even when s_instance is null
+    // (plugin unloading, or the hook left in place because another hook took the
+    // slot). Never VirtualFree'd, so it stays valid for the process lifetime.
+    RwErrorSetFn g_rwErrorSetTrampoline = nullptr;
+
     struct RwErrorPair
     {
         int pluginID;
@@ -243,6 +250,14 @@ void DebugUtils::PollRenderWareError()
     if (!m_frameTimeEnabled || !m_errorDiagEnabled || !m_rwErrorWatchEnabled)
         return;
 
+    // When the RwErrorSet hook is installed it captures every error at the instant
+    // it is raised (exact stack/script/opcode). The poll would only see the same
+    // error a frame later as a guess, AND its read-and-restore would pass back
+    // through the hook as a spurious "error" on the poll's own stack. So the poll
+    // stands down entirely; the hook is strictly better.
+    if (m_rwErrorHookInstalled)
+        return;
+
     // The hardcoded address is the SA 1.0 US RenderWare build; skip on anything
     // else rather than read a wrong address.
     if (CLEO_GetGameVersion() != GV_US10)
@@ -355,6 +370,153 @@ void DebugUtils::PollRenderWareError()
     );
 }
 
+// Entry-hook wrapper for RenderWare's RwErrorSet. Because a JMP pushes no return
+// address, the stack here is exactly the stack that raised the error, so a module
+// scan names the real culprit (mod/plugin/loader) and the CLEO snapshot names the
+// exact script+opcode - both of which the once-per-frame poll can only guess at.
+void* __cdecl DebugUtils::RwErrorSetWatch(void* code)
+{
+    // Reach the trampoline through the GLOBAL, not s_instance: the JMP stays in
+    // the game's code until RemoveRwErrorHook restores it, so this wrapper can be
+    // entered after the plugin unloaded (s_instance == null). Returning null in
+    // that case would corrupt the game's error state; running the trampoline keeps
+    // the game working even when we can no longer report.
+    RwErrorSetFn trampoline = g_rwErrorSetTrampoline;
+    if (trampoline == nullptr)
+        return nullptr;
+
+    // The parameter IS the RwError {pluginID, errorCode} the caller wants stored,
+    // so read it before forwarding - no need to call RwErrorGet (which would also
+    // clear the global as a side effect).
+    int pluginId = 0;
+    int errorCode = 0;
+    if (code != nullptr)
+    {
+        pluginId = reinterpret_cast<const int*>(code)[0];
+        errorCode = reinterpret_cast<const int*>(code)[1];
+    }
+
+    // Forward first so the game's error state is updated exactly as it would be
+    // without us. The stack is still the raising stack (we have not returned to
+    // the caller yet), so capture after the call is fine.
+    void* result = trampoline(code);
+
+    // RwErrorSet is also the "reset to E_RW_NOERROR" path, which the engine calls
+    // routinely; scanning the stack for every such call would be pure overhead.
+    // Only a real error is worth a capture.
+    const bool noError =
+        (pluginId == 0 && errorCode == 0) ||
+        (static_cast<unsigned int>(errorCode) == kRwCommonErrorBit);
+
+    if (!noError && s_instance != nullptr)
+    {
+        // Flag the CURRENT frame so the frame-time report can say whether slow
+        // frames coincided with renderer errors. Only the hook can do this: the
+        // poll notices the error a frame late, so its frame tag would be wrong.
+        InterlockedExchange(&s_instance->m_frameTimeErrorPending, 1);
+
+        // One consistent snapshot: the script and the opcode come from the same
+        // CLEO read, so they can never disagree.
+        std::string script;
+        DWORD opcode = 0xFFFFFFFFu;
+        CurrentScriptSnapshot(script, opcode);
+
+        // Only walk the stack when the user asked for module attribution: the scan
+        // is the expensive part, and the script+opcode answer is often enough.
+        std::vector<std::string> modules;
+        if (s_instance->m_errorModuleScanEnabled)
+            modules = ScanErrorModules(8);
+
+        const char* resolvedName = nullptr;
+        const char* resolvedText = nullptr;
+        const bool known =
+            RwResolveError(static_cast<unsigned int>(pluginId),
+                           static_cast<unsigned int>(errorCode),
+                           resolvedName, resolvedText);
+
+        s_instance->RecordError(
+            RwKey(pluginId, errorCode),
+            known ? std::string(resolvedName) : std::string("RW_PLUGIN_ERR"),
+            static_cast<unsigned int>(pluginId),
+            static_cast<unsigned int>(errorCode),
+            modules,
+            true,
+            known ? resolvedText : nullptr,
+            &script,
+            opcode,
+            true
+        );
+    }
+
+    return result;
+}
+
+void DebugUtils::InstallRwErrorHook()
+{
+    if (!m_errorDiagEnabled || !m_rwErrorHookEnabled || m_rwErrorHookInstalled)
+        return;
+
+    if (CLEO_GetGameVersion() != GV_US10)
+    {
+        WriteFrameTime(
+            "[rw] exact error hook disabled: RwErrorSet address is SA 1.0 US only"
+        );
+        return;
+    }
+
+    // Reuse the same address validation as the poll: the hook must never be placed
+    // on an address that is not the real SA 1.0 US RwErrorSet.
+    if (!RwErrorAddressesLookValid())
+    {
+        WriteFrameTime(
+            "[rw] exact error hook disabled: RwErrorSet at 0x%08X does not look "
+            "like real code in the game image",
+            static_cast<unsigned>(kGtaSa10RwErrorSet)
+        );
+        return;
+    }
+
+    void* trampoline = nullptr;
+    if (!InstallEntryDetour(
+            kGtaSa10RwErrorSet,
+            reinterpret_cast<const void*>(&DebugUtils::RwErrorSetWatch),
+            m_rwErrorSaved,
+            &trampoline,
+            "rw"))
+    {
+        return;
+    }
+
+    g_rwErrorSetTrampoline = reinterpret_cast<RwErrorSetFn>(trampoline);
+    m_rwErrorTarget = reinterpret_cast<void*>(kGtaSa10RwErrorSet);
+    m_rwErrorHookInstalled = true;
+
+    WriteFrameTime(
+        "[rw] exact error hook enabled: RwErrorSet at 0x%08X is hooked, so a "
+        "RenderWare error now names the exact raising stack (mod/plugin) and the "
+        "exact script+opcode, not a poll-time guess",
+        static_cast<unsigned>(kGtaSa10RwErrorSet)
+    );
+}
+
+void DebugUtils::RemoveRwErrorHook()
+{
+    if (!m_rwErrorHookInstalled || m_rwErrorTarget == nullptr)
+        return;
+
+    RemoveEntryDetour(
+        reinterpret_cast<DWORD>(m_rwErrorTarget),
+        reinterpret_cast<const void*>(&DebugUtils::RwErrorSetWatch),
+        m_rwErrorSaved,
+        "rw");
+
+    // The trampoline is never freed (a thread may be running inside it) and the
+    // global pointer is kept: if our JMP is still reachable, the wrapper must still
+    // be able to run the original rather than corrupting the error state.
+    m_rwErrorHookInstalled = false;
+    m_rwErrorTarget = nullptr;
+}
+
 void DebugUtils::RecordError(
     unsigned long long key,
     const std::string& name,
@@ -362,7 +524,10 @@ void DebugUtils::RecordError(
     unsigned int errorCode,
     const std::vector<std::string>& modules,
     bool renderWare,
-    const char* text
+    const char* text,
+    const std::string* scriptOverride,
+    DWORD opcodeOverride,
+    bool exact
 )
 {
     // Bound the number of distinct records so a storm of unique messages cannot
@@ -375,15 +540,32 @@ void DebugUtils::RecordError(
     // snapshot twice and could pair a script with another script's opcode; both
     // come from the same read here, so the name and the opcode always agree.
     //
-    // A RenderWare error is noticed on the next frame's poll, so the script and
-    // opcode active now are not the ones that raised it: leave the opcode unset
-    // for those so the report does not print a misleading "last opcode" line.
+    // A RenderWare error noticed by the poll is seen on the next frame, so the
+    // script active now is not the one that raised it: leave the opcode unset for
+    // those so the report does not print a misleading "last opcode" line. When the
+    // RwErrorSet hook captured the error, the caller passes the exact raising
+    // script+opcode through the override pointers and they are used verbatim.
     std::string scriptNow;
     DWORD opcodeNow = 0;
-    CurrentScriptSnapshot(scriptNow, opcodeNow);
-    const DWORD opcode = renderWare ? 0xFFFFFFFFu : opcodeNow;
+    if (scriptOverride != nullptr)
+    {
+        scriptNow = *scriptOverride;
+        opcodeNow = opcodeOverride;
+    }
+    else
+    {
+        CurrentScriptSnapshot(scriptNow, opcodeNow);
+    }
+    const DWORD opcode = renderWare && !exact ? 0xFFFFFFFFu : opcodeNow;
 
     std::lock_guard<std::mutex> lock(m_errorMutex);
+
+    // Count every recorded RenderWare error for the frame-time report's
+    // renderer-health line. Both RW paths reach here exactly once per error, so the
+    // count is exact (the hook) or the poll's change count (no hook). CLEO errors
+    // are deliberately not counted: the line is about the renderer.
+    if (renderWare)
+        InterlockedIncrement(&m_frameTimeRwErrors);
 
     auto it = m_errorRecords.find(key);
     if (it == m_errorRecords.end())
@@ -409,6 +591,7 @@ void DebugUtils::RecordError(
         record.lastOpcode = opcode;
         record.modules = modules;
         record.renderWare = renderWare;
+        record.exact = exact;
         record.text = text ? text : "";
         if (!modules.empty())
             record.module = modules.front();
@@ -423,6 +606,11 @@ void DebugUtils::RecordError(
         record.lastTick = GetTickCount();
         record.lastUptimeSec =
             (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        // The hook gives the exact raising context; a record first seen by the poll
+        // (a guess) is upgraded once the hook also observes the same key, so the
+        // script/opcode become exact and the row stops being labelled approximate.
+        if (exact)
+            record.exact = true;
         record.lastScript = scriptNow;
         record.lastOpcode = opcode;
         for (const auto& module : modules)
@@ -579,9 +767,11 @@ void DebugUtils::WriteErrorReport(const char* reason)
 
         // For a RenderWare row the script shown is the one active when the error
         // was *noticed* (next frame's poll), so mark it approximate with a '~'
-        // instead of implying it raised the error.
+        // instead of implying it raised the error. A hook-captured row (exact) has
+        // the RAISING script, so it is shown without the '~' and the note below
+        // says the attribution is exact.
         std::string script = record.lastScript.empty() ? "?" : record.lastScript;
-        if (record.renderWare)
+        if (record.renderWare && !record.exact)
             script = "~" + script;
 
         // plugin-sdk builds a throwaway CRunningScript literally named "plg-sdk"
@@ -662,17 +852,28 @@ void DebugUtils::WriteErrorReport(const char* reason)
             }
         }
 
-        // The opcode is only meaningful where the error was raised. For a
-        // RenderWare row it is the poll-time opcode, not the raising one, so it
-        // is omitted rather than shown as if it caused the error.
-        if (!record.renderWare && record.lastOpcode != 0xFFFFFFFFu)
+        // The opcode is only meaningful where the error was raised. For a polled
+        // RenderWare row it is the poll-time opcode, not the raising one, so it is
+        // omitted. For a hook-captured row (exact) the opcode IS the raising one, so
+        // it is shown - that is the "which script command raised it" answer.
+        if ((!record.renderWare || record.exact) && record.lastOpcode != 0xFFFFFFFFu)
         {
             const DWORD opcode = record.lastOpcode & 0x7FFF;
             const char* opcodeName = OpcodeName(opcode);
             WriteFrameTime(
-                "      last opcode=0x%04X %s",
+                "      %s opcode=0x%04X %s",
+                record.exact ? "raising" : "last",
                 static_cast<unsigned>(opcode),
                 opcodeName ? opcodeName : "unknown"
+            );
+        }
+
+        if (record.exact && showDetail)
+        {
+            WriteFrameTime(
+                "      attribution: EXACT - captured by the RwErrorSet hook at the "
+                "moment the error was raised, so the script/opcode and the suspect "
+                "module above are the raising context, not a poll-time guess"
             );
         }
 

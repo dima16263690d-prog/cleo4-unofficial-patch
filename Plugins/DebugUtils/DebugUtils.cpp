@@ -157,11 +157,12 @@ DebugUtils::DebugUtils()
         {
             WriteFrameTime(
                 "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
-                "texture_watch=%u watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
+                "texture_watch=%u rw_error_hook=%u watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
                 m_rwErrorWatchEnabled ? 1u : 0u,
                 m_errorModuleScanEnabled ? 1u : 0u,
                 m_fileWatchEnabled ? 1u : 0u,
                 m_textureWatchEnabled ? 1u : 0u,
+                m_rwErrorHookEnabled ? 1u : 0u,
                 m_fileWatchNames.size()
             );
         }
@@ -250,6 +251,7 @@ DebugUtils::~DebugUtils()
     RemoveFileOpenWatch();
     RemoveTextureReadWatch();
     RemoveStreamingModelWatch();
+    RemoveRwErrorHook();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -535,6 +537,19 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
             : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
     kv("DebugUtils.Errors", "ModuleScan", "0");
+    desc(ru ? "RwErrorHook: 1 = точная причина ошибки RenderWare (хук входа"
+            : "RwErrorHook: 1 = exact RenderWare error cause (hook on the");
+    desc(ru ? "  RwErrorSet 0x808820). Опрос видит ошибку только на следующем"
+            : "  RwErrorSet entry 0x808820). The poll only notices an error on the");
+    desc(ru ? "  кадре, когда стек уже потерян, и может назвать только скрипт на"
+            : "  next frame, when the raising stack is gone, so it can only name the");
+    desc(ru ? "  момент опроса ('~скрипт'). Хук ловит стек В МОМЕНТ ошибки:"
+            : "  script active at poll time ('~script'). The hook captures the stack AT");
+    desc(ru ? "  точный мод/плагин и точный скрипт+опкод (строка 'raising opcode')."
+            : "  the error: the exact mod/plugin and the exact script+opcode ('raising");
+    desc(ru ? "  Это патч кода (JMP на входе функции); по умолчанию выключен."
+            : "  opcode' line). A code patch (JMP at the entry); off by default.");
+    kv("DebugUtils.Errors", "RwErrorHook", "0");
     desc(ru ? "FileWatch: 1 = перехватывать открытия файлов RenderWare и печатать"
             : "FileWatch: 1 = capture RenderWare file opens and print the exact");
     desc(ru ? "  точный путь, который не удалось открыть (E_RW_BADOPEN)."
@@ -1007,6 +1022,16 @@ void DebugUtils::LoadConfig()
     m_errorModuleScanEnabled =
         GetPrivateProfileIntA(
             "DebugUtils.Errors", "ModuleScan",
+            0,
+            path.c_str()
+        ) != 0;
+    // Exact RenderWare error cause: hook RwErrorSet's entry so the RAISING stack is
+    // captured at the instant of the error. Opt-in: it is a code patch (a 5-byte
+    // JMP), so it is off unless asked for. When it installs, the once-per-frame
+    // poll stands down (the hook is strictly better).
+    m_rwErrorHookEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "RwErrorHook",
             0,
             path.c_str()
         ) != 0;

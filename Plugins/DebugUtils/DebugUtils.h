@@ -220,6 +220,17 @@ public:
         DWORD shrinkCount = 0;               // times the live bytes fell (churn proof)
         DWORD breakStreak = 0;               // consecutive growth runs broken by a drop
         bool releasedSince = false;          // it ever dropped back to zero
+        // Per-sample history for a MEASURED leak verdict, not just a heuristic one.
+        // Each sample records (uptimeSec, liveBytes). A least-squares fit over the
+        // window gives the true bytes/second slope and R^2 (how linear the growth
+        // is): R^2 near 1 with a positive slope is a steady leak, R^2 near 0 is a
+        // noisy series that merely trends up. Bounded so a long session cannot grow
+        // the state without limit; the fit uses whatever samples are present.
+        static constexpr size_t kHistory = 32;
+        std::array<unsigned int, kHistory> histSec{};
+        std::array<unsigned long long, kHistory> histBytes{};
+        size_t histCount = 0;                // samples stored (<= kHistory)
+        size_t histNext = 0;                 // next write slot (ring)
         // What the previous report printed for this script, so an unchanged row is
         // not repeated every interval (the report was otherwise a full dump each
         // time, which buried the one row that changed).
@@ -246,7 +257,8 @@ private:
     // "how many percent sure is this a leak?" question directly.
     static double LeakConfidencePercent(const LeakScriptState& state,
                                         unsigned long long growthBytes,
-                                        unsigned long long arenaBytes);
+                                        unsigned long long arenaBytes,
+                                        double rSquared);
     void UpdateLeakEntry(
         uintptr_t scriptPtr,
         const std::string& name,
@@ -349,6 +361,19 @@ private:
     // the cause split.
     unsigned long long m_frameTimeFreezeFrames = 0;
     double m_frameTimeFreezeMaxMs = 0.0;
+    // RenderWare errors raised during the interval (exact count from the RwErrorSet
+    // hook, or the poll's change count when the hook is off). Interlocked because
+    // RwErrorSet can be called from any thread. Read-and-reset by the report so it
+    // says whether the slow frames coincided with renderer errors - the "does the
+    // renderer complain while it stutters?" answer.
+    volatile LONG m_frameTimeRwErrors = 0;
+    // Set by the RwErrorSet hook when it records an error, cleared at the next
+    // frame start. Lets a slow frame be tagged as "an error was raised in it".
+    volatile LONG m_frameTimeErrorPending = 0;
+    // Slow frames that had a RenderWare error raised in them. A frame-time sample
+    // cannot know this (the error happens outside the logic tick), so the hook
+    // stamps the current frame index and the report counts the coincidence.
+    unsigned long long m_frameTimeSlowWithError = 0;
     double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
     bool m_frameTimeHaveLastInterval = false;
     // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
@@ -402,6 +427,10 @@ private:
         DWORD uptimeSec = 0;
         unsigned long long streamUsed = 0;  // ms_memoryUsed at the frame (bytes)
         unsigned long long streamReq = 0;   // ms_numModelsRequested at the frame
+        // A RenderWare error was raised during this frame (set from the RwErrorSet
+        // hook's pending flag). Lets the report say whether slow frames coincided
+        // with renderer errors.
+        bool hadError = false;
     };
     static constexpr size_t kFrameTimeMaxWorst = 32;
     std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};
@@ -466,6 +495,10 @@ private:
         DWORD lastOpcode = 0xFFFFFFFFu;
         std::vector<std::string> modules; // modules seen in the stack for this error
         bool renderWare = false;       // came from the RW poll (no raising stack)
+        // True when the error was captured by the RwErrorSet hook: the stack is
+        // the RAISING stack, so the module/script/opcode are exact, not a poll-time
+        // guess. The report labels these differently from a polled row.
+        bool exact = false;
         std::string text;              // human-readable meaning when known
     };
 
@@ -710,6 +743,28 @@ private:
     unsigned long long m_lastReportedCleoWarnings = 0;  // CLEO warning count at the last report
 
     void PollRenderWareError();
+    // Exact RenderWare error attribution. The poll above only notices an error a
+    // frame after it was raised, so the raising stack is already gone and the
+    // report can only name the script active at poll time ("~script"). RenderWare
+    // raises every error by calling RwErrorSet (0x808820); hooking its entry lets
+    // the raising stack be captured at the instant of the error, which names the
+    // exact mod/plugin frame and the exact script+opcode - the "which mod caused
+    // it" answer the poll cannot give. Opt-in (RwErrorHook=1): it is a code patch
+    // (a 5-byte JMP at the function entry), so it is off by default. When the hook
+    // installs, the poll stops recording (the hook is strictly better) and keeps
+    // only its read-and-restore role. SA 1.0 US only.
+    bool m_rwErrorHookEnabled = false;
+    bool m_rwErrorHookInstalled = false;
+    void* m_rwErrorTarget = nullptr;
+    BYTE m_rwErrorSaved[5] = {};
+    void InstallRwErrorHook();
+    void RemoveRwErrorHook();
+    static void* __cdecl RwErrorSetWatch(void* code);
+    // Record an error. `scriptOverride`/`opcodeOverride` let the RwErrorSet hook
+    // supply the RAISING script+opcode (captured at the instant of the error)
+    // instead of letting RecordError read the poll-time script; pass them only
+    // when the caller has the exact raising context. `exact` marks the record as
+    // hook-captured so the report labels the attribution as exact.
     void RecordError(
         unsigned long long key,
         const std::string& name,
@@ -717,7 +772,10 @@ private:
         unsigned int errorCode,
         const std::vector<std::string>& modules,
         bool renderWare = false,
-        const char* text = nullptr
+        const char* text = nullptr,
+        const std::string* scriptOverride = nullptr,
+        DWORD opcodeOverride = 0xFFFFFFFFu,
+        bool exact = false
     );
     void WriteErrorReport(const char* reason);
     static std::string CurrentScriptName();
