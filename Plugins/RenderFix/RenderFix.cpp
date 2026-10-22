@@ -1,6 +1,8 @@
 #include "RenderFix.h"
 #include "RenderFix.Patch.h"
 
+#include <map>
+
 RenderFix* RenderFix::s_instance = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -192,9 +194,72 @@ void RenderFix::ApplyStreamingMemory()
 // Config
 // ---------------------------------------------------------------------------
 
+namespace
+{
+    std::string TrimAscii(const std::string& s)
+    {
+        size_t a = 0;
+        size_t b = s.size();
+        while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n'))
+            ++a;
+        while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n'))
+            --b;
+        return s.substr(a, b - a);
+    }
+
+    // Reads every key=value from the ini so a rewrite keeps the values the user
+    // set. Empty when the file is absent.
+    std::map<std::string, std::string> ReadRawConfig(const std::string& path)
+    {
+        std::map<std::string, std::string> out;
+
+        std::ifstream file(path);
+        if (!file.is_open())
+            return out;
+
+        std::string line;
+        std::string section;
+        while (std::getline(file, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+
+            const std::string trimmed = TrimAscii(line);
+            if (trimmed.empty() || trimmed[0] == ';' || trimmed[0] == '#')
+                continue;
+
+            if (trimmed.front() == '[' && trimmed.back() == ']')
+            {
+                section = trimmed.substr(1, trimmed.size() - 2);
+                continue;
+            }
+
+            const size_t eq = trimmed.find('=');
+            if (eq == std::string::npos)
+                continue;
+
+            out[section + "." + TrimAscii(trimmed.substr(0, eq))] =
+                TrimAscii(trimmed.substr(eq + 1));
+        }
+
+        return out;
+    }
+
+    std::string ValueOr(const std::map<std::string, std::string>& raw,
+        const char* section, const char* key, const char* fallback)
+    {
+        const auto it = raw.find(std::string(section) + "." + key);
+        if (it != raw.end() && !it->second.empty())
+            return it->second;
+        return fallback;
+    }
+}
+
 void RenderFix::LoadConfig()
 {
     const std::string path = ConfigPath();
+
+    const std::map<std::string, std::string> raw = ReadRawConfig(path);
 
     m_enabled =
         GetPrivateProfileIntA("RenderFix.General", "Enabled", 0, path.c_str()) != 0;
@@ -209,19 +274,92 @@ void RenderFix::LoadConfig()
     m_streamingMemoryMb =
         GetPrivateProfileIntA("RenderFix.Streaming", "MemoryMB", 0, path.c_str());
 
-    // The ini ships next to the plugin; write a default one if it is missing so
-    // the keys are discoverable without reading the source.
-    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+    // The ini is shipped next to the plugin, but it can be missing (the DLL was
+    // copied alone) or stale (an older build's keys). Regenerate it with the full
+    // descriptions in either case, keeping the values the user already set, so the
+    // keys are always discoverable without reading the source.
+    const bool fileMissing =
+        GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+    const bool missingNewKeys =
+        !fileMissing && raw.find("RenderFix.Streaming.MemoryMB") == raw.end();
+
+    if (fileMissing || missingNewKeys)
     {
-        WritePrivateProfileStringA(
-            "RenderFix.General", "Enabled", "0", path.c_str());
-        WritePrivateProfileStringA(
-            "RenderFix.FPS", "FrameLimit", "0", path.c_str());
-        WritePrivateProfileStringA(
-            "RenderFix.FPS", "RemoveFrameDelay", "0", path.c_str());
-        WritePrivateProfileStringA(
-            "RenderFix.Streaming", "MemoryMB", "0", path.c_str());
+        if (!fileMissing &&
+            GetFileAttributesA((path + ".bak").c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            CopyFileA(path.c_str(), (path + ".bak").c_str(), TRUE);
+        }
+
+        WriteConfigFile(path, raw);
     }
+}
+
+// Builds the ini text with the descriptions. Values already present in `raw` are
+// kept, everything else falls back to the default. Descriptions are ';' comments,
+// otherwise the engine would read them as keys.
+std::string RenderFix::BuildConfigText(const std::map<std::string, std::string>& raw) const
+{
+    std::string out;
+    auto line = [&out](const std::string& text) { out += text; out += '\n'; };
+    auto desc = [&line](const std::string& text) { line("; " + text); };
+    auto kv = [&](const char* section, const char* key, const char* fallback)
+    {
+        line(std::string(key) + "=" + ValueOr(raw, section, key, fallback));
+    };
+
+    desc("RenderFix configuration. Values are read once, when GTA starts.");
+    desc("Everything here is OPT-IN: at the defaults RenderFix changes nothing.");
+    desc("1 = enabled, 0 = disabled (except where a number is expected).");
+    desc("See cleo\\debug\\cleo_renderfix.log for what was actually applied.");
+    line("");
+
+    line("[RenderFix.General]");
+    desc("Master switch. When 0, the plugin does nothing at all.");
+    kv("RenderFix.General", "Enabled", "0");
+    desc("Write cleo\\debug\\cleo_renderfix.log.");
+    kv("RenderFix.General", "Log", "1");
+    line("");
+
+    line("[RenderFix.FPS]");
+    desc("Frame cap written to the engine limiter byte (0xC1704C). 1..255.");
+    desc("0 = leave the game's own limiter untouched. 60 is a common choice.");
+    kv("RenderFix.FPS", "FrameLimit", "0");
+    desc("Remove the engine's ~14 ms per-frame sleep (SilentPatch 'No framedelay').");
+    desc("This is what usually unlocks a smooth high FPS. 1 = on, 0 = off.");
+    kv("RenderFix.FPS", "RemoveFrameDelay", "0");
+    line("");
+
+    line("[RenderFix.Streaming]");
+    desc("Streaming memory budget in MB. Raised only, never lowered.");
+    desc("0 = untouched, -1 = auto (1024 MB with a 4GB/LAA patch, else 512 MB),");
+    desc("> 0 = that many MB. Applied by the core at SCM init.");
+    kv("RenderFix.Streaming", "MemoryMB", "0");
+    line("");
+
+    return out;
+}
+
+void RenderFix::WriteConfigFile(
+    const std::string& path,
+    const std::map<std::string, std::string>& raw) const
+{
+    std::string text = BuildConfigText(raw);
+
+    // The ini format expects CRLF; the builder uses LF for readability.
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (char c : text)
+    {
+        if (c == '\n')
+            crlf += "\r\n";
+        else
+            crlf += c;
+    }
+
+    std::ofstream config(path, std::ios::out | std::ios::trunc | std::ios::binary);
+    if (config.is_open())
+        config.write(crlf.data(), static_cast<std::streamsize>(crlf.size()));
 }
 
 std::string RenderFix::ConfigPath() const

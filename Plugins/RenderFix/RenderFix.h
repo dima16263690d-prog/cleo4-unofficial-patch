@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -59,6 +60,10 @@ private:
 
     std::string ConfigPath() const;
     std::string LogPath() const;
+
+    std::string BuildConfigText(const std::map<std::string, std::string>& raw) const;
+    void WriteConfigFile(const std::string& path,
+                         const std::map<std::string, std::string>& raw) const;
 
     static void OnGameBegin();
     static void OnGameProcessBefore();
