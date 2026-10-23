@@ -10,6 +10,25 @@ namespace
 {
     constexpr uintptr_t kStreamingMemoryAvailable = 0x8A5A80; // CStreaming::ms_memoryAvailable, GTA SA 1.0 US
 
+    bool IsStreamingAddressAccessible()
+    {
+        static bool checked = false;
+        static bool accessible = false;
+        if (checked)
+            return accessible;
+
+        checked = true;
+        MEMORY_BASIC_INFORMATION mbi{};
+        const auto* address = reinterpret_cast<const void*>(kStreamingMemoryAvailable);
+        if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+            return false;
+
+        accessible = true;
+        return true;
+    }
+
     bool IsLargeAddressAwareExecutable()
     {
         const auto* base = reinterpret_cast<const uint8_t*>(GetModuleHandleA(nullptr));
@@ -107,7 +126,7 @@ void RenderFix::ApplyFixes()
     // the value written at game begin can be overwritten. Re-apply it once on
     // the first processed frame (this is what SA-MixSets and FramerateVigilante
     // do as well).
-    m_pendingReapply = m_frameLimit > 0;
+    m_pendingReapply = IsValidFrameLimit(m_frameLimit);
 
     WriteLog("[renderfix] done");
 }
@@ -367,22 +386,17 @@ void RenderFix::ApplyStreamingMemory()
         ? 0x7FFFFFFFu
         : static_cast<uint32_t>(effectiveMb) * 1024u * 1024u;
 
-    auto* value = reinterpret_cast<uint32_t*>(kStreamingMemoryAvailable);
-
-    // This address belongs to the supported GTA 1.0 US image and is read-only
-    // on this fast path. Avoid VirtualQuery/log I/O every frame when unchanged.
-    const uint32_t previousBytes = *value;
-    if (desiredBytes <= previousBytes)
-        return;
-
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(value, &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+    if (!IsStreamingAddressAccessible())
     {
         WriteLog("[renderfix] CStreaming::ms_memoryAvailable is not safely accessible");
         return;
     }
+
+    auto* value = reinterpret_cast<uint32_t*>(kStreamingMemoryAvailable);
+    const uint32_t previousBytes = *value;
+    if (desiredBytes <= previousBytes)
+        return;
+
 
     DWORD oldProtect = 0;
     if (!VirtualProtect(value, sizeof(*value), PAGE_READWRITE, &oldProtect))

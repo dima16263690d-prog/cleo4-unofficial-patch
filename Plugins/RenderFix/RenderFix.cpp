@@ -73,6 +73,12 @@ RenderFix::RenderFix()
         reinterpret_cast<uintptr_t>(&RenderFix::OnGameProcessBefore)
     );
 
+    WriteLog(
+        "[renderfix] domains: gta=%d cleo=%d cleo_state_guard=%d",
+        m_gtaEnabled ? 1 : 0,
+        m_cleoEnabled ? 1 : 0,
+        (m_cleoEnabled && m_cleoRenderStateGuard) ? 1 : 0
+    );
     WriteLog("[renderfix] configuration=%s", ConfigPath().c_str());
 }
 
@@ -360,8 +366,8 @@ std::string RenderFix::BuildConfigText(
     desc(ru ? "Защитный слой для графических операций плагинов и скриптов CLEO."
             : "Guard layer for drawing performed by CLEO plugins and scripts.");
     kv("RenderFix.CLEO", "Enabled", "1");
-    desc(ru ? "Сохранять и восстанавливать выбранные состояния RenderWare вокруг игрового цикла."
-            : "Save and restore selected RenderWare states around the game-process callback.");
+    desc(ru ? "Сохранять и восстанавливать выбранные состояния RenderWare вокруг прохода отрисовки."
+            : "Save and restore selected RenderWare states around the RenderWare drawing event.");
     desc(ru ? "Отключите при несовместимости с графическими модами, зависящими от состояния между кадрами."
             : "Disable if another graphics mod relies on changed RenderWare states across frames.");
     kv("RenderFix.CLEO", "RenderStateGuard", "1");
