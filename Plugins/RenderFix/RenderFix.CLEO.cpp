@@ -5,6 +5,8 @@
 
 #include <cstddef>
 
+using namespace plugin;
+
 namespace
 {
     constexpr RwRenderState kTrackedStates[] =
