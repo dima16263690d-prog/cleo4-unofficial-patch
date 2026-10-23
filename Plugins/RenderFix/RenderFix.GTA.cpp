@@ -102,8 +102,6 @@ void RenderFix::ApplyFixes()
     ApplyFpsOverlay();
 
     ApplyStreamingMemory();
-    m_pendingStreamingReapply =
-        m_streamingMemoryMb > 0 || m_streamingMemoryMb == -1;
 
     // The engine re-initialises the limiter shortly after the scripts start, so
     // the value written at game begin can be overwritten. Re-apply it once on
@@ -370,24 +368,19 @@ void RenderFix::ApplyStreamingMemory()
         : static_cast<uint32_t>(effectiveMb) * 1024u * 1024u;
 
     auto* value = reinterpret_cast<uint32_t*>(kStreamingMemoryAvailable);
+
+    // This address belongs to the supported GTA 1.0 US image and is read-only
+    // on this fast path. Avoid VirtualQuery/log I/O every frame when unchanged.
+    const uint32_t previousBytes = *value;
+    if (desiredBytes <= previousBytes)
+        return;
+
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(value, &mbi, sizeof(mbi)) == 0 ||
         mbi.State != MEM_COMMIT ||
         (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
     {
         WriteLog("[renderfix] CStreaming::ms_memoryAvailable is not safely accessible");
-        return;
-    }
-
-    const uint32_t previousBytes = *value;
-    if (desiredBytes <= previousBytes)
-    {
-        WriteLog(
-            "[renderfix] streaming budget unchanged: requested=%d MB effective=%d MB current=%u MB (only raise, never lower)",
-            m_streamingMemoryMb,
-            effectiveMb,
-            previousBytes / (1024u * 1024u)
-        );
         return;
     }
 

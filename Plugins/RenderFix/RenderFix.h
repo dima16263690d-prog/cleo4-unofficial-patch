@@ -61,7 +61,6 @@ private:
     // ---- runtime state ----
     bool m_supportedVersion = false;
     bool m_pendingReapply = false;
-    bool m_pendingStreamingReapply = false;
     bool m_fpsOverlayInstalled = false;
     int m_autoFpsCurrent = -1;       // last cap written by the auto limiter; -1 = none
 

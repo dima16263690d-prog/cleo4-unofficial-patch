@@ -106,11 +106,12 @@ void RenderFix::OnGameProcessBefore()
     if (self->m_gtaEnabled && self->m_pendingReapply)
         self->ReapplyFrameLimit();
 
-    if (self->m_gtaEnabled && self->m_pendingStreamingReapply)
-    {
-        self->m_pendingStreamingReapply = false;
+    // Keep the requested budget in force if GTA or another initialization path
+    // resets CStreaming. The function returns without writes or log I/O whenever
+    // the current budget already meets the configured minimum.
+    if (self->m_gtaEnabled &&
+        (self->m_streamingMemoryMb > 0 || self->m_streamingMemoryMb == -1))
         self->ApplyStreamingMemory();
-    }
 }
 
 void RenderFix::OnGameProcessAfter()

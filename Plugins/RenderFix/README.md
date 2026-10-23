@@ -38,7 +38,7 @@ The existing AutoLimitFPS activity keys and values remain available in the INI.
 
 ## Streaming memory ownership
 
-RenderFix now writes the GTA 1.0 US CStreaming::ms_memoryAvailable field itself instead of delegating the request to CLEO_SetStreamingMemoryLimit. It applies the setting when fixes are initialized and retries on the first processed frame because game initialization may overwrite an earlier write. The requested value only raises the current budget; it never lowers a budget already set higher by the game or another mod. MemoryMB=-1 selects 1024 MB for a Large Address Aware executable, otherwise 512 MB.
+RenderFix now writes the GTA 1.0 US CStreaming::ms_memoryAvailable field itself instead of delegating the request to CLEO_SetStreamingMemoryLimit. It applies the setting when fixes are initialized and checks the field in each game-process callback, so if GTA reinitializes streaming and lowers the value, RenderFix raises it again on the next callback. The unchanged path performs only a value check and no logging or protection changes. The requested value only raises the current budget; it never lowers a budget already set higher by the game or another mod. MemoryMB=-1 selects 1024 MB for a Large Address Aware executable, otherwise 512 MB.
 
 ## Scope and compatibility
 
