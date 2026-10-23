@@ -34,7 +34,7 @@ The file is read from the CLEO plugin configuration directory (or alongside the 
 | [RenderFix.CoreFixes] DoubleRwheelsFix | 0 | Correct RenderWare matrix flags for dual rear wheels. |
 | [RenderFix.Streaming] MemoryMB | 0 | Request a minimum streaming budget in MB; -1 = automatic. |
 
-The existing AutoLimitFPS activity keys and values remain available in the INI.
+The existing AutoLimitFPS activity keys and values remain available in the INI. When ShowFPS=1, the counter attaches to the HUD call and chains whichever target was already installed there; the log records whether the overlay installed or why it was skipped.
 
 ## Streaming memory ownership
 

@@ -268,37 +268,69 @@ void RenderFix::ApplyCoreFixes()
 void RenderFix::ApplyFpsOverlay()
 {
     if (!m_showFps)
+    {
+        WriteLog("[renderfix] FPS overlay disabled by RenderFix.Overlay.ShowFPS=0");
+        return;
+    }
+
+    if (m_fpsOverlayInstalled)
         return;
 
-    // Only install when the call still targets CHud::Draw. If another plugin has
-    // already repointed it, we skip rather than clobber its hook; the overlay is
-    // a convenience, not worth breaking another mod for.
+    // Preserve an existing hook on this CALL site instead of rejecting the
+    // counter or discarding another plugin's hook. Our wrapper calls the target
+    // that was active at installation time, then draws the counter.
+    if (ReadByte(kHudDrawCallSite) != kCallOpcode)
+    {
+        WriteLog("[renderfix] FPS overlay: expected CALL opcode not found at 0x%08X",
+            kHudDrawCallSite);
+        return;
+    }
+
+    const int32_t rel = *reinterpret_cast<const int32_t*>(kHudDrawCallSite + 1);
+    const uintptr_t currentTarget =
+        static_cast<uintptr_t>(static_cast<intptr_t>(kHudDrawCallSite + 5) + rel);
+    if (currentTarget == 0 ||
+        currentTarget == reinterpret_cast<uintptr_t>(&RenderFix::HudDrawOverlay))
+    {
+        WriteLog("[renderfix] FPS overlay: invalid or recursive HUD call target at 0x%08X",
+            kHudDrawCallSite);
+        return;
+    }
+
+    s_hudDrawPreviousTarget = currentTarget;
     if (!PatchCall(
             kHudDrawCallSite,
-            kHudDrawOriginal,
-            reinterpret_cast<uintptr_t>(&RenderFix::HudDrawWrapper)))
+            currentTarget,
+            reinterpret_cast<uintptr_t>(&RenderFix::HudDrawOverlay)))
     {
-        WriteLog(
-            "[renderfix] FPS overlay: CHud::Draw call at 0x%08X was already "
-            "hooked by another plugin; overlay skipped",
+        s_hudDrawPreviousTarget = 0;
+        WriteLog("[renderfix] FPS overlay: failed to install HUD call hook at 0x%08X",
             kHudDrawCallSite);
         return;
     }
 
     m_fpsOverlayInstalled = true;
-    WriteLog("[renderfix] FPS overlay installed (CHud::Draw call 0x%08X)",
-        kHudDrawCallSite);
+    WriteLog(
+        "[renderfix] FPS overlay installed at 0x%08X; chained target=0x%08X",
+        kHudDrawCallSite,
+        static_cast<uint32_t>(currentTarget)
+    );
 }
 
 
-void __cdecl RenderFix::HudDrawWrapper()
+void __cdecl RenderFix::HudDrawOverlay()
 {
-    // Run the game's own HUD first, unchanged.
+    // Call the exact HUD target that was active when our hook was installed.
+    // This preserves any pre-existing plugin hook in the same CALL slot.
+    const uintptr_t previousTarget = s_hudDrawPreviousTarget;
+    if (previousTarget == 0)
+        return;
+
     using HudDrawFn = void(__cdecl*)();
-    reinterpret_cast<HudDrawFn>(kHudDrawOriginal)();
+    reinterpret_cast<HudDrawFn>(previousTarget)();
 
     RenderFix* self = s_instance;
-    if (self == nullptr)
+    if (self == nullptr || !self->m_showFps)
         return;
 
     // Measure over a ~500 ms window so the number is stable, not jittery.

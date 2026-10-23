@@ -5,6 +5,7 @@
 #include <map>
 
 RenderFix* RenderFix::s_instance = nullptr;
+uintptr_t RenderFix::s_hudDrawPreviousTarget = 0;
 
 // ---------------------------------------------------------------------------
 // RenderFix — opt-in frame-pacing / renderer tweaks for GTA SA 1.0 US.

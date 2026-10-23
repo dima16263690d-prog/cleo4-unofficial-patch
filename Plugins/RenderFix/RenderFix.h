@@ -22,7 +22,7 @@
 //
 // The address constants are all 1.0 US specific, so ApplyFixes() refuses to run
 // on any other game version.
-inline constexpr const char* kRenderFixBuildId = "renderfix-2";
+inline constexpr const char* kRenderFixBuildId = "renderfix-3";
 
 class RenderFix
 {
@@ -62,6 +62,7 @@ private:
     bool m_supportedVersion = false;
     bool m_pendingReapply = false;
     bool m_fpsOverlayInstalled = false;
+    static uintptr_t s_hudDrawPreviousTarget;
     int m_autoFpsCurrent = -1;       // last cap written by the auto limiter; -1 = none
 
     // FPS overlay state. Frame counting is only updated from the draw wrapper,
@@ -104,5 +105,5 @@ private:
     static void OnGameProcessBefore();
 
     // The CHud::Draw replacement: runs the original, then the overlay.
-    static void __cdecl HudDrawWrapper();
+    static void __cdecl HudDrawOverlay();
 };
