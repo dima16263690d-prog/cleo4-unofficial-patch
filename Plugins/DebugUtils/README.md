@@ -43,9 +43,11 @@ cleo_script.log:
 
 cleo_memory.log:
 //////////////////////// memory ////////////////////////
+(plus a "script memory leak report" block when [DebugUtils.Logs] LeakTracker=1)
 
 cleo_frametime.log:
 //////////////////////// frame time ////////////////////////
+================= errors (interval) =================
 
 cleo_diagnostic.log:
 //////////////////////// diagnostic ////////////////////////
@@ -75,6 +77,9 @@ Deduplicate=1
 [DebugUtils.Logs]
 Memory=0
 MemoryTrace=0
+LeakTracker=0
+LeakInterval=30
+LeakMinGrowthKB=64
 Diagnostic=0
 
 [DebugUtils.Limits]
@@ -88,6 +93,33 @@ WarnMs=50
 TopStutter=15
 Histogram=1
 MaxLogMB=16
+MinFps=0
+LowFpsWarn=0
+LowFpsWarn01=0
+SustainedLowIntervals=0
+FrameBudgetMs=0
+
+[DebugUtils.Errors]
+; OFF by default (opt-in): the RenderWare poll runs every frame.
+Enabled=0
+RenderWare=0
+ModuleScan=0
+; Name the exact file behind a failed open (data-only patch, no code detour).
+FileWatch=0
+; Print the "failed file opens" block (1 = on). An empty FileWatchNames does not
+; silence it; set FileWatchFailures=0 to stop the block while keeping the hook.
+FileWatchFailures=1
+; Name the mod behind E_RW_READTEXMASK (data-only patch, no code detour). The
+; error is caught inside RwTextureRead, so the mod's stack is still present.
+TextureWatch=0
+; Exact culprit: place a JMP at RwTextureRead's entry so the wrapper sees the
+; mod's own call site (100% exact) instead of scanning the stack. This is the
+; ONLY code patch in the plugin; off by default. Requires TextureWatch=1.
+TextureExactCaller=0
+; Address of RwTextureRead to hook (0 = built-in default 0x7F3AC0, the real
+; RenderWare RwTextureRead that mods call; plugin-sdk's 0x4C7510 is a mistake -
+; that is CVehicleModelInfo::FindTextureCB).
+TextureEntryAddress=0
 
 [DebugUtils.General]
 LegacyDebugOpcodes=0
@@ -108,9 +140,55 @@ Each report shows, for the interval:
   low logic time points at streaming/driver/render, not at scripts; a high logic
   time points at the scripts (or CLEO opcodes);
 - stutter count/share/lost_ms — frames at or above WarnMs, and the time lost;
+- a freeze line — frames of a second or more (the process was not running:
+  alt-tab/minimize, a debugger break, a long disk stall). These are counted on
+  their own and excluded from every statistic above, so an alt-tab does not
+  report "fps_avg=12.6" or a bogus "present/GPU bound" for a game that was simply
+  paused; the line names the count and the longest freeze;
 - a period histogram with fixed edges (16.6/20/25/33.3/50/100/250 ms);
+- frame-quality statistics from a bounded ring of every period: p50/p95/p99/p99.9
+  percentiles, jitter_ms (standard deviation of the period), fps_1%low and
+  fps_0.1%low (the average FPS of the slowest 1% / 0.1% of frames), and spike
+  bands (how many frames fell below 30/20/10/4 FPS, with their share);
+- an interval-over-interval trend line (fps_prev vs fps_now and the delta), so a
+  gradual slowdown is visible before it shows inside one interval;
+- MinFps / LowFpsWarn / LowFpsWarn01 thresholds: when the interval's average FPS,
+  its 1%-low FPS, or its 0.1%-low FPS drops below the configured value, a
+  greppable `[fps] WARNING` line is written (all default to 0 = off). LowFpsWarn01
+  targets long hitches, which the 1%-low figure can hide. These are FPS
+  *thresholds*, not on/off switches: a value of 1 means "warn below 1 FPS", which
+  never fires. When any of them (or FrameBudgetMs) is set to a value that cannot
+  mean anything, the log prints one `[fps] note:` line saying so, so a
+  misconfigured run is not silently missing every warning;
+- SustainedLowIntervals: when MinFps is set and the average FPS stays below it for
+  this many consecutive intervals, a single `[fps] SUSTAINED LOW` line is written
+  (and a `[fps] recovered` line when it comes back). One slow interval is noise
+  (a load hitch, an alt-tab); a run is a real regression. 0 = off;
+- FrameBudgetMs: a frame budget in ms (0 = off). The report then states how many
+  frames met it and the share, the single number that answers "does this build
+  hold the target FPS?". If the budget is set below ~4 ms (a target no 60 Hz build
+  can meet) the line is printed once and then suppressed, so it does not repeat
+  `0/N met` verbatim every interval;
+- a per-frame cause split: every frame is classified logic/script bound (the
+  logic tick used at least 80% of the frame period) or render/streaming bound
+  (GPU / driver / streaming), and a `[fps] cause:` line reports the share of all
+  frames and, separately, of the stutter frames that were logic-bound. The
+  overall label is decided by the stutters when there are any (they are the frames
+  that hurt), falling back to the whole-frame share on a smooth interval - so a
+  smooth interval whose few hitches are all in logic is not mislabelled "render
+  bound". When most slow frames carry almost no logic time (<35% of the period),
+  the cause is reported as present/vsync bound (a frame shown a vsync late) rather
+  than a vague "render/streaming bound"; the raw count is printed too. The
+  "worst logic tick" line is informational only when the interval had no slow
+  frames, so a smooth 60 FPS interval is never given a subsystem verdict;
+- an automatic frame-pacing verdict: a single `[fps] VERDICT:` line (no
+  configuration needed) that flags a low average (below 55 FPS) and uneven pacing
+  (1%-low below 75% of the average) separately, so "average is fine but it
+  stutters" is visible even when MinFps/LowFpsWarn are left at 0;
 - the worst frames of the interval, with their logic_ms, active scripts and
-  uptime, so a hitch can be tied to a moment and a script count;
+  uptime, so a hitch can be tied to a moment and a script count. This table is
+  printed only when the interval actually stuttered (a frame at or above WarnMs);
+  on a smooth interval it would be 15 rows of ~16.7 ms noise;
 - streaming budget/usage (GTA SA 1.0 only, Streaming=1): the streaming budget,
   average and peak bytes held, peak as a share of the budget, plus pending model
   requests (ms_numModelsRequested: avg/max, and the share of frames with a
@@ -129,6 +207,372 @@ from this file, an A/B test needs no rebuild: run with 0, then with -1.
 Usage: set Enabled=1, play until it stutters, then read cleo_frametime.log. The
 period-vs-logic split is the whole point — it says whether to optimise scripts or
 streaming. MaxLogMB caps the file (default 16 MB) so it cannot grow forever.
+
+### Error diagnostics (RenderWare / CLEO)
+
+[DebugUtils.Errors] reports CLEO and RenderWare errors inside cleo_frametime.log,
+so an error can be tied to the frame it happened in. It is **off by default**
+(opt-in): the RenderWare poll runs every frame and the module scan walks the
+stack, so it costs a little even when nothing is wrong — set `Enabled=1` when
+hunting errors. No game code is patched: the monitor only observes (and, for
+RenderWare, restores the error state it read).
+
+The report's `first` / `last` columns are the uptime (seconds) when each error
+was first and most recently seen, so it is clear when an error started and
+whether it is still recurring (the old single `uptime` column showed only the
+last occurrence, which made a repeating error look like it moved). File/resource
+errors (E_RW_BADOPEN, E_RW_READTEXMASK, E_RW_READ, E_RW_STREAMOPEN,
+E_RW_BADFORMAT) also get a `hint:` line naming them as a missing or corrupt
+texture/model/.txd — the "which mod causes it" pointer.
+
+The report is deduplicated: an interval that produced no new error prints
+nothing, and a recurring error is shown in full (row + meaning + hint) only when
+it first appears or its count grows. Rows that did not change are collapsed into
+one `[errors] unchanged since last report: ...` line, so a stable error does not
+re-print its explanation every interval. The `meaning:`/`hint:` details are shown
+once per record (and again in the final `game_end` dump).
+
+When the script active at the error is `plg-sdk`, the report adds a note that
+this is the plugin-sdk script-command bridge (`CallCommandById` builds a
+throwaway `CRunningScript` named `"plg-sdk"`), so the error came from a plugin
+calling a game command rather than from a user CLEO script.
+
+### Naming the exact file (FileWatch)
+
+`E_RW_BADOPEN` ("Error opening the file %s") does not record the filename in the
+error itself, so the log alone cannot say *which* texture or `.txd` is missing.
+Set `[DebugUtils.Errors] FileWatch=1` and DebugUtils captures every RenderWare
+file open and reports the exact paths that failed:
+
+```
+================= failed file opens =================
+#   path                                                   count first  last script
+1   ...\models\cutscene\something.txd                         12    45    186 plg-sdk
+[filewatch] 1 distinct path(s) failed to open; these are the files behind E_RW_BADOPEN / E_RW_READTEXMASK
+```
+
+The path is taken from the argument RenderWare passes to its own file-open
+function, so it is exactly what the game tried to load. When a plugin triggered
+the load through plugin-sdk's script bridge, the script column shows `plg-sdk`
+(the bridge), which is the same attribution the error report uses. With
+`ModuleScan=1` each failed path also gets a `requested by:` line naming the
+module(s) on the stack at the failed open — the concrete `.asi`/plugin that
+asked for the file — and a bare filename (no directory) is flagged with a hint
+that it is looked up in the game folder.
+
+This is a *data-only* patch: RenderWare reaches the OS through a file-function
+table (`RwFileFunctions`, from `RwOsGetFileInterface`), and DebugUtils swaps that
+table's `rwfopen` pointer for its own wrapper, which calls the original and
+records the name on a null result. No instruction is overwritten and no
+trampoline is used, so it carries none of the risk of a code detour; the original
+pointer is restored on game end and on unload. The table address is GTA SA 1.0 US
+only, and the wrapper refuses to install if the pointer it would replace is not
+executable code (a wrong-layout guard). Off by default.
+
+The `failed file opens` block is gated by `FileWatch` and `FileWatchFailures`,
+not by `FileWatchNames`: emptying the watchlist silences the *watched* list but
+not the failed-open report. Set `FileWatchFailures=0` to keep the hook (and the
+watchlist) but stop the failed-open block, e.g. once you have named the culprit.
+
+Frames in a `requested by:` chain that come from the Windows directory
+(`user32.dll`, `kernel32.dll`, a system-supplied `d3d9.dll`, ...) are dropped as
+OS noise. A mod that ships its own `d3d9.dll` in the game folder is kept, since
+its path is not under `Windows`. So a chain like
+`d3d9.dll+0x5FE17 <- SilentPatchSA.asi+0xE104 <- modloader.asi+0x1F1F0`
+means a D3D9 proxy (`d3d9.dll`) asked RenderWare for the file, called from a mod
+loader — the `d3d9.dll` frame is the immediate requester, not a system DLL.
+
+Each chain prints `chain via:` naming the mechanism and how strongly it is
+verified, so the reader knows how much to trust it:
+
+- `unwind` — `RtlCaptureStackBackTrace`, a real unwind. Most trustworthy.
+- `scan-e8` — a stack scan where every frame is preceded by a near `CALL` (the
+  exact shape of a return address). Strong.
+- `scan-e8 N/M (partial)` — a scan where N of M frames are E8-verified and the
+  rest matched only a looser indirect-call pattern (`call [reg]`, `call [abs]`,
+  …). The ratio says how much of the chain to trust.
+- `scan` — a scan where no frame is E8-verified. Weakest; a suspect, not proof.
+
+The scan is the workhorse on 32-bit, where the frame-pointer unwind above often
+stops inside the game EXE. 32-bit Windows has no PE unwind tables (they are an
+x64/ARM64 feature) and the game/mods ship no PDBs, so DbgHelp's `StackWalk64`
+cannot do better than the frame-pointer walk here — it is deliberately not used.
+
+Frames whose address is outside its module image, or whose preceding bytes do not
+decode to a call, are dropped; when those bytes cannot be read the frame is kept
+rather than guessed away.
+
+### Finding who loads a specific file (FileWatchNames)
+
+`E_RW_BADOPEN` only fires when a file is *missing*. To answer "which script or
+`.asi` loads `particle.txd`" — or to pin down a missing `lunar.png` — list the
+name(s) in `[DebugUtils.Errors] FileWatchNames` (comma-separated). Each entry is
+a plain substring, a glob mask (`*`, `?`), or a bare name, so you can watch one
+file, a whole kind, or several at once:
+
+```
+[DebugUtils.Errors] FileWatch=1
+[DebugUtils.Errors] FileWatchNames=particle.txd,*.png
+```
+
+Every open of a matching file is recorded whether it succeeded or failed:
+
+```
+================= watched file opens =================
+#   path                           count first  last result script
+1   models\particle.txd                1    12    12 ok     plg-sdk
+      requested by: mymod.asi+0x1a2b
+      looked in: C:\GTA San Andreas\models\particle.txd
+2   lunar.png                          1    40    40 FAILED plg-sdk
+      requested by: mymod.asi+0x2f10
+      looked in: C:\GTA San Andreas\lunar.png
+[filewatch] watchlist: 2 path(s) matched (FileWatchNames)
+```
+
+- `result` is `ok` (opened) or `FAILED` (missing — this is what raises
+  `E_RW_BADOPEN` / `E_RW_READTEXMASK`).
+- `requested by:` (needs `ModuleScan=1`) names the module on the stack at the
+  open, with the offset inside it (`mymod.asi+0x1a2b`) — the concrete `.asi`
+  plugin that asked for the file. The chain is captured with a real stack unwind
+  (`RtlCaptureStackBackTrace`) at the moment of the open, so the nearest frame is
+  the actual caller; a bounded stack scan is used only as a fallback.
+- `looked in:` is the absolute path the game tried — the exact folder to place a
+  missing file into, or the path a mod got wrong.
+- `script` is the CLEO script active then (`plg-sdk` means a plugin called a game
+  command through the plugin-sdk bridge).
+
+The same `requested by:` / `looked in:` lines are added to the *failed file
+opens* block, so a missing file (as with `lunar.png`) comes with both its exact
+path and the mod that requested it.
+
+Masks are matched against the file name and the full path: `*.txd` watches every
+texture dictionary, `*.png` every PNG, `lunar.*` a specific basename.
+
+Note: files read from inside IMG archives are not opened through RenderWare's
+file functions (the IMG is opened once and seeked), so this watch sees loose
+files only.
+
+### Naming the mod behind E_RW_READTEXMASK (TextureWatch)
+
+`E_RW_READTEXMASK` ("Unable to read Texture/Mask") is raised by RenderWare's
+*name-based* reader `RwTextureRead` when its read callback returns NULL. The error
+poll runs one frame later, when the raising stack is already gone, so it can only
+report the error, never the mod that caused it.
+
+Set `[DebugUtils.Errors] TextureWatch=1` and DebugUtils wraps that read callback
+(`RwTextureGetReadCallBack`/`RwTextureSetReadCallBack`, SA 1.0 US `0x7F3520`/
+`0x7F3500`) and, as a secondary, the stream reader `RwGlobals.stdFunc[26]`
+(SA `0x4CD820`, the TXD-internal path). When a read fails, the requester chain is
+captured *at that moment* — while the mod's frame is still on the stack:
+
+```
+================= failed texture reads =================
+texture                            count first  last script
+lunar.png                              3     5    53 ~plg-sdk
+      requested by: mymod.asi+0x1a2b <- gta_sa.exe+0x730ed0
+      chain via: unwind
+[texturewatch] 1 failed texture read(s); these are the textures behind E_RW_READTEXMASK
+```
+
+- `texture` is the exact name that failed to read, so a missing/corrupt texture
+  is named directly.
+- `requested by:` is the concrete module that asked RenderWare to read the
+  texture (needs `ModuleScan=1`), with the offset inside it — the "which mod"
+  answer the error poll cannot give.
+- `chain via:` names how the chain was captured and verified — `unwind`
+  (`RtlCaptureStackBackTrace`), `scan-e8` (a stack scan where every frame is
+  preceded by a near `CALL`, the workhorse on 32-bit), `scan-e8 N/M (partial)`
+  (only N of M frames are E8-verified), or `scan` (no frame is E8-verified).
+
+### The exact culprit (TextureExactCaller)
+
+The chain above comes from a stack scan, which is a *suspect*, not proof. For an
+exact answer set `[DebugUtils.Errors] TextureExactCaller=1` (with
+`TextureWatch=1`). DebugUtils then places a 5-byte `JMP` at the entry of
+`RwTextureRead` itself. A `JMP` pushes no return address, so inside the wrapper
+`_ReturnAddress()` is the **direct caller** — the mod that asked for the texture,
+named with 100% certainty:
+
+```
+      requested by: mymod.asi+0x1a2b <- gta_sa.exe+0x730ed0
+      chain via: unwind
+      exact caller: mymod.asi+0x1a2b  (captured at RwTextureRead, 100% exact)
+```
+
+This is the **only code patch** in the plugin (everything else is a data-only
+pointer swap), so it is off by default and guarded at every step:
+
+- the target must be executable code inside the game image, else it is refused;
+- the displaced prologue must decode to *relocatable* whole instructions (the
+  decoder refuses on any relative branch or unknown opcode), and those bytes are
+  copied into an executable trampoline that jumps back — a naive 5-byte copy of
+  `55 8B EC 83 EC 18` would corrupt the function, so only whole instructions are
+  moved;
+- any failure disables the hook and leaves the data-only callback watch and the
+  labelled scan in charge.
+
+`TextureEntryAddress` overrides which entry is hooked (default `0x7F3AC0`, the
+real RenderWare `RwTextureRead` that mods call directly). plugin-sdk lists
+`0x4C7510` for `RwTextureRead` by mistake - that address is
+`CVehicleModelInfo::FindTextureCB`, the *find* callback the engine calls from
+inside `RwTextureRead`, which is why hooking it only ever named the game. A value
+that is not a game-image address (for example `1`, set as if it were an on/off
+switch) is ignored and the built-in default is used, so it cannot disable the
+hook by accident.
+
+The callback/stream watch is a **data-only patch**: the read callback pointer is
+swapped through RenderWare's own public API and the `stdFunc[26]` entry is swapped
+in place; no code is overwritten, and both are restored on unload. The optional
+exact-caller hook is the one exception (a code `JMP`, off by default). It is
+GTA SA 1.0 US only and refuses to install on any other version.
+
+- RenderWare: RenderWare keeps the last error as an `RwError {pluginID,
+  errorCode}` pair in a global; the plugin-sdk resolves `RwErrorGet` at a fixed
+  address (GTA SA 1.0 US). The monitor polls it once per frame and reports any
+  *change* of the pair — the only way to see a RenderWare error that did not
+  (yet) crash the process. `RwErrorGet` copies *and clears* the error, so the
+  monitor calls `RwErrorSet` right after to put the pair back: it is transparent
+  and the game's own error handling still sees the error. The report names common
+  errors (E_RW_NOMEM, E_RW_NULLP, ...) and the RenderWare core plugin's errors
+  (e.g. `E_RW_READTEXMASK` — "Unable to read Texture"), and prints each error's
+  meaning on a `meaning:` line; errors from other plugins are shown as
+  `RW_PLUGIN_ERR` with the raw pluginID + code. Because the error is noticed on
+  the next frame, the script column is prefixed with `~` to mark it approximate,
+  and no "last opcode" line is printed for RenderWare rows. Set RenderWare=0 to
+  disable the poll; on non-1.0-US builds it disables itself and says so.
+- CLEO: `CLEO_DEBUG_ERROR` / `CLEO_DEBUG_WARNING` messages are counted, and the
+  stack at that moment is scanned (ModuleScan=1) for the first return address in
+  a module that is neither the game, the core, nor DebugUtils. That module is the
+  mod/plugin/loader that raised the error. The report lists the error with its
+  count, the script and opcode active, and the suspect module (plus the call
+  chain when more than one module is seen).
+
+Attribution is deliberately conservative and labelled as such: a module seen on
+the error stack (or the script active then) is a strong suspect, not proof. The
+point is to point a human at the right DLL or .cs file, not to claim a root
+cause.
+
+#### Filtering the always-present hook chain
+
+A module that appears on **every** captured chain is not the requester — it is a
+hook or wrapper that sits on the stack no matter what asked for the texture (the
+nested main-loop hooks of a loader, a HUD ASI, a SilentPatch-style mod). Naming it
+as the requester sends you after the wrong mod, so the report pulls it out and
+labels it separately:
+
+```
+      requested by: MenuUI.asi+0x6E47 <- VehDeform.SA.asi+0x10615 <- modloader.asi+0x1F224
+      also on stack every time (main-loop hook chain, NOT the requester): moneychangehud.sa.asi+0xC4B5
+      probable caller: MenuUI.asi+0x6E47  (nearest mod frame that is not the always-present hook chain; ...)
+```
+
+A module counts as "always present" when it is on at least 80% of the captured
+chains (and there are at least 3 chains to compare). The "probable caller" line
+never names an always-present module: when the nearest frame would be one, the
+report walks to the nearest *distinctive* frame instead.
+
+#### Naming the streamed model and its TXD (StreamingModelNames)
+
+`E_RW_READTEXMASK` from the streaming path (`RwTextureStreamRead`) is raised while
+the engine loads a model. Set `[DebugUtils.Errors] StreamingModelNames=1` (with
+`TextureWatch=1`) and DebugUtils hooks `CStreaming::ConvertBufferToObject`
+(SA 1.0 US `0x40C6B0`, opt-in, the same audited 5-byte `JMP` as the exact-caller
+hook) to record which model is being converted, and builds a `modelId -> file
+name` index from the IMG archives (the game keeps only a name hash in memory, so
+the name is read from the archive directories). A failed read then names the file:
+
+```
+    comptwall36   count=1  first=0  last=0  script=main
+        streamed model: lod711block02 (id 5530) [LOD] - the .dff being loaded
+        its texture dictionary: lod711 - the texture should be inside this file
+        note: this is a LOD model; LODs use a reduced texture set, so a miss here
+              is often the engine's normal LOD probe and not a broken file
+```
+
+- `streamed model` is the `.dff` (or TXD) being loaded when the texture was
+  referenced — the model to look at.
+- `its texture dictionary` is the `.txd` that should contain the texture, from the
+  model's TXD slot (`CBaseModelInfo::m_nTxdIndex` resolved to a name) — the file
+  to open.
+- `[LOD]` marks a LOD model, whose reduced texture set makes a miss here normal.
+  A model is a LOD when its name follows the engine convention: a `lod` prefix
+  (`lod711block02`, `lodgaz18_law`) or an `_lod` suffix (`gaz18law2_LOD`). The
+  `m_nFlags` LOD bit is deliberately NOT trusted - the engine sets it by default
+  (`CBaseModelInfo::Init`), so every plain model carries it, and the public
+  headers disagree on that bit's name - so the name decides, and the bit is only
+  mentioned when the name says LOD but the bit is clear.
+  A `streamed model` line is only printed when the read happened *inside* a model
+  conversion; an engine/script read at another moment has none.
+
+### Per-script memory-leak tracker
+
+[DebugUtils.Logs] LeakTracker=1 samples CLEO's script-memory arena (the
+allocate_memory 0AC8 / free_allocated_memory 0AC9 blocks) per script on an
+interval and keeps a per-script history, so a script whose live allocation only
+ever grows can be named. It is off by default because it allocates and samples.
+
+For each script the report gives first/last live bytes, the growth, that growth
+as a percentage of the arena and of the process's private bytes, the growth rate
+(bytes/second, the equivalent percent-per-minute of the script's own first
+sample, and the percent-per-minute of the whole arena), the block count, the
+peak, and first/last-seen uptime. The verdict is one of:
+
+- LEAK — grew on every sample and was never released (the strong signature);
+- SUSPECTED — net growth but not monotonic, or too few samples yet;
+- STABLE — normal churn (grew and shrank) or below LeakMinGrowthKB;
+- RELEASED — it held memory earlier and has since freed it.
+
+#### How sure is it? (confidence %)
+
+Every row also carries a `conf%` column — the "how many percent sure is this a
+leak?" answer. It is a 0-100 score, not a proof, built from the same evidence the
+verdict uses:
+
+- monotonicity dominates (up to 55 points): a long run of consecutive growing
+  samples scores high, and any single release (memory handed back) cuts this to a
+  small value, because a script that frees memory is churning, not leaking;
+- observation length (up to 20 points): one or two samples prove nothing;
+- growth magnitude (up to 25 points): absolute size, plus a small share-of-arena
+  term, so the biggest leaker scores highest.
+
+So a script that grew 4 MB over 30 samples with zero releases reads ~90%, the
+same growth with a handful of releases drops to ~40%, and a script that released
+everything reads 0%. The per-row detail line ends with
+`confidence=NN% (releases=N)` so the churn count behind the number is visible, and
+the `[leak] TOP SUSPECT:` line repeats the confidence for the headline suspect.
+
+The report opens the per-script table with a single `[leak] TOP SUSPECT:` line
+naming the one script to look at first (the largest LEAK/SUSPECTED growth, or
+"none"), so the answer is one line rather than a table to scan. When no script
+is leaking but the process is, the line names the process growth instead
+(`TOP SUSPECT: process private (no script is leaking) - grew X (+P% of private)
+at R MB/min`) and follows it with an estimate of how long until the 2 GB
+address-space limit is reached at that rate.
+
+A closing `[leak]` line gives the exact total growth and its percentage of the
+arena and of the process, which is the single "how much, in percent" answer.
+
+The report also states how much the *whole process* grew since the first sample
+(`[leak] process private X -> Y = +Z in Ns (+P%, +P%/min, ...)`). This matters
+because the script arena can be perfectly flat while the process still grows — a
+streaming-pool, texture, or GPU/driver leak. In that case a `[leak] NOTE:` line
+says the growth is NOT a script allocate_memory leak and points at the memory
+summary and module tables, so a flat arena is never misread as "no leak". When
+the streaming pool grew over the same window, a `[leak] of that, X is the
+streaming pool filling (world load, not a leak); Y is unattributed` line
+separates the world-loading fill from the part actually worth chasing — otherwise
+the first minutes of any level load read as a leak. The process baseline is taken
+at the first interval sample after the level has loaded, not at uptime 0, so
+load-time allocation is not counted as growth.
+
+A trend line separates a real leak from a pool/streaming fill that is simply
+filling up: `[leak] this interval +X MB (N B/s); average since first M B/s ->
+verdict`, where the verdict is `steady (leak-like)`, `decelerating (likely a
+pool/streaming fill, not a leak)`, `accelerating (worsening)`, or `shrinking`.
+A leak keeps up with (or exceeds) the average rate; a pool fill slows down as it
+saturates. To name the exact DLL behind process growth that is not in the CLEO
+arena, set `[DebugUtils.Logs] ModuleMemoryMap=1` — its per-module resident
+deltas point at the owner.
 
 The core log starts with a system header (GPU description, vendor/device id,
 driver string and version, desktop resolution/refresh, OS build, CPU count, RAM)
@@ -247,6 +691,8 @@ runtime file I/O.
 The core log rotates at 1 MiB instead of using the old 8 KiB hard stop. Repeated consecutive identical messages are collapsed into a single repeat record. Crash reports are written as one structured report with explicit sections: exception, fault, CPU, instruction, memory, process memory, stack walk, CLEO context, matcher, and diagnosis.
 
 The verified database is CLEO-CrashList.txt. Automatically discovered observations are stored in CLEO-CrashAuto.txt and remain UNVERIFIED until reproduced.
+
+The RenderWare error watch is a single `RwErrorGet` + `RwErrorSet` pair per frame while the frame-time monitor is on; it patches no code and leaves the game's error state exactly as it found it. The stack scan that names the suspect module for a CLEO error runs only when an error/warning is actually logged, not per frame. The per-script leak tracker is off by default and, when on, only walks the script-memory owner map on its own interval.
 
 
 ### Language and CrashInfo localization

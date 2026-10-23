@@ -127,6 +127,11 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_lastModuleMapTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_memorySessionStartTick = s_instance->m_lastMemoryLogTick;
     s_instance->m_lastFrameTimeReportTick = s_instance->m_lastMemoryLogTick;
+    // Drop the previous game's interval trend: otherwise the new game's first
+    // frame-time report compares FPS against the old game's final interval and can
+    // print a misleading slowdown.
+    s_instance->m_frameTimeHaveLastInterval = false;
+    s_instance->m_frameTimeLastIntervalAvgPeriodMs = 0.0;
     s_instance->m_frameTimeHaveLast = false;
     s_instance->m_frameTimeLastPeriodMs = 0.0;
     s_instance->m_frameTimeScriptsLast = 0;
@@ -139,6 +144,63 @@ void __stdcall DebugUtils::OnGameBegin()
     s_instance->m_memoryWarnIssued = false;
     s_instance->m_memoryRotateActive = false;
     s_instance->m_memorySummaryHeaderWritten = false;
+    // Reset the leak tracker's process baseline for the new session; the first
+    // sample captures it. Also reset its timer: otherwise (defaulting to 0) the
+    // first sample fires at uptime 0-1s, during level loading, where memory
+    // swings wildly and the load-time allocation would be miscounted as a leak.
+    s_instance->m_leakFirstPrivateBytes = 0;
+    s_instance->m_leakFirstPrivateUptimeSec = 0;
+    s_instance->m_leakLastPrivateBytes = 0;
+    s_instance->m_leakLastUptimeSec = 0;
+    s_instance->m_lastLeakTick = s_instance->m_lastMemoryLogTick;
+    // Drop the previous session's per-script leak history: the script pointers are
+    // recycled by a new game, and keeping them would attribute the old run's growth
+    // to whatever script lands on the same pointer now.
+    s_instance->m_leakScripts.clear();
+    s_instance->m_leakRetired.clear();
+    s_instance->m_leakSeenThisSample.clear();
+    s_instance->m_leakHaveStreamBaseline = false;
+    s_instance->m_leakFirstStreamUsedBytes = 0;
+    // Error records are cumulative for the session; clear them and the one-shot
+    // note flag so a new game starts from a clean error table.
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_errorMutex);
+        s_instance->m_errorRecords.clear();
+        s_instance->m_errorOrder.clear();
+        s_instance->m_errorModulesSeen.clear();
+    }
+    s_instance->m_errorNotePrinted = false;
+    s_instance->m_rwErrorPrimed = false;
+    s_instance->m_rwErrorAddressCheckDone = false;
+    s_instance->m_rwErrorAddressesValid = false;
+    s_instance->m_rwErrorWatchDisabled = false;
+    s_instance->m_cleoErrorCount = 0;
+    s_instance->m_cleoWarningCount = 0;
+    s_instance->m_lastReportedCleoErrors = 0;
+    s_instance->m_lastReportedCleoWarnings = 0;
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_fileOpenMutex);
+        s_instance->m_fileOpenFailures.clear();
+        s_instance->m_fileOpenOrder.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_fileWatchRecordMutex);
+        s_instance->m_fileWatchRecords.clear();
+        s_instance->m_fileWatchRecordOrder.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_instance->m_textureReadMutex);
+        s_instance->m_textureReadFailures.clear();
+        s_instance->m_textureReadOrder.clear();
+    }
+    // The IMG files can change between sessions (a different install), so the
+    // name index must be rebuilt, not carried over from the previous game.
+    s_instance->m_modelNames.clear();
+    s_instance->m_modelNameIndexBuilt = false;
+    s_instance->InstallFileOpenWatch();
+    s_instance->InstallTextureReadWatch();
+    s_instance->InstallStreamingModelWatch();
+    s_instance->InstallRwErrorHook();
     s_instance->WriteCore("//////////////////////// game begin ////////////////////////");
     s_instance->m_seenScripts.clear();
     s_instance->m_lastScriptMessage.clear();
@@ -160,6 +222,18 @@ void __stdcall DebugUtils::OnGameEnd()
         s_instance->WriteCoreMemorySummary();
     s_instance->WriteProfilerReport("game_end");
     s_instance->WriteFrameTimeReport("game_end");
+    s_instance->WriteErrorReport("game_end");
+    s_instance->WriteFileOpenReport(true);
+    s_instance->WriteWatchedOpenReport(true);
+    s_instance->WriteTextureReadReport(true);
+    s_instance->RemoveFileOpenWatch();
+    s_instance->RemoveTextureReadWatch();
+    s_instance->RemoveStreamingModelWatch();
+    // Do NOT sample here: CLEO dispatches GAME_END only after it has already run
+    // RemoveAllCustomScripts() and Memory().OnGameEnd(), so the owner arena is
+    // empty and a sample would retire every tracked script as RELEASED with 0
+    // bytes - erasing the evidence. Report the last live interval sample instead.
+    s_instance->WriteLeakReport("game_end");
     s_instance->FlushScriptRepeat();
     s_instance->WriteScript("[game_end] runtime stopped");
 }
@@ -251,6 +325,22 @@ void __stdcall DebugUtils::OnGameProcessAfter()
         s_instance->m_lastModuleMapTick = now;
         s_instance->WriteModuleMemoryMap();
     }
+
+    // Per-script leak tracker: sample the script-memory arena on its own cadence
+    // and flush a report. Both calls are game-thread only, like this callback.
+    if (s_instance->m_leakTrackerEnabled &&
+        now - s_instance->m_lastLeakTick >= s_instance->m_leakIntervalSeconds * 1000u)
+    {
+        s_instance->m_lastLeakTick = now;
+        s_instance->SampleScriptMemoryLeaks();
+        s_instance->WriteLeakReport("interval");
+    }
+
+    // Data-only watches install once; a mod can displace them later. Re-check on a
+    // slow cadence so a silently-disabled watch is reported instead of looking
+    // like "nothing failed". Self-gated (returns unless a watch is installed and
+    // 5s elapsed), so calling it every frame is cheap.
+    s_instance->VerifyWatches();
 }
 
 BOOL __stdcall DebugUtils::OnScriptProcessBefore(CScriptThread* thread)
@@ -410,6 +500,13 @@ void __stdcall DebugUtils::OnScriptDeleted(CScriptThread* thread)
     s_instance->m_seenScripts.erase(scriptPtr);
     if (s_instance->m_currentScriptPtr == scriptPtr)
         s_instance->m_currentScriptPtr = 0;
+
+    // Retire the leak state now, at the moment the script is destroyed, instead of
+    // waiting for the next sample. CLEO can reuse the freed script slot before the
+    // next 5-30s sample; without this, the new script would inherit the old one's
+    // first-bytes baseline and growth streak and be reported as a false leak.
+    if (s_instance->m_leakTrackerEnabled)
+        s_instance->RetireLeakScript(scriptPtr);
 
     s_instance->m_breakpoints.erase(
         std::remove_if(

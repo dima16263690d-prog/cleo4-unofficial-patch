@@ -1004,16 +1004,22 @@ void DebugUtils::WriteCrashReport(PEXCEPTION_POINTERS info)
                 MemoryBytes(static_cast<uint64_t>(pmc.PrivateUsage)).c_str()
             );
 
-            // 32-bit GTA: private usage near 2 GB means the address space is
-            // nearly exhausted, which is itself a plausible crash cause.
-            const uint64_t kAddressSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+            // 32-bit GTA: private usage near the address-space ceiling means the
+            // space is nearly exhausted, which is itself a plausible crash cause.
+            // The ceiling is 2 GB, or ~4 GB when the game is 4GB-patched (LAA).
+            const bool largeAddressAware = IsLargeAddressAware();
+            const uint64_t kAddressSpaceBytes = largeAddressAware
+                ? 4ull * 1024ull * 1024ull * 1024ull
+                : 2ull * 1024ull * 1024ull * 1024ull;
             const uint64_t privateUsage = static_cast<uint64_t>(pmc.PrivateUsage);
             const uint64_t headroomBytes =
                 privateUsage < kAddressSpaceBytes ? kAddressSpaceBytes - privateUsage : 0;
             appendf(
+                "large_address_aware=%d\r\n"
                 "address_space_limit=%s\r\n"
                 "address_space_headroom=%s\r\n"
                 "address_space_nearly_exhausted=%d",
+                largeAddressAware ? 1 : 0,
                 MemoryBytes(kAddressSpaceBytes).c_str(),
                 MemoryBytes(headroomBytes).c_str(),
                 privateUsage >= (kAddressSpaceBytes * 80ull / 100ull) ? 1 : 0

@@ -17,11 +17,18 @@
     <ClCompile Include="DebugUtils.CrashReport.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Callbacks.cpp"><Filter>source</Filter></ClCompile>
     <ClCompile Include="DebugUtils.Opcodes.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Errors.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.StackScan.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Watches.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Leak.cpp"><Filter>source</Filter></ClCompile>
+    <ClCompile Include="DebugUtils.Streaming.cpp"><Filter>source</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DebugUtils.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="DebugUtils.Internal.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="DebugUtils.OpcodeNames.h"><Filter>source</Filter></ClInclude>
+    <ClInclude Include="DebugUtils.RwErrorNames.h"><Filter>source</Filter></ClInclude>
+    <ClInclude Include="DebugUtils.X86Decoder.h"><Filter>source</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h"><Filter>sdk</Filter></ClInclude>
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h"><Filter>sdk</Filter></ClInclude>
   </ItemGroup>

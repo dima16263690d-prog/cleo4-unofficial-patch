@@ -20,7 +20,7 @@ namespace
     // Visible in both the startup log and crash report so the installed
     // DebugUtils.cleo can be distinguished from stale copies.
     static constexpr char kDebugUtilsBuildId[] =
-        "test-xx02-stackwalk-esp-scan-2026-10-06";
+        "debugutils-rwerror-leakreview-2026-10-17";
 
     // Resolve a 15-bit opcode to its canonical SCRLog/Sanny Builder name.
     // The table is sorted by opcode, so a binary search keeps this cheap even
@@ -283,12 +283,18 @@ namespace
         CloseHandle(file);
     }
 
+    // Skip the parameters of the opcode at the thread's current ip, then step
+    // past the opcode itself. The loop is bounded: a malformed or truncated
+    // script whose ip never reaches a 0 terminator would otherwise spin forever
+    // (this runs from the crash/cleanup path, where a hang is as bad as a crash).
     void SkipUnusedVarArgs(CScriptThread* thread)
     {
-        if (!thread)
+        if (!thread || thread->ip == nullptr)
             return;
 
-        while (*thread->ip != 0)
+        constexpr int kMaxParams = 64;
+        int guard = 0;
+        while (*thread->ip != 0 && guard++ < kMaxParams)
             CLEO_SkipOpcodeParams(thread, 1);
 
         thread->ip++;

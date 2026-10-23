@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <array>
 #include <atomic>
+#include <unordered_map>
+#include <utility>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -170,6 +172,100 @@ private:
     DWORD m_lastModuleMapTick = 0;
     std::map<std::string, unsigned long long> m_lastModuleResident;
 
+    // Per-script memory-leak tracker. Samples the CLEO script-memory arena per
+    // script (CLEO_DebugGetScriptMemoryOwners) and keeps a moving baseline, so a
+    // script whose live allocation only ever grows can be named and its share of
+    // the arena / of the process quantified. Off by default: it allocates.
+    bool m_leakTrackerEnabled = false;
+    DWORD m_leakIntervalSeconds = 30;
+    DWORD m_leakMinGrowthBytes = 64u * 1024u;  // ignore growth below this
+    DWORD m_lastLeakTick = 0;
+
+    // Process-private baseline for the leak report, so it can state how much the
+    // *whole process* grew (and the %/min) even when the growth is not in the
+    // CLEO script arena. Captured at the first sample.
+    uint64_t m_leakFirstPrivateBytes = 0;
+    DWORD m_leakFirstPrivateUptimeSec = 0;
+
+    // Previous report's process private bytes / uptime, so the report can show an
+    // interval-over-interval trend: a steady climb is a real leak, a decelerating
+    // one is a pool/streaming fill that is plateauing.
+    uint64_t m_leakLastPrivateBytes = 0;
+    DWORD m_leakLastUptimeSec = 0;
+
+    // Streaming-pool bytes at the first sample, so the report can subtract the
+    // world-loading fill from the process growth. A large part of the private
+    // growth during the first minutes is the streaming pool filling, not a leak;
+    // separating it keeps the verdict honest.
+    uint64_t m_leakFirstStreamUsedBytes = 0;
+    bool m_leakHaveStreamBaseline = false;
+
+    // Public so the anonymous-namespace key helper in DebugUtils.Leak.cpp can name
+    // the type; it holds only tracking state, not secrets.
+public:
+    struct LeakScriptState
+    {
+        std::string name;
+        uintptr_t scriptPtr = 0;             // identity; survives a name change
+        unsigned long long firstBytes = 0;   // live bytes at the first sample
+        unsigned long long lastBytes = 0;    // live bytes at the most recent sample
+        unsigned long long peakBytes = 0;
+        unsigned long long firstBlocks = 0;
+        unsigned long long lastBlocks = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD samples = 0;                   // how many samples it was present in
+        DWORD growthStreak = 0;              // consecutive samples of net growth
+        DWORD flatStreak = 0;                // consecutive samples with no growth
+        DWORD shrinkCount = 0;               // times the live bytes fell (churn proof)
+        DWORD breakStreak = 0;               // consecutive growth runs broken by a drop
+        bool releasedSince = false;          // it ever dropped back to zero
+        // Per-sample history for a MEASURED leak verdict, not just a heuristic one.
+        // Each sample records (uptimeSec, liveBytes). A least-squares fit over the
+        // window gives the true bytes/second slope and R^2 (how linear the growth
+        // is): R^2 near 1 with a positive slope is a steady leak, R^2 near 0 is a
+        // noisy series that merely trends up. Bounded so a long session cannot grow
+        // the state without limit; the fit uses whatever samples are present.
+        static constexpr size_t kHistory = 32;
+        std::array<unsigned int, kHistory> histSec{};
+        std::array<unsigned long long, kHistory> histBytes{};
+        size_t histCount = 0;                // samples stored (<= kHistory)
+        size_t histNext = 0;                 // next write slot (ring)
+        // What the previous report printed for this script, so an unchanged row is
+        // not repeated every interval (the report was otherwise a full dump each
+        // time, which buried the one row that changed).
+        unsigned long long lastReportedGrowth = 0;
+        std::string lastReportedVerdict;
+    };
+
+private:
+    std::map<uintptr_t, LeakScriptState> m_leakScripts; // keyed by script pointer
+    // Retired scripts, keyed by "<name>@0x<ptr>" rather than by name alone: a name
+    // can be reused by a different script (or the same pointer by a different
+    // name), and keying by name overwrote the earlier history.
+    std::map<std::string, LeakScriptState> m_leakRetired;
+    std::set<uintptr_t> m_leakSeenThisSample;
+
+    void SampleScriptMemoryLeaks();
+    // Retire a tracked script's leak state the moment it is destroyed, so a script
+    // that reuses the freed pointer before the next sample is not mistaken for it.
+    void RetireLeakScript(uintptr_t scriptPtr);
+    void WriteLeakReport(const char* reason);
+    // Confidence that a tracked script is really leaking, 0-100%. Combines the
+    // strength of the evidence (sample count, monotonic growth streak, growth
+    // magnitude) and subtracts for churn (times memory was released). Answers the
+    // "how many percent sure is this a leak?" question directly.
+    static double LeakConfidencePercent(const LeakScriptState& state,
+                                        unsigned long long growthBytes,
+                                        unsigned long long arenaBytes,
+                                        double rSquared);
+    void UpdateLeakEntry(
+        uintptr_t scriptPtr,
+        const std::string& name,
+        unsigned long long blocks,
+        unsigned long long bytes
+    );
+
     // Frame-time / stutter monitor. Samples the frame period and the logic-tick
     // duration with QueryPerformanceCounter and writes a dedicated log, so frame
     // hitches can be measured and attributed without cluttering the other logs.
@@ -182,6 +278,21 @@ private:
     bool m_frameTimeStreamingEnabled = true; // snapshot ms_memoryUsed per frame (SA 1.0)
     int  m_frameTimeStreamLimitMb = 0;       // request CStreaming budget: 0=off,-1=auto,>0=MB
     DWORD m_frameTimeMaxLogMegabytes = 16;
+    // Frame-quality thresholds. MinFps warns when the interval's average FPS falls
+    // below it; LowFpsWarn warns when the 1%-low FPS falls below it; LowFpsWarn01
+    // warns when the 0.1%-low FPS falls below it (all 0 = off).
+    DWORD m_frameTimeMinFps = 0;
+    DWORD m_frameTimeLowFpsWarn = 0;
+    DWORD m_frameTimeLowFpsWarn01 = 0;
+    // Sustained-low detection: warn when the average FPS is below MinFps for this
+    // many consecutive intervals. One slow interval is noise; a run of them is a
+    // real regression. 0 = off. Needs MinFps > 0.
+    DWORD m_frameTimeSustainedLowIntervals = 0;
+    DWORD m_frameTimeConsecutiveLowIntervals = 0; // running count since the last good interval
+    bool m_frameTimeSustainedLowReported = false;
+    // A frame budget in ms (0 = off). The report states what share of the
+    // interval's frames met it, so "does this build hold 60 FPS?" has one number.
+    double m_frameTimeBudgetMs = 0.0;
     DWORD m_lastFrameTimeReportTick = 0;
     LARGE_INTEGER m_frameTimeFreq{};
     bool m_frameTimeFreqReady = false;
@@ -189,6 +300,7 @@ private:
     bool m_frameTimeHaveLast = false;
     LARGE_INTEGER m_frameTimeLogicStart{};  // this frame's submit time
     double m_frameTimeLastPeriodMs = 0.0;   // period measured for the current frame
+    double m_frameTimeLastLogicMs = 0.0;    // previous frame's logic-tick duration
     unsigned long long m_frameTimeFrames = 0;
     double m_frameTimeSumPeriodMs = 0.0;
     double m_frameTimeSumLogicMs = 0.0;
@@ -199,6 +311,92 @@ private:
     double m_frameTimeStutterLostMs = 0.0;  // time above the warning threshold
     double m_frameTimeIntervalMs = 0.0;     // wall-clock span of the interval
     size_t m_frameTimeScriptsLast = 0;
+
+    // Frame-quality accumulators. The period of every frame is kept in a bounded
+    // ring so the report can compute true percentiles / 1%-low FPS instead of
+    // only min/avg/max, and so jitter (standard deviation) is available.
+    static constexpr size_t kFrameTimePeriodSamples = 4096;
+    std::array<float, kFrameTimePeriodSamples> m_frameTimePeriodRing{};
+    size_t m_frameTimePeriodCount = 0;     // valid entries in the ring
+    size_t m_frameTimePeriodNext = 0;      // next write slot
+    // Periods recorded this interval. Unlike m_frameTimePeriodCount (capped at
+    // the ring size) this keeps counting, so the jitter/mean denominators match
+    // the period sums even for a long interval. The first frame has no period
+    // (period is start-to-start), so this is one less than m_frameTimeFrames.
+    unsigned long long m_frameTimePeriodSamples = 0;
+    double m_frameTimeSumPeriodSqMs = 0.0; // sum of period^2, for the stddev
+    unsigned long long m_frameTimeSpike33 = 0;  // period >= 33.3 ms (< 30 FPS)
+    unsigned long long m_frameTimeSpike50 = 0;  // period >= 50 ms   (< 20 FPS)
+    unsigned long long m_frameTimeSpike100 = 0; // period >= 100 ms  (< 10 FPS)
+    unsigned long long m_frameTimeSpike250 = 0; // period >= 250 ms  (< 4 FPS)
+    unsigned long long m_frameTimeBudgetMet = 0;    // frames within m_frameTimeBudgetMs
+    unsigned long long m_frameTimeBudgetMissed = 0; // frames over the budget
+    bool m_frameTimeBudgetNoteLogged = false;       // the "impossible target" note, once
+    double m_frameTimeWorstLogicMs = 0.0;       // slowest logic tick in the interval
+    double m_frameTimeWorstLogicPeriodMs = 0.0; // its frame period, to split cause
+    // Per-frame cause split: a frame is "logic-bound" when its logic tick used at
+    // least kFrameTimeLogicShare of the frame period, otherwise "render-bound"
+    // (GPU / driver / streaming). Counted for every frame and, separately, for the
+    // stutter frames, so the report can say which side owns the hitches instead of
+    // only labelling the single worst frame.
+    unsigned long long m_frameTimeLogicBoundFrames = 0;
+    unsigned long long m_frameTimeStutterLogicBound = 0;
+    // Frames slower than kFrameTimeSlowMs (missed the 50 FPS floor). Used to tell
+    // a genuinely smooth interval from one whose hitches were only mild.
+    unsigned long long m_frameTimeSlowFrames = 0;
+    // Of those slow frames, the ones whose logic tick was a small share of the
+    // period (kFrameTimeLowLogicShare). A slow frame with almost no logic time is
+    // not script-bound; when most slow frames look like that, the cause is the
+    // present/GPU path, not a script. A frame that also lands at a near-integer
+    // multiple of the median period is a missed present (shown a vsync late).
+    unsigned long long m_frameTimeSlowLowLogic = 0;
+    // Slow frames that happened during world load (uptime < kFrameTimeStartupSec).
+    // A world-load hitch is not steady-state stutter, so the pacing verdict must
+    // not call an interval that is ALL load "uneven pacing" - the per-frame cause
+    // line already separates them, and this makes the verdict agree.
+    unsigned long long m_frameTimeSlowFramesLoad = 0;
+    // Frames whose period reached kFrameTimeFreezeMs: the process was not running
+    // (alt-tab/minimize, a debugger break, a multi-second disk stall), so these are
+    // freezes, not rendering hitches. Reported on their own line and kept out of
+    // the cause split.
+    unsigned long long m_frameTimeFreezeFrames = 0;
+    double m_frameTimeFreezeMaxMs = 0.0;
+    // RenderWare errors raised during the interval (exact count from the RwErrorSet
+    // hook, or the poll's change count when the hook is off). Interlocked because
+    // RwErrorSet can be called from any thread. Read-and-reset by the report so it
+    // says whether the slow frames coincided with renderer errors - the "does the
+    // renderer complain while it stutters?" answer.
+    volatile LONG m_frameTimeRwErrors = 0;
+    // Set by the RwErrorSet hook when it records an error, cleared at the next
+    // frame start. Lets a slow frame be tagged as "an error was raised in it".
+    volatile LONG m_frameTimeErrorPending = 0;
+    // Slow frames that had a RenderWare error raised in them. A frame-time sample
+    // cannot know this (the error happens outside the logic tick), so the hook
+    // stamps the current frame index and the report counts the coincidence.
+    unsigned long long m_frameTimeSlowWithError = 0;
+    double m_frameTimeLastIntervalAvgPeriodMs = 0.0; // previous interval's average
+    bool m_frameTimeHaveLastInterval = false;
+    // Logic-bound share of the frame period (0.8 = logic used 80% of the frame).
+    static constexpr double kFrameTimeLogicShare = 0.8;
+    // A slow frame whose logic used less than this share of the period was not
+    // script-bound: the stall was outside the logic tick (present/GPU/streaming).
+    static constexpr double kFrameTimeLowLogicShare = 0.35;
+    // A frame must be at least this slow (ms) before its cause is worth counting:
+    // a logic-heavy frame that still hits 60 FPS is not a problem, and counting it
+    // would mislabel a smooth interval as "logic/script bound". 20 ms = 50 FPS.
+    static constexpr double kFrameTimeSlowMs = 20.0;
+    // Worst frames with an uptime below this (seconds) are treated as startup /
+    // world-load hitches, not steady-state stutter, and said so in the report.
+    static constexpr DWORD kFrameTimeStartupSec = 12;
+    // Minimum number of stutter frames in an interval before the cause is allowed
+    // to be attributed to the stutters (rather than to the split over all frames).
+    // One stutter is always 100% one-sided, so a lone hitch must not decide.
+    static constexpr unsigned long long kFrameTimeMinStutterForCause = 4;
+    // A frame at or above this period is a FREEZE, not a hitch: the process was
+    // not running (alt-tab/minimize, debugger break, disk stall). Counting it as a
+    // 60 FPS sample would report "fps_avg=12.6" and "present/GPU bound" for a game
+    // that was simply paused.
+    static constexpr double kFrameTimeFreezeMs = 1000.0;
 
     // Streaming memory snapshot (GTA SA 1.0 only). Read alongside each frame to
     // answer "do stutters coincide with streaming memory pressure / eviction
@@ -229,15 +427,404 @@ private:
         DWORD uptimeSec = 0;
         unsigned long long streamUsed = 0;  // ms_memoryUsed at the frame (bytes)
         unsigned long long streamReq = 0;   // ms_numModelsRequested at the frame
+        // A RenderWare error was raised during this frame (set from the RwErrorSet
+        // hook's pending flag). Lets the report say whether slow frames coincided
+        // with renderer errors.
+        bool hadError = false;
     };
     static constexpr size_t kFrameTimeMaxWorst = 32;
     std::array<FrameTimeSample, kFrameTimeMaxWorst> m_frameTimeWorst{};
     size_t m_frameTimeWorstCount = 0;
+    // A frame's logic time is measured when the frame ends, but its period is only
+    // known when the *next* frame starts (the period is start-to-start). Parking
+    // the finished frame here lets the next Begin pair the two values of the SAME
+    // frame; otherwise the worst-frame table and the logic/render split would mix
+    // two different frames (off by one).
+    FrameTimeSample m_frameTimePending{};
+    bool m_frameTimeHavePending = false;
 
     std::ofstream m_frameTimeLog;
     std::mutex m_frameTimeMutex;
     size_t m_frameTimeBytes = 0;
     bool m_frameTimeLimitNoticeWritten = false;
+
+    // ---------------------------------------------------------------------
+    // RenderWare / CLEO error diagnostics (reported inside the frame-time log).
+    //
+    // RenderWare stores the last error as a small RwError {pluginID, errorCode}
+    // pair in a global; the plugin-sdk resolves RwErrorGet at a fixed address.
+    // Polling it once per frame is read-only and cheap, and it is the only way
+    // to see a RenderWare error that did not (yet) crash the process. Nothing is
+    // patched: the monitor observes, it never modifies game code.
+    //
+    // CLEO-side errors arrive synchronously through OnCoreLog; the stack at that
+    // moment is scanned for the first return address outside the core, DebugUtils
+    // and the game itself, which is the module (mod/plugin/script loader) that
+    // raised it.
+    // ---------------------------------------------------------------------
+    // Error diagnostics (RenderWare + CLEO). Off by default: the RenderWare poll
+    // runs every frame and the module scan walks the stack, so the feature costs
+    // a little even when nothing is wrong. Turn it on when hunting errors.
+    bool m_errorDiagEnabled = false;
+    bool m_rwErrorWatchEnabled = false;
+    bool m_errorModuleScanEnabled = false;
+    // Capture the exact filename of every RenderWare file open by wrapping the
+    // rwfopen/rwfexist pointers in the RwFileFunctions table (data-only patch,
+    // no code is modified). This is what turns E_RW_BADOPEN / E_RW_READTEXMASK
+    // from "some texture failed" into "models\foo.txd failed". Opt-in.
+    bool m_fileWatchEnabled = false;
+    // Report failed opens (E_RW_BADOPEN/E_RW_READTEXMASK sources). Separate from
+    // FileWatchNames: an empty watchlist still lets failures through, so this is
+    // the switch that actually turns the failed-open report off.
+    bool m_fileWatchFailuresEnabled = true;
+
+    struct ErrorRecord
+    {
+        unsigned long long key = 0;     // unique id for dedup (rw: plugin<<32 | code)
+        DWORD count = 0;               // occurrences since game begin
+        DWORD firstTick = 0;           // GetTickCount of the first occurrence
+        DWORD lastTick = 0;            // GetTickCount of the most recent
+        DWORD firstUptimeSec = 0;      // uptime of the first occurrence
+        DWORD lastUptimeSec = 0;       // uptime of the most recent occurrence
+        DWORD lastReportedCount = 0;   // count already printed by WriteErrorReport
+        unsigned int pluginId = 0;     // RenderWare pluginID (rw errors)
+        unsigned int errorCode = 0;    // raw RenderWare errorCode (rw errors)
+        std::string name;              // resolved name when known
+        std::string module;            // owning module when resolvable
+        std::string lastScript;        // script active when last seen
+        DWORD lastOpcode = 0xFFFFFFFFu;
+        std::vector<std::string> modules; // modules seen in the stack for this error
+        bool renderWare = false;       // came from the RW poll (no raising stack)
+        // True when the error was captured by the RwErrorSet hook: the stack is
+        // the RAISING stack, so the module/script/opcode are exact, not a poll-time
+        // guess. The report labels these differently from a polled row.
+        bool exact = false;
+        std::string text;              // human-readable meaning when known
+    };
+
+    std::map<unsigned long long, ErrorRecord> m_errorRecords; // keyed by record.key
+    std::vector<unsigned long long> m_errorOrder;      // first-seen order
+    std::mutex m_errorMutex;
+
+    // Failed RenderWare file opens captured by the open watch (see below).
+    struct FileOpenFailure
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        std::string lastScript;
+        std::string resolvedPath;      // absolute path the game looked in
+        // Modules on the stack at the first failed open (the plugin/mod that
+        // asked RenderWare to load the file), when ModuleScan is on.
+        std::vector<std::string> modules;
+        std::string chainVia; // "unwind" or "scan": how the chain was captured
+        bool modulesScanned = false;
+    };
+    std::map<std::string, FileOpenFailure> m_fileOpenFailures; // keyed by path
+    std::vector<std::string> m_fileOpenOrder;                  // first-seen order
+    std::mutex m_fileOpenMutex;
+    bool m_fileWatchInstalled = false;
+    void* m_fileWatchTable = nullptr;         // RwFileFunctions*
+    void* m_fileWatchOriginalFopen = nullptr; // the rwfopen we replaced
+
+    // Optional comma-separated watchlist (FileWatchNames). A file whose path
+    // contains one of these substrings is recorded on EVERY open - success or
+    // failure - so "who loads particle.txd" can be answered even when the file
+    // exists. Matched case-insensitively against the requested path.
+    std::vector<std::string> m_fileWatchNames;
+
+    struct FileOpenRecord
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        bool failed = false;
+        std::string lastScript;
+        std::string resolvedPath;
+        std::vector<std::string> modules;
+        std::string chainVia; // "unwind" or "scan": how the chain was captured
+        bool modulesScanned = false;
+    };
+    std::map<std::string, FileOpenRecord> m_fileWatchRecords; // keyed by path
+    std::vector<std::string> m_fileWatchRecordOrder;
+    std::mutex m_fileWatchRecordMutex;
+
+    bool IsWatchedFileName(const char* path) const;
+    void RecordWatchedOpen(const char* path, bool failed);
+    void WriteWatchedOpenReport(bool forceAll);
+
+    void InstallFileOpenWatch();
+    void RemoveFileOpenWatch();
+    void RecordFileOpenFailure(const char* path);
+    void WriteFileOpenReport(bool forceAll);
+    static void* __cdecl FileOpenWatchFopen(const char* name, const char* mode);
+
+    // Texture-read watch. E_RW_READTEXMASK ("Unable to read Texture %s / Mask %s")
+    // is raised by the *name-based* reader RwTextureRead (SA 1.0 US 0x7F3AC0) when
+    // its read callback returns NULL - the only raiser that matches GTA SA's texture
+    // path. The error poll runs one frame later, when the raising stack is gone,
+    // so it cannot name the mod. We wrap that read callback (via the public
+    // RwTextureGetReadCallBack/RwTextureSetReadCallBack, SA 0x7F3520/0x7F3500) and
+    // the stream reader RwGlobals.stdFunc[26] (SA 0x4CD820, the TXD-internal path);
+    // both run while the game thread is inside the mod, so the requester chain is
+    // captured at the right moment. Data-only swaps (no code is touched). Opt-in.
+    bool m_textureWatchEnabled = false;
+    bool m_textureReadCbInstalled = false;   // RwTextureRead read callback swapped
+    void* m_textureReadCbOriginal = nullptr;
+    // Who owned the read/find callbacks *before* we swapped them. If either is not
+    // the game image, a mod (a texture/D3D9 proxy) had already replaced RenderWare's
+    // texture loader - a prime suspect for E_RW_READTEXMASK and for a texture
+    // loaded from the wrong place. Empty when it was the stock game callback.
+    std::string m_textureReadCbOwner;
+    std::string m_textureFindCbOwner;
+    bool m_textureWatchInstalled = false;    // RwGlobals.stdFunc[26] swapped
+    void* m_textureWatchSlot = nullptr;      // &RwGlobals.stdFunc[26]
+    void* m_textureWatchOriginalRead = nullptr;
+    // Exact-caller entry hook on RwTextureRead itself. A 5-byte JMP detour
+    // (no return address is pushed) so the wrapper's _ReturnAddress() is the
+    // caller of RwTextureRead - the mod that asked for the texture, exactly.
+    // Opt-in (TextureExactCaller=1) because it is the only code patch in this
+    // file; everything else is a data-only pointer swap.
+    bool m_textureEntryHookEnabled = false;
+    DWORD m_textureEntryAddress = 0;         // 0 = use the built-in default
+    bool m_textureEntryHookInstalled = false;
+    // Periodic integrity re-check for the data-only watches: a mod may re-install
+    // its own callback/table entry over ours after we set it (installs happen once
+    // at game begin), silently disabling the watch for the rest of the session.
+    DWORD m_lastWatchVerifyTick = 0;
+    void VerifyWatches();
+    void* m_textureEntryTarget = nullptr;    // RwTextureRead entry (game image)
+    BYTE m_textureEntrySaved[5] = {};        // original prologue bytes
+    // How many times the entry hook was invoked. Lets the report say whether the
+    // hook is actually on the call path (a mod may read textures through a path
+    // that never reaches 0x7F3AC0), instead of leaving it ambiguous. Atomic
+    // because a texture read can happen on a non-game thread.
+    std::atomic<unsigned long long> m_textureEntryHookCalls{0};
+    struct TextureReadFailure
+    {
+        DWORD count = 0;
+        DWORD firstUptimeSec = 0;
+        DWORD lastUptimeSec = 0;
+        DWORD lastReportedCount = 0;
+        std::string lastScript;
+        std::vector<std::string> modules;
+        std::string chainVia;
+        // The exact caller captured by the RwTextureRead entry hook, when that
+        // hook is on and the caller is a mod/plugin (not the game). "mod.asi+0x1a2b".
+        std::string exactCaller;
+        // True when exactCaller is the DIRECT caller of RwTextureRead (from the
+        // entry hook). False when it is only the nearest mod frame from the stack
+        // scan, which is a strong hint but not the proven call site.
+        bool exactCallerDirect = false;
+        // The raw direct caller (any module, incl. the game/CLEO) when the direct
+        // caller is NOT a mod - explains why exactCaller had to fall back to the
+        // scan ("the engine read this .txd, not a mod").
+        std::string directCallerRaw;
+        // The caller label the last stack scan was taken for. The chain is
+        // re-scanned when this changes, so a texture first requested by the engine
+        // (or by one mod) and later requested by a different mod shows the current
+        // requester instead of freezing the first one forever.
+        std::string lastScanCaller;
+        bool modulesScanned = false;
+        // The model/txd being streamed when this texture read failed (from the
+        // ConvertBufferToObject hook), resolved to a file name. Empty when the
+        // streaming hook is off, the read did not happen inside a model
+        // conversion, or the name could not be resolved. "-1" model id and an
+        // empty name is normal for a non-streaming (engine/script) read.
+        std::string streamingModel;   // e.g. "comptwall36"
+        int streamingModelId = -1;
+        // The .txd the streamed model should load the texture from (its TXD slot
+        // resolved to a name), and whether the model is a LOD model. A LOD model
+        // legitimately references a REDUCED texture set, so a miss there is often
+        // the engine's normal LOD probe, not a broken file - worth saying so.
+        std::string streamingTxd;     // e.g. "lodlasruff"
+        bool streamingIsLod = false;
+        // True when the read callback fired with no texture name (the TXD-internal
+        // / stream path). The name column then shows a clean "(unnamed texture
+        // read)" and the caller is printed on its own line, instead of the caller
+        // being smuggled into the key and truncated into a garbage name.
+        bool unnamed = false;
+        std::string unnamedVia;       // the caller, for an unnamed read
+    };
+    std::map<std::string, TextureReadFailure> m_textureReadFailures; // keyed by texture name
+    std::vector<std::string> m_textureReadOrder;
+    std::mutex m_textureReadMutex;
+    void InstallTextureReadWatch();
+    void RemoveTextureReadWatch();
+    // Record a failed texture read. `caller` is the address to attribute it to:
+    // the direct caller of RwTextureRead when `callerIsDirect` (from the entry
+    // hook), otherwise a weaker in-game address (from the callback path) that the
+    // scanned mod frame may override. Default: the stream path, no caller.
+    void RecordTextureReadFailure(
+        const char* textureName, const void* caller = nullptr,
+        bool callerIsDirect = false);
+    void WriteTextureReadReport(bool forceAll);
+    static void* __cdecl TextureReadCallbackWatch(const char* name, const char* maskName);
+    static int __cdecl TextureReadWatchRead(void* stream, void** texture, int length);
+    static void* __cdecl TextureReadEntryWatch(const char* name, const char* maskName);
+    void InstallTextureEntryHook();
+    void RemoveTextureEntryHook();
+    // Generic 5-byte JMP detour + restore. The only code patch in the plugin; used
+    // by the texture exact-caller hook and the streaming-model hook. `savedOut`
+    // receives the displaced prologue (5 bytes) for a later restore; `trampolineOut`
+    // receives the executable trampoline (never freed). Both refuse (return false)
+    // on any anomaly and leave the target untouched.
+    bool InstallEntryDetour(
+        DWORD target, const void* wrapper, BYTE savedOut[5],
+        void** trampolineOut, const char* label);
+    bool RemoveEntryDetour(
+        DWORD target, const void* wrapper, const BYTE saved[5], const char* label);
+    // Resolve a caller address to "mod.asi+0x1a2b", or an empty string when it is
+    // the game, CLEO, DebugUtils or a system DLL (i.e. not an interesting answer).
+    static std::string LabelForModCaller(const void* address);
+    // Like LabelForModCaller but without the game/CLEO/system filters: returns
+    // "module+0xoffset" for ANY mapped module, including the game. Used to show
+    // where an engine-initiated RwTextureRead actually came from.
+    static std::string LabelAnyModule(const void* address);
+
+    // --- streaming-model attribution (DebugUtils.Streaming.cpp) -----------------
+    // Opt-in (StreamingModelNames=1): hook CStreaming::ConvertBufferToObject so a
+    // failed texture read can name the model/txd being streamed, and build a
+    // modelId -> file-name index from the IMG archives' directories (the game
+    // itself keeps only a name hash, never the string).
+    bool m_streamingModelNamesEnabled = false;
+    DWORD m_streamingModelAddress = 0;        // 0 = use the built-in default
+    bool m_streamingHookInstalled = false;
+    void* m_streamingTarget = nullptr;
+    BYTE m_streamingSaved[5] = {};
+    bool m_modelNameIndexBuilt = false;
+    std::unordered_map<int, std::string> m_modelNames; // modelId -> "comptwall36"
+    static char __cdecl ConvertBufferToObjectWatch(char* fileBuffer, int modelId, int channelIndex);
+    void InstallStreamingModelWatch();
+    void RemoveStreamingModelWatch();
+    void EnsureModelNameIndex();
+    void LoadImgNames(
+        const char* path,
+        const std::unordered_map<unsigned int, int>& modelByKey,
+        const std::unordered_map<unsigned int, int>& slotByHash);
+    static unsigned int KeyHashUpper(const char* str);
+    // The model currently being converted on the calling thread, or -1.
+    static int CurrentStreamingModelId();
+    // The file name behind a model id, or "" when unknown.
+    std::string ModelNameForId(int modelId);
+    // The TXD slot and LOD flag of a model, in one cached lookup.
+    static std::pair<int, bool> ModelTxdIndexAndLod(int modelId);
+    // True when a model name follows the engine's LOD convention (a "_lod"/
+    // "_LOD" suffix, e.g. "gaz18law2_LOD"). Used to corroborate the m_nFlags LOD
+    // bit, whose position is disputed across the public SDK headers.
+    static bool NameLooksLikeLod(const std::string& name);
+    // Model-id base for texture dictionaries (RESOURCE_ID_TXD): a TXD slot N maps
+    // to model id kTxdModelBase + N, which is how the name index keys them.
+    static constexpr int kTxdModelBase = 20000;
+
+    unsigned int m_rwLastPluginId = 0xFFFFFFFFu;        // last polled RwError pair
+    unsigned int m_rwLastErrorCode = 0xFFFFFFFFu;
+    bool m_rwErrorPrimed = false;
+    // The address validation runs two VirtualQuery calls; cache the verdict so it
+    // is not repeated every frame. `Checked` means the answer in `Valid` is final.
+    bool m_rwErrorAddressCheckDone = false;
+    bool m_rwErrorAddressesValid = false;
+    // Set once the watch has been disabled for good (bad addresses, or a faulting
+    // RwErrorGet). Without this the poll would re-run the SEH call every frame and
+    // take the same exception forever.
+    bool m_rwErrorWatchDisabled = false;
+    // Distinct error keys dropped once m_errorRecords hit its cap. Reported so a
+    // storm of unique errors is visible instead of silently truncated.
+    unsigned long long m_errorRecordsDropped = 0;
+    // Counters may be bumped from any thread that logs through CLEO (the core
+    // debug callback is not game-thread bound), so they are interlocked.
+    volatile LONG m_cleoErrorCount = 0;                 // CLEO error-level messages
+    volatile LONG m_cleoWarningCount = 0;               // CLEO warning-level messages
+    std::set<std::string> m_errorModulesSeen;           // distinct modules that raised errors
+    bool m_errorNotePrinted = false;                    // the "note:" line printed once/session
+    unsigned long long m_lastReportedCleoErrors = 0;    // CLEO error count at the last report
+    unsigned long long m_lastReportedCleoWarnings = 0;  // CLEO warning count at the last report
+
+    void PollRenderWareError();
+    // Exact RenderWare error attribution. The poll above only notices an error a
+    // frame after it was raised, so the raising stack is already gone and the
+    // report can only name the script active at poll time ("~script"). RenderWare
+    // raises every error by calling RwErrorSet (0x808820); hooking its entry lets
+    // the raising stack be captured at the instant of the error, which names the
+    // exact mod/plugin frame and the exact script+opcode - the "which mod caused
+    // it" answer the poll cannot give. Opt-in (RwErrorHook=1): it is a code patch
+    // (a 5-byte JMP at the function entry), so it is off by default. When the hook
+    // installs, the poll stops recording (the hook is strictly better) and keeps
+    // only its read-and-restore role. SA 1.0 US only.
+    bool m_rwErrorHookEnabled = false;
+    bool m_rwErrorHookInstalled = false;
+    void* m_rwErrorTarget = nullptr;
+    BYTE m_rwErrorSaved[5] = {};
+    void InstallRwErrorHook();
+    void RemoveRwErrorHook();
+    static void* __cdecl RwErrorSetWatch(void* code);
+    // Record an error. `scriptOverride`/`opcodeOverride` let the RwErrorSet hook
+    // supply the RAISING script+opcode (captured at the instant of the error)
+    // instead of letting RecordError read the poll-time script; pass them only
+    // when the caller has the exact raising context. `exact` marks the record as
+    // hook-captured so the report labels the attribution as exact.
+    void RecordError(
+        unsigned long long key,
+        const std::string& name,
+        unsigned int pluginId,
+        unsigned int errorCode,
+        const std::vector<std::string>& modules,
+        bool renderWare = false,
+        const char* text = nullptr,
+        const std::string* scriptOverride = nullptr,
+        DWORD opcodeOverride = 0xFFFFFFFFu,
+        bool exact = false
+    );
+    void WriteErrorReport(const char* reason);
+    static std::string CurrentScriptName();
+    static DWORD CurrentScriptOpcode();
+    // Read the CLEO crash snapshot once and fill both the name and the opcode from
+    // that single read, so a record can never pair one script with another's
+    // opcode. CurrentScriptName()/CurrentScriptOpcode() are thin wrappers.
+    static void CurrentScriptSnapshot(std::string& name, DWORD& opcode);
+    // Scans the live stack for return addresses in third-party modules. When
+    // `strictCount`/`totalCount` are non-null they receive how many accepted
+    // frames were verified by a near CALL (E8) and how many were accepted in
+    // total, so the caller can report a chain's reliability as a ratio.
+    static std::vector<std::string> ScanErrorModules(
+        size_t maxModules, size_t* strictCount = nullptr, size_t* totalCount = nullptr);
+
+    // Module attribution shared by the error report and the file watch.
+    static bool IsIgnoredModuleHandle(HMODULE module);
+    // True for modules loaded from the Windows directory (user32, kernel32,
+    // system d3d9, ...). Such a frame is OS noise in a requester chain; a mod
+    // that ships its own d3d9.dll lives in the game folder and is kept.
+    static bool IsSystemModuleHandle(HMODULE module);
+    // True when the process has the IMAGE_FILE_LARGE_ADDRESS_AWARE flag, i.e. the
+    // game is 4GB-patched (LAA / "4gb_patch"). A 32-bit process without it gets
+    // only 2 GB of user address space; with it, ~4 GB. The memory limit, the
+    // leak-to-crash estimate and the fragmentation warnings all depend on which
+    // one is in effect, so it is read from the PE header of the running image.
+    static bool IsLargeAddressAware();
+    // Name the GTA SA engine function at an absolute game-image address (from a
+    // verified symbol table), or an empty string when the address is not in the
+    // game image / not near a known function. Turns a bare "gta_sa.exe+0x404841"
+    // into something a reader can act on, and shows whether the engine (not a mod)
+    // reached the read.
+    static std::string GameFunctionForAddress(DWORD address);
+    // True when a "direct caller of RwTextureRead" label names a script-facing
+    // engine API - a texture fetch a mod/script drove by name (CSprite2d::
+    // SetTexture and friends), as opposed to the streaming loader reading a
+    // .txd/.dff. Used to separate "the game loaded the archive" from "a mod asked
+    // for this texture" when the direct caller is the game either way.
+    static bool IsScriptTextureApi(const std::string& label);
+    static std::string FormatFrameLabel(DWORD address);
+    static void PushUniqueFrame(std::vector<std::string>& modules, DWORD address);
+    // Turns a raw frame list (from any walker) into module labels, dropping the
+    // game/CLEO/DebugUtils frames, system DLLs and implausible stale words.
+    static std::vector<std::string> ModulesFromFrames(
+        const DWORD* frames, size_t count, size_t maxFrames);
+    // `via`, when non-null, receives the mechanism that produced the chain
+    // ("unwind", "scan-e8" or "scan") so the log can say how trustworthy it is.
+    static std::vector<std::string> CaptureRequesterChain(
+        size_t maxFrames, const char** via = nullptr);
 
     std::set<uintptr_t> m_debugScripts;
 
@@ -336,6 +923,11 @@ private:
     void ResetFrameTimeInterval();
     void InsertWorstTimeSample(const FrameTimeSample& sample);
     double FrameTimeMs(LARGE_INTEGER from, LARGE_INTEGER to) const;
+    // Percentile of the frame-period ring, p in [0,1] (0.5 = median). Returns 0
+    // when the ring is empty. Sorts a copy, so it is only called at report time.
+    double FrameTimePeriodPercentile(double p) const;
+    // 1%-low / 0.1%-low average FPS, computed from the slowest tail of the ring.
+    double FrameTimeLowFps(double fraction) const;
 
     static void __cdecl OnCoreLog(int level, const char* format, va_list args);
 

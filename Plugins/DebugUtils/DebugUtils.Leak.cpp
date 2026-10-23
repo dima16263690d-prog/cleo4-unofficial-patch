@@ -1,0 +1,1069 @@
+#include "DebugUtils.h"
+#include "DebugUtils.Internal.h"
+#include "DebugUtils.LeakFit.h"
+#include "resource.h"
+#include <windows.h>
+#include <psapi.h>
+#include <algorithm>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
+
+// Per-script memory-leak tracker.
+//
+// The CLEO script-memory arena (allocate_memory 0AC8 / free_allocated_memory
+// 0AC9) is tracked per script, and CLEO_DebugGetScriptMemoryOwners exposes that
+// breakdown. This tracker samples it on an interval and keeps a per-script
+// history so a script whose live allocation only ever grows can be named.
+//
+// It answers the two questions that matter when a leak is suspected:
+//   * which script (or script name) is holding the growth, and
+//   * how much, in bytes and as a percentage of the arena and of the process.
+//
+// Verdicts are conservative and explained in the report:
+//   LEAK       - monotonic growth over several samples, never released.
+//   PLATEAU    - net growth, but the last several samples did not move (a pool
+//                or one-off buffer that filled, not an ongoing leak).
+//   SUSPECTED  - net growth over several samples but not strictly monotonic.
+//   STABLE     - it grows and shrinks (normal churn) or never moved.
+//   RELEASED   - it held memory before and has since dropped back to zero.
+
+namespace
+{
+    // Minimum number of samples with net growth before a script is called a leak.
+    constexpr DWORD kLeakMinSamples = 3;
+
+    // Growth measured while the process uptime is below this is dominated by world
+    // loading (the streaming pool fills, textures and models stream in), not a leak.
+    // The report says so and does NOT project a "time to the 2 GB limit" from it: a
+    // single 30 s window taken during loading extrapolates the load fill to a false
+    // "out of memory in ~19 min" (seen in a real log at uptime 61 s).
+    constexpr DWORD kLeakStartupSec = 120;
+
+    // Minimum length of the measurement window before the interval trend and the
+    // limit projection are trusted. One interval (the default 30 s) is not a trend:
+    // with a single interval "recent rate == average rate" is trivially true, so the
+    // trend line always read "steady (leak-like)" - a confident answer from one data
+    // point.
+    constexpr unsigned long long kLeakMinReportWindowSec = 60;
+
+    // Retired-state key. A name alone is not unique: two different scripts can
+    // share a name, and one arena pointer can be reused under a new name. Keying
+    // by "name@pointer" keeps both histories instead of overwriting one.
+    std::string LeakRetireKey(const DebugUtils::LeakScriptState& state)
+    {
+        char buf[80];
+        std::snprintf(
+            buf, sizeof(buf), "%s@0x%08llX",
+            state.name.empty() ? "?" : state.name.c_str(),
+            static_cast<unsigned long long>(state.scriptPtr)
+        );
+        return std::string(buf);
+    }
+
+    // Append a (uptimeSec, liveBytes) sample to a script's bounded history ring.
+    void LeakPushHistory(
+        DebugUtils::LeakScriptState& state,
+        unsigned int uptimeSec,
+        unsigned long long bytes)
+    {
+        state.histSec[state.histNext] = uptimeSec;
+        state.histBytes[state.histNext] = bytes;
+        state.histNext = (state.histNext + 1) % DebugUtils::LeakScriptState::kHistory;
+        if (state.histCount < DebugUtils::LeakScriptState::kHistory)
+            ++state.histCount;
+    }
+
+    // Least-squares fit of live bytes against uptime over the stored history.
+    // Delegates to the shared, host-tested helper (DebugUtils.LeakFit.h) so the
+    // math that decides "steady leak vs noisy growth" has a unit test. The ring may
+    // wrap; the samples are copied out in chronological order (oldest first) before
+    // the fit. Requires >= 3 samples, else false.
+    bool LeakFitTrend(
+        const DebugUtils::LeakScriptState& state,
+        double& slopeBytesPerSec,
+        double& rSquared)
+    {
+        slopeBytesPerSec = 0.0;
+        rSquared = 0.0;
+        if (state.histCount < 3)
+            return false;
+
+        const size_t n = state.histCount;
+        const size_t first = (state.histCount <
+                              DebugUtils::LeakScriptState::kHistory)
+            ? 0
+            : state.histNext;
+
+        unsigned int xs[DebugUtils::LeakScriptState::kHistory];
+        unsigned long long ys[DebugUtils::LeakScriptState::kHistory];
+        for (size_t i = 0; i < n; ++i)
+        {
+            const size_t idx =
+                (first + i) % DebugUtils::LeakScriptState::kHistory;
+            xs[i] = state.histSec[idx];
+            ys[i] = state.histBytes[idx];
+        }
+
+        const DebugUtilsLeakFit::Fit fit =
+            DebugUtilsLeakFit::LeastSquares(xs, ys, static_cast<unsigned int>(n));
+        if (!fit.ok)
+            return false;
+
+        slopeBytesPerSec = fit.slope;
+        rSquared = fit.rSquared;
+        return true;
+    }
+}
+
+void DebugUtils::UpdateLeakEntry(
+    uintptr_t scriptPtr,
+    const std::string& name,
+    unsigned long long blocks,
+    unsigned long long bytes
+)
+{
+    auto it = m_leakScripts.find(scriptPtr);
+
+    if (it == m_leakScripts.end())
+    {
+        LeakScriptState state;
+        state.name = name;
+        state.scriptPtr = scriptPtr;
+        state.firstBytes = bytes;
+        state.lastBytes = bytes;
+        state.peakBytes = bytes;
+        state.firstBlocks = blocks;
+        state.lastBlocks = blocks;
+        state.firstUptimeSec =
+            (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        state.lastUptimeSec = state.firstUptimeSec;
+        state.samples = 1;
+        LeakPushHistory(state, state.firstUptimeSec, bytes);
+        m_leakScripts.emplace(scriptPtr, std::move(state));
+        return;
+    }
+
+    LeakScriptState& state = it->second;
+
+    // A script pointer can be reused: CLEO frees a script and loads a new one at
+    // the same arena slot. The name is the only identity we have, so if it changed
+    // this is a DIFFERENT script - keeping the old history would blame the new
+    // script for the old one's growth. Retire the old state and start fresh.
+    const bool hasName = !name.empty() && name != "none";
+    if (hasName && !state.name.empty() && state.name != name)
+    {
+        LeakScriptState previous = state;
+        previous.releasedSince = true;
+        m_leakRetired[LeakRetireKey(previous)] = std::move(previous);
+
+        LeakScriptState fresh;
+        fresh.name = name;
+        fresh.scriptPtr = scriptPtr;
+        fresh.firstBytes = bytes;
+        fresh.lastBytes = bytes;
+        fresh.peakBytes = bytes;
+        fresh.firstBlocks = blocks;
+        fresh.lastBlocks = blocks;
+        fresh.firstUptimeSec = (GetTickCount() - m_memorySessionStartTick) / 1000u;
+        fresh.lastUptimeSec = fresh.firstUptimeSec;
+        fresh.samples = 1;
+        LeakPushHistory(fresh, fresh.firstUptimeSec, bytes);
+        state = std::move(fresh);
+        return;
+    }
+
+    if (hasName)
+        state.name = name;
+
+    state.lastUptimeSec = (GetTickCount() - m_memorySessionStartTick) / 1000u;
+    ++state.samples;
+
+    if (bytes > state.peakBytes)
+        state.peakBytes = bytes;
+
+    if (bytes > state.lastBytes)
+    {
+        ++state.growthStreak;
+        state.flatStreak = 0;
+    }
+    else if (bytes == state.lastBytes)
+    {
+        ++state.flatStreak;
+    }
+    else
+    {
+        // The live bytes fell: memory was released. This is the strongest single
+        // piece of evidence AGAINST a leak, so count it and break the growth run.
+        state.growthStreak = 0;
+        state.flatStreak = 0;
+        ++state.shrinkCount;
+        ++state.breakStreak;
+    }
+
+    state.lastBytes = bytes;
+    state.lastBlocks = blocks;
+    LeakPushHistory(state, state.lastUptimeSec, bytes);
+}
+
+// How sure are we that this script is leaking, as a percentage?
+//
+// A leak is "memory taken and never given back", so the score is built from
+// monotonicity first (never released), then how long it has been observed and how
+// large the growth is, and it is cut hard for any release (churn). The output is
+// a confidence, not a proof: 100% is only reached by a script that grew on many
+// consecutive samples with zero releases and a large absolute growth.
+double DebugUtils::LeakConfidencePercent(
+    const LeakScriptState& state,
+    unsigned long long growthBytes,
+    unsigned long long arenaBytes,
+    double rSquared)
+{
+    if (growthBytes == 0)
+        return 0.0;
+
+    double score = 0.0;
+
+    // 1) Monotonicity - the dominant signal (up to 55 points). A release caps this
+    //    at a low value: a script that frees memory is churning, not leaking. A
+    //    flat tail (growth stopped several samples ago) decays the credit too, so
+    //    a pool that filled and plateaued does not keep scoring like a live leak.
+    if (state.shrinkCount == 0)
+    {
+        const double streak = static_cast<double>(state.growthStreak);
+        const double mono = streak / (streak + 2.0);   // 0.6 at 3, 0.83 at 10, 0.94 at 30
+        const double flat = static_cast<double>(state.flatStreak);
+        const double flatDecay = 1.0 / (1.0 + flat / 3.0); // 1 at 0, 0.5 at 3, 0.23 at 10
+        score += 55.0 * mono * flatDecay;
+    }
+    else
+    {
+        // Some releases: keep a little credit, scaled down by how many.
+        score += 15.0 / (1.0 + static_cast<double>(state.shrinkCount));
+    }
+
+    // 2) Observation length (up to 20 points). One or two samples prove nothing.
+    const double obs = static_cast<double>(state.samples);
+    score += 20.0 * (obs / (obs + 3.0));               // 0.4 at 2, 0.77 at 10, 0.91 at 30
+
+    // 3) Growth magnitude (up to 25 points). Absolute, with a share-of-arena term
+    //    so a large script that grows a lot scores highest.
+    constexpr double kBigGrowthBytes = 1.0 * 1024.0 * 1024.0;
+    const double mag = static_cast<double>(growthBytes) / kBigGrowthBytes;
+    score += 20.0 * (mag / (mag + 1.0));               // 0.5 at 1 MB, 0.8 at 4 MB
+    if (arenaBytes != 0)
+    {
+        const double share = 100.0 * static_cast<double>(growthBytes) /
+            static_cast<double>(arenaBytes);
+        score += 5.0 * (share / (share + 1.0));
+    }
+
+    // 3b) MEASURED fit. The terms above are heuristic; a least-squares line through
+    //     the sample history is evidence. R^2 near 1 means the growth is a straight
+    //     line (a steady leak); R^2 near 0 means the series is noisy and only its
+    //     endpoints differ. With a good fit, pull the score toward 100 by the fit's
+    //     own strength; with a poor fit, damp it - so a "grows on average" script
+    //     that jumps around is not reported as a certain leak. Only applied once
+    //     there is a real history (the fit needs >= 3 samples) and no releases.
+    if (state.histCount >= 3 && state.shrinkCount == 0)
+    {
+        // A confident, well-fitted line: scale by R^2 (and require a positive slope,
+        // which a growing history implies). score*(1-r2) keeps the heuristic part
+        // when the fit is weak instead of discarding it.
+        const double fitWeight = rSquared;             // 0..1
+        const double blended = score * (1.0 - fitWeight) + 100.0 * fitWeight;
+        score = blended;
+    }
+    else if (state.histCount >= 3 && rSquared < 0.5)
+    {
+        // Releases AND a poor fit: the weakest case. Damp hard.
+        score *= 0.5;
+    }
+
+    // 4) Sample-count gate: below the minimum evidence, halve it. The verdict line
+    //    already says SUSPECTED at this point; the number should agree.
+    if (state.samples < kLeakMinSamples)
+        score *= 0.5;
+
+    // 5) A retired (released-to-zero) script is by definition not a leak.
+    if (state.releasedSince && state.lastBytes == 0)
+        score = 0.0;
+
+    if (score < 0.0) score = 0.0;
+    if (score > 100.0) score = 100.0;
+    return score;
+}
+
+void DebugUtils::SampleScriptMemoryLeaks()
+{
+    if (!m_leakTrackerEnabled || !m_memoryLogEnabled)
+        return;
+
+    // Capture the process-private baseline once per session, so the report can
+    // state process-level growth even when the script arena never moves.
+    if (m_leakFirstPrivateBytes == 0)
+    {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                sizeof(pmc)))
+        {
+            m_leakFirstPrivateBytes = static_cast<uint64_t>(pmc.PrivateUsage);
+            m_leakFirstPrivateUptimeSec =
+                (GetTickCount() - m_memorySessionStartTick) / 1000u;
+
+            // Streaming-pool baseline: the world-loading fill shows up as private
+            // growth but is not a leak, so remember where it started.
+            if (CLEO_GetGameVersion() == GV_US10)
+            {
+                m_leakFirstStreamUsedBytes = static_cast<uint64_t>(
+                    *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryUsed));
+                m_leakHaveStreamBaseline = true;
+            }
+        }
+    }
+    else
+    {
+        // If the process ever settles BELOW the recorded baseline (a level unload,
+        // a freed cache, GC), the old baseline is stale: keeping it makes the next
+        // report measure growth from a point the process will never return to and
+        // overstate it. Lower the baseline to the new low-water mark, and reset the
+        // uptime so the "%/min" is computed over the window that actually applies.
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                sizeof(pmc)))
+        {
+            const uint64_t privateNow = static_cast<uint64_t>(pmc.PrivateUsage);
+            if (privateNow < m_leakFirstPrivateBytes)
+            {
+                m_leakFirstPrivateBytes = privateNow;
+                m_leakFirstPrivateUptimeSec =
+                    (GetTickCount() - m_memorySessionStartTick) / 1000u;
+            }
+        }
+    }
+
+    // Owner enumeration has the same game-thread affinity as the memory stats.
+    DWORD ownerCount = CLEO_DebugGetScriptMemoryOwners(nullptr, 0);
+    if (ownerCount == 0)
+    {
+        // No live script allocations: retire any tracked script that is gone.
+        for (auto it = m_leakScripts.begin(); it != m_leakScripts.end();)
+        {
+            if (!it->second.name.empty())
+            {
+                LeakScriptState retired = it->second;
+                retired.releasedSince = true;
+                m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
+            }
+            it = m_leakScripts.erase(it);
+        }
+        return;
+    }
+
+    std::vector<CLEO_ScriptMemoryOwner> owners(ownerCount);
+    const DWORD written =
+        CLEO_DebugGetScriptMemoryOwners(owners.data(), ownerCount);
+    owners.resize(written);
+
+    m_leakSeenThisSample.clear();
+    for (const auto& owner : owners)
+    {
+        const uintptr_t ptr = static_cast<uintptr_t>(owner.scriptPtr);
+        m_leakSeenThisSample.insert(ptr);
+
+        char name[9];
+        memcpy(name, owner.scriptName, 8);
+        name[8] = '\0';
+
+        UpdateLeakEntry(
+            ptr,
+            std::string(name),
+            static_cast<unsigned long long>(owner.blocks),
+            static_cast<unsigned long long>(owner.bytes)
+        );
+    }
+
+    // A script that held memory but is no longer an owner released it (or was
+    // unloaded). Record it as retired so the report can show the release.
+    for (auto it = m_leakScripts.begin(); it != m_leakScripts.end();)
+    {
+        if (m_leakSeenThisSample.find(it->first) == m_leakSeenThisSample.end())
+        {
+            LeakScriptState retired = it->second;
+            retired.releasedSince = true;
+            m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
+            it = m_leakScripts.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void DebugUtils::RetireLeakScript(uintptr_t scriptPtr)
+{
+    auto it = m_leakScripts.find(scriptPtr);
+    if (it == m_leakScripts.end())
+        return;
+
+    LeakScriptState retired = it->second;
+    retired.releasedSince = true;
+    m_leakRetired[LeakRetireKey(retired)] = std::move(retired);
+    m_leakScripts.erase(it);
+}
+
+void DebugUtils::WriteLeakReport(const char* reason)
+{
+    if (!m_leakTrackerEnabled || !m_memoryLogEnabled)
+        return;
+
+    // Process private bytes, so a script leak can be expressed as a share of the
+    // whole process, not only of the arena.
+    unsigned long long privateBytes = 0;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+            sizeof(pmc)))
+    {
+        privateBytes = static_cast<unsigned long long>(pmc.PrivateUsage);
+    }
+
+    CLEO_MemoryStats arena{};
+    const bool haveArena = CLEO_DebugGetMemoryStats(&arena) != FALSE;
+    const unsigned long long arenaBytes =
+        haveArena ? static_cast<unsigned long long>(arena.totalBytes) : 0;
+
+    const DWORD uptimeSeconds =
+        (GetTickCount() - m_memorySessionStartTick) / 1000u;
+
+    // The script arena can be perfectly flat while the process still grows. That
+    // is the common case for a streaming/pool/GPU leak, so state the process
+    // growth explicitly and, when the arena did not move, say so: otherwise the
+    // "0 B" arena total reads as "no leak" and hides a real one. Printed on every
+    // report, including when no script holds memory.
+    auto writeProcessGrowth = [&](unsigned long long totalArenaGrowth)
+    {
+        if (m_leakFirstPrivateBytes == 0 || privateBytes < m_leakFirstPrivateBytes)
+        {
+            // Still remember this report as the "previous" one for the next trend.
+            m_leakLastPrivateBytes = privateBytes;
+            m_leakLastUptimeSec = uptimeSeconds;
+            return;
+        }
+
+        const unsigned long long privateGrowth = privateBytes - m_leakFirstPrivateBytes;
+        const unsigned long long windowSec =
+            uptimeSeconds > m_leakFirstPrivateUptimeSec
+                ? uptimeSeconds - m_leakFirstPrivateUptimeSec
+                : 0;
+
+        const double pctOfStart = 100.0 * static_cast<double>(privateGrowth) /
+            static_cast<double>(m_leakFirstPrivateBytes);
+        const double bytesPerSec = windowSec != 0
+            ? static_cast<double>(privateGrowth) / static_cast<double>(windowSec)
+            : 0.0;
+        const double pctPerMin = windowSec != 0
+            ? pctOfStart * (60.0 / static_cast<double>(windowSec))
+            : 0.0;
+
+        WriteMemory(
+            "[leak] process private %s -> %s = +%s in %us (+%.2f%%, +%.2f%%/min, "
+            "%.2f MB/min, %.0f B/s)",
+            MemoryBytes(m_leakFirstPrivateBytes).c_str(),
+            MemoryBytes(privateBytes).c_str(),
+            MemoryBytes(privateGrowth).c_str(),
+            static_cast<unsigned>(windowSec),
+            pctOfStart,
+            pctPerMin,
+            bytesPerSec * 60.0 / (1024.0 * 1024.0),
+            bytesPerSec
+        );
+
+        // Interval-over-interval trend. Compare this interval's rate to the
+        // average rate since the first sample: a rate that keeps up with the
+        // average is a real leak, one that falls well below it is a pool or
+        // streaming fill that is plateauing (not a leak). Comparing to the
+        // average rather than to the previous interval avoids a false
+        // "accelerating" when the previous interval happened to be flat.
+        // With a single interval, recent rate == average rate by construction, so
+        // the trend cannot be told apart and is skipped until a second window
+        // exists (windowSec must span at least two samples).
+        if (m_leakLastPrivateBytes != 0 && uptimeSeconds > m_leakLastUptimeSec &&
+            windowSec >= kLeakMinReportWindowSec)
+        {
+            const unsigned long long prevWindow =
+                uptimeSeconds - m_leakLastUptimeSec;
+            const long long deltaBytes =
+                static_cast<long long>(privateBytes) -
+                static_cast<long long>(m_leakLastPrivateBytes);
+            const double recentRate = static_cast<double>(deltaBytes) /
+                static_cast<double>(prevWindow);
+            const double avgRate = windowSec != 0
+                ? static_cast<double>(privateGrowth) / static_cast<double>(windowSec)
+                : 0.0;
+
+            const char* trend = "steady (leak-like)";
+            if (recentRate < 0.0)
+                trend = "shrinking (memory was freed)";
+            else if (avgRate > 0.0)
+            {
+                if (recentRate < avgRate * 0.5)
+                    trend = "decelerating (likely a pool/streaming fill, not a leak)";
+                else if (recentRate > avgRate * 1.5)
+                    trend = "accelerating (worsening)";
+            }
+
+            WriteMemory(
+                "[leak] this interval %+.2f MB (%.0f B/s); average since first "
+                "%.0f B/s -> %s",
+                static_cast<double>(deltaBytes) / (1024.0 * 1024.0),
+                recentRate,
+                avgRate,
+                trend
+            );
+        }
+
+        if (privateGrowth >= m_leakMinGrowthBytes && totalArenaGrowth == 0)
+        {
+            WriteMemory(
+                "[leak] NOTE: the CLEO script arena did not grow, so this %s is NOT "
+                "a script allocate_memory leak; look at streaming pools / textures / "
+                "mods (see the memory summary and the per-module map: set "
+                "[DebugUtils.Logs] ModuleMemoryMap=1 to name the DLL that grows).",
+                MemoryBytes(privateGrowth).c_str()
+            );
+        }
+
+        m_leakLastPrivateBytes = privateBytes;
+        m_leakLastUptimeSec = uptimeSeconds;
+    };
+
+    WriteMemory("==================== script memory leak report (%s) ====================",
+        reason ? reason : "interval");
+    WriteMemory(
+        "uptime=%us tracked=%zu retired=%zu arena=%s process_private=%s",
+        static_cast<unsigned>(uptimeSeconds),
+        m_leakScripts.size(),
+        m_leakRetired.size(),
+        MemoryBytes(arenaBytes).c_str(),
+        MemoryBytes(privateBytes).c_str()
+    );
+
+    if (m_leakScripts.empty() && m_leakRetired.empty())
+    {
+        WriteMemory("[leak] no script currently holds allocate_memory blocks");
+        writeProcessGrowth(0);
+        return;
+    }
+
+    WriteMemory(
+        "%-3s %-9s %12s %12s %8s %10s %8s %6s %-10s",
+        "#", "script", "first_bytes", "now_bytes", "growth", "growth_%arena",
+        "samples", "conf%", "verdict"
+    );
+
+    struct Row
+    {
+        LeakScriptState* state;
+        unsigned long long growth;
+        double growthPctArena;
+        double growthPctProcess;
+        double growthPctSelf;
+        double growthBytesPerSec;
+        double growthPctSelfPerMin;
+        double growthPctArenaPerMin;   // leak rate as a share of the whole arena
+        double confidencePct;          // how sure this is a leak, 0-100
+        // MEASURED trend from the least-squares fit: bytes/second and R^2 (how
+        // linear the growth is). hasFit is false when there is too little history.
+        double fitSlopeBytesPerSec;
+        double fitRSquared;
+        bool hasFit;
+        // Block growth: +N blocks means the script keeps calling allocate_memory
+        // (0AC8) without freeing - a leak inside the script itself. A byte growth
+        // with a flat block count is not the script leaking, it is one allocation
+        // that got bigger (the script legitimately holds more data).
+        long long blockGrowth;
+        const char* verdict;
+    };
+
+    std::vector<Row> rows;
+    rows.reserve(m_leakScripts.size() + m_leakRetired.size());
+
+    auto classify = [&](const LeakScriptState& state, unsigned long long growth,
+                        const char*& verdict)
+    {
+        if (state.releasedSince && state.lastBytes == 0)
+        {
+            verdict = "RELEASED";
+            return;
+        }
+
+        const unsigned long long growthBytes = growth;
+        if (growthBytes < m_leakMinGrowthBytes)
+        {
+            verdict = "STABLE";
+            return;
+        }
+
+        if (state.samples < kLeakMinSamples)
+        {
+            verdict = "SUSPECTED";
+            return;
+        }
+
+        // Monotonic (never dropped) AND grew on at least the required number of
+        // consecutive samples: that is the strong signature. A single release
+        // anywhere in the history disqualifies the LEAK verdict - a script that
+        // frees memory is churning, not leaking.
+        if (state.growthStreak >= kLeakMinSamples && state.flatStreak == 0 &&
+            state.shrinkCount == 0)
+        {
+            verdict = "LEAK";
+        }
+        else if (state.flatStreak >= kLeakMinSamples)
+        {
+            // Net growth but the last several samples did not move: a pool or
+            // one-off buffer that filled, not an ongoing leak. This applies even
+            // after a sawtooth (shrinkCount > 0): once the tail is flat the script
+            // has stopped growing, so it is a plateau, not a live leak. Without
+            // checking the flat tail first, a churning-then-settled script stayed
+            // SUSPECTED forever.
+            verdict = "PLATEAU";
+        }
+        else if (growthBytes >= m_leakMinGrowthBytes)
+        {
+            verdict = "SUSPECTED";
+        }
+        else
+        {
+            verdict = "STABLE";
+        }
+    };
+
+    auto addRow = [&](LeakScriptState& state)
+    {
+        const unsigned long long growth =
+            state.lastBytes >= state.firstBytes
+                ? state.lastBytes - state.firstBytes
+                : 0;
+
+        const char* verdict = "STABLE";
+        classify(state, growth, verdict);
+
+        Row row;
+        row.state = &state;
+        row.growth = growth;
+        row.growthPctArena = arenaBytes != 0
+            ? 100.0 * static_cast<double>(growth) / static_cast<double>(arenaBytes)
+            : 0.0;
+        row.growthPctProcess = privateBytes != 0
+            ? 100.0 * static_cast<double>(growth) / static_cast<double>(privateBytes)
+            : 0.0;
+        row.growthPctSelf = state.firstBytes != 0
+            ? 100.0 * static_cast<double>(growth) / static_cast<double>(state.firstBytes)
+            : 0.0;
+
+        // Rate makes the leak exact regardless of when the interval happened to
+        // be sampled: bytes/second over the observed window, and the equivalent
+        // percent-per-minute growth of the script's own first sample.
+        const unsigned long long windowSec =
+            state.lastUptimeSec > state.firstUptimeSec
+                ? state.lastUptimeSec - state.firstUptimeSec
+                : 0;
+        row.growthBytesPerSec = windowSec != 0
+            ? static_cast<double>(growth) / static_cast<double>(windowSec)
+            : 0.0;
+        row.growthPctSelfPerMin = state.firstBytes != 0 && windowSec != 0
+            ? (100.0 * static_cast<double>(growth) /
+                   static_cast<double>(state.firstBytes)) *
+                  (60.0 / static_cast<double>(windowSec))
+            : 0.0;
+        // Leak rate as a share of the whole arena per minute: the "how fast is
+        // this eating the arena" figure, independent of the script's own size.
+        row.growthPctArenaPerMin = arenaBytes != 0 && windowSec != 0
+            ? (100.0 * static_cast<double>(growth) /
+                   static_cast<double>(arenaBytes)) *
+                  (60.0 / static_cast<double>(windowSec))
+            : 0.0;
+        // Measure the trend once; the confidence uses R^2 and the row prints both.
+        double rSq = 0.0;
+        double fitSlope = 0.0;
+        const bool hasFit = LeakFitTrend(state, fitSlope, rSq);
+        row.confidencePct = LeakConfidencePercent(state, growth, arenaBytes, rSq);
+        row.hasFit = hasFit;
+        row.fitSlopeBytesPerSec = hasFit ? fitSlope : 0.0;
+        row.fitRSquared = hasFit ? rSq : 0.0;
+        row.blockGrowth = static_cast<long long>(state.lastBlocks) -
+                          static_cast<long long>(state.firstBlocks);
+        row.verdict = verdict;
+        rows.push_back(row);
+    };
+
+    for (auto& entry : m_leakScripts)
+        addRow(entry.second);
+    for (auto& entry : m_leakRetired)
+        addRow(entry.second);
+
+    // Biggest growth first, so the report leads with what matters.
+    std::sort(
+        rows.begin(),
+        rows.end(),
+        [](const Row& a, const Row& b) { return a.growth > b.growth; }
+    );
+
+    size_t index = 0;
+    size_t printedRows = 0;
+    size_t unchangedRows = 0;
+    // A full dump on every interval buried the rows that changed. Print only the
+    // rows whose growth or verdict moved since the last report; game_end forces a
+    // full dump so the final log is complete.
+    const bool forceAllRows = reason != nullptr && strcmp(reason, "game_end") == 0;
+    for (const auto& row : rows)
+    {
+        ++index;
+        auto& state = *row.state;
+
+        const bool changed = forceAllRows ||
+            row.growth != state.lastReportedGrowth ||
+            state.lastReportedVerdict != row.verdict;
+        if (!changed)
+        {
+            ++unchangedRows;
+            continue;
+        }
+        state.lastReportedGrowth = row.growth;
+        state.lastReportedVerdict = row.verdict;
+        ++printedRows;
+
+        WriteMemory(
+            "%-3zu %-9s %12s %12s %8s %9.2f%% %8u %5.0f%% %-10s",
+            index,
+            state.name.empty() ? "?" : state.name.c_str(),
+            MemoryBytes(state.firstBytes).c_str(),
+            MemoryBytes(state.lastBytes).c_str(),
+            MemoryBytes(row.growth).c_str(),
+            row.growthPctArena,
+            static_cast<unsigned>(state.samples),
+            row.confidencePct,
+            row.verdict
+        );
+
+        WriteMemory(
+            "      growth %s = %.3f%% of process private (%s) | +%.1f%% vs first sample | "
+            "rate %.1f B/s (+%.2f%%/min of own, %.3f%%/min of arena) | "
+            "blocks %llu -> %llu | peak %s | first_seen=%us last_seen=%us | "
+            "confidence=%.0f%% (releases=%u)",
+            MemoryBytes(row.growth).c_str(),
+            row.growthPctProcess,
+            MemoryBytes(privateBytes).c_str(),
+            row.growthPctSelf,
+            row.growthBytesPerSec,
+            row.growthPctSelfPerMin,
+            row.growthPctArenaPerMin,
+            state.firstBlocks,
+            state.lastBlocks,
+            MemoryBytes(state.peakBytes).c_str(),
+            static_cast<unsigned>(state.firstUptimeSec),
+            static_cast<unsigned>(state.lastUptimeSec),
+            row.confidencePct,
+            static_cast<unsigned>(state.shrinkCount)
+        );
+
+        // Measured trend: the least-squares line through the sample history. This is
+        // the difference between "grew between the first and last sample" (an
+        // endpoint guess) and "grew steadily at N B/s, R^2=0.99" (a fit). A high R^2
+        // with a positive slope is what a real leak looks like; a low R^2 means the
+        // series is noisy and the net growth may just be jitter.
+        if (row.hasFit)
+        {
+            WriteMemory(
+                "      measured: %.1f B/s (least-squares over %u samples), "
+                "R^2=%.3f -> %s",
+                row.fitSlopeBytesPerSec,
+                static_cast<unsigned>(state.histCount),
+                row.fitRSquared,
+                row.fitRSquared >= 0.9
+                    ? "growth is a straight line (steady leak)"
+                    : (row.fitRSquared >= 0.6
+                        ? "growth is mostly linear (likely leak)"
+                        : "growth is noisy (net growth may be jitter, not a leak)")
+            );
+        }
+
+        // Where is the growth? More blocks = the script itself keeps allocating
+        // (0AC8) without freeing - a leak inside the script. Bytes without more
+        // blocks = the script holds bigger allocations, which is normal. This is
+        // the "может ли быть утечка в самом скрипте" answer.
+        if (row.growth >= m_leakMinGrowthBytes)
+        {
+            if (row.blockGrowth > 0)
+            {
+                WriteMemory(
+                    "      where: +%lld block(s) - the script itself keeps "
+                    "allocating (allocate_memory 0AC8) without freeing: this IS a "
+                    "leak inside the script",
+                    row.blockGrowth
+                );
+            }
+            else if (row.blockGrowth == 0)
+            {
+                WriteMemory(
+                    "      where: block count flat (%llu) - the script holds bigger "
+                    "allocation(s), not more of them; this is usually NOT a leak "
+                    "inside the script (one growing buffer)",
+                    state.firstBlocks
+                );
+            }
+            else
+            {
+                WriteMemory(
+                    "      where: %lld block(s) - the script freed allocations but "
+                    "the arena still grew, so the growth is NOT the script's "
+                    "allocate_memory (look at the process-level line below)",
+                    row.blockGrowth
+                );
+            }
+        }
+    }
+
+    if (unchangedRows > 0)
+    {
+        WriteMemory(
+            "[leak] %zu row(s) unchanged since the last report (not repeated); "
+            "%zu row(s) shown",
+            unchangedRows,
+            printedRows
+        );
+    }
+
+    // Headline suspect: the single script to look at first. Rows are already
+    // sorted by growth, so the top non-trivial verdict is the answer.
+    const Row* suspect = nullptr;
+    for (const auto& row : rows)
+    {
+        if (row.growth < m_leakMinGrowthBytes)
+            continue;
+        if (std::strcmp(row.verdict, "LEAK") == 0 ||
+            std::strcmp(row.verdict, "SUSPECTED") == 0)
+        {
+            suspect = &row;
+            break;
+        }
+    }
+
+    if (suspect != nullptr)
+    {
+        WriteMemory(
+            "[leak] TOP SUSPECT: script '%s' grew %s (+%.1f%% of its own, "
+            "%.3f%%/min of arena) over %u samples - verdict %s, confidence %.0f%%",
+            suspect->state->name.empty() ? "?" : suspect->state->name.c_str(),
+            MemoryBytes(suspect->growth).c_str(),
+            suspect->growthPctSelf,
+            suspect->growthPctArenaPerMin,
+            static_cast<unsigned>(suspect->state->samples),
+            suspect->verdict,
+            suspect->confidencePct
+        );
+    }
+    else
+    {
+        // No script is leaking, but the process may still be. Do not answer
+        // "none" while private bytes climb: name the process-level growth and
+        // how long until the address-space limit (2 GB, or 4 GB with the LAA
+        // patch), which is the number that actually matters for a 32-bit game.
+        unsigned long long privateGrowth = 0;
+        unsigned long long windowSec = 0;
+        double privateRatePerMin = 0.0;
+        if (m_leakFirstPrivateBytes != 0 && privateBytes >= m_leakFirstPrivateBytes &&
+            uptimeSeconds > m_leakFirstPrivateUptimeSec)
+        {
+            privateGrowth = privateBytes - m_leakFirstPrivateBytes;
+            windowSec = uptimeSeconds - m_leakFirstPrivateUptimeSec;
+            const double bytesPerSec =
+                static_cast<double>(privateGrowth) / static_cast<double>(windowSec);
+            privateRatePerMin = bytesPerSec * 60.0 / (1024.0 * 1024.0);
+        }
+
+        if (privateGrowth >= m_leakMinGrowthBytes)
+        {
+            const double pctOfPrivate = privateBytes != 0
+                ? 100.0 * static_cast<double>(privateGrowth) /
+                  static_cast<double>(privateBytes)
+                : 0.0;
+            WriteMemory(
+                "[leak] TOP SUSPECT: process private (no script is leaking) - grew %s "
+                "(+%.2f%% of private) at %.2f MB/min",
+                MemoryBytes(privateGrowth).c_str(),
+                pctOfPrivate,
+                privateRatePerMin
+            );
+
+            // Attribute part of the growth to the streaming pool: during the first
+            // minutes the world load fills it, which shows up as private growth but
+            // is not a leak. Report what is left once the pool fill is removed.
+            if (m_leakHaveStreamBaseline && CLEO_GetGameVersion() == GV_US10)
+            {
+                const unsigned long long streamNow = static_cast<unsigned long long>(
+                    *reinterpret_cast<unsigned int*>(kGtaSa10StreamingMemoryUsed));
+                const unsigned long long streamGrowth =
+                    streamNow > m_leakFirstStreamUsedBytes
+                        ? streamNow - m_leakFirstStreamUsedBytes
+                        : 0;
+
+                if (streamGrowth >= m_leakMinGrowthBytes)
+                {
+                    const unsigned long long unattributed =
+                        privateGrowth > streamGrowth ? privateGrowth - streamGrowth : 0;
+                    WriteMemory(
+                        "[leak] of that, %s is the streaming pool filling (world load, "
+                        "not a leak); %s is unattributed - that is the part to chase",
+                        MemoryBytes(streamGrowth).c_str(),
+                        MemoryBytes(unattributed).c_str()
+                    );
+                }
+            }
+
+            // 2 GB normally, ~4 GB with the Large Address Aware (4GB) patch. The
+            // estimate is meaningless if the wrong ceiling is assumed, so read the
+            // flag from the running image.
+            const bool largeAddressAware = IsLargeAddressAware();
+            const unsigned long long kAddressSpaceBytes = largeAddressAware
+                ? 4ull * 1024ull * 1024ull * 1024ull
+                : 2ull * 1024ull * 1024ull * 1024ull;
+            // During world load the private bytes climb fast because the streaming
+            // pool, textures and models are being filled - extrapolating that slope
+            // to the address-space limit gives a false "out of memory in ~19 min"
+            // (a real log did exactly that at uptime 61 s, then the growth stopped).
+            // So the projection is only printed once the process is past the load
+            // phase AND the growth has been measured over more than one window.
+            const bool loadPhase = uptimeSeconds < kLeakStartupSec;
+            if (loadPhase)
+            {
+                WriteMemory(
+                    "[leak] the process is still loading the world (uptime %us < %us), "
+                    "so this growth is the streaming/texture fill, not a leak - no "
+                    "limit projection is made yet",
+                    static_cast<unsigned>(uptimeSeconds),
+                    static_cast<unsigned>(kLeakStartupSec)
+                );
+            }
+            else if (privateBytes < kAddressSpaceBytes &&
+                     windowSec >= kLeakMinReportWindowSec)
+            {
+                // Project from the CURRENT interval's slope, not the average since
+                // the first sample: after a load-time spike the average stays high
+                // for a long time and would keep predicting a limit that the
+                // (already plateaued) recent rate no longer supports.
+                const unsigned long long prevWindow = m_leakLastPrivateBytes != 0 &&
+                    uptimeSeconds > m_leakLastUptimeSec
+                        ? uptimeSeconds - m_leakLastUptimeSec
+                        : 0;
+                const long long deltaBytes = prevWindow != 0
+                    ? static_cast<long long>(privateBytes) -
+                      static_cast<long long>(m_leakLastPrivateBytes)
+                    : 0;
+                const double recentRatePerMin = prevWindow != 0
+                    ? static_cast<double>(deltaBytes) /
+                      static_cast<double>(prevWindow) * 60.0 / (1024.0 * 1024.0)
+                    : 0.0;
+
+                if (recentRatePerMin > 0.0)
+                {
+                    const double headroomMb =
+                        static_cast<double>(kAddressSpaceBytes - privateBytes) /
+                        (1024.0 * 1024.0);
+                    const double minutesToLimit = headroomMb / recentRatePerMin;
+                    if (minutesToLimit < 24.0 * 60.0)
+                    {
+                        WriteMemory(
+                            "[leak] at the current rate (%.2f MB/min) the %.2f GB limit "
+                            "(%s) is reached in ~%.0f min (%.1f h) - %s headroom left",
+                            recentRatePerMin,
+                            static_cast<double>(kAddressSpaceBytes) /
+                                (1024.0 * 1024.0 * 1024.0),
+                            largeAddressAware ? "4GB patch / LAA" : "no LAA (2GB)",
+                            minutesToLimit,
+                            minutesToLimit / 60.0,
+                            MemoryBytes(kAddressSpaceBytes - privateBytes).c_str()
+                        );
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Private bytes are climbing but below the reporting threshold: say what
+            // is happening rather than a flat "not climbing", which would be wrong
+            // (a slow climb still ends at the 2 GB limit, it just takes longer).
+            if (privateGrowth > 0)
+            {
+                WriteMemory(
+                    "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+                    "LEAK/SUSPECTED verdict. Process private did grow by %s, but below "
+                    "the reporting threshold (below %s/interval)",
+                    MemoryBytes(m_leakMinGrowthBytes).c_str(),
+                    MemoryBytes(privateGrowth).c_str(),
+                    MemoryBytes(m_leakMinGrowthBytes).c_str()
+                );
+            }
+            else
+            {
+                WriteMemory(
+                    "[leak] TOP SUSPECT: none - no script grew by at least %s with a "
+                    "LEAK/SUSPECTED verdict, and process private is not climbing",
+                    MemoryBytes(m_leakMinGrowthBytes).c_str()
+                );
+            }
+        }
+    }
+
+    // The single "on how many percent exactly" answer for the whole arena.
+    unsigned long long totalGrowth = 0;
+    for (const auto& row : rows)
+        totalGrowth += row.growth;
+
+    const double totalPctArena = arenaBytes != 0
+        ? 100.0 * static_cast<double>(totalGrowth) / static_cast<double>(arenaBytes)
+        : 0.0;
+    const double totalPctProcess = privateBytes != 0
+        ? 100.0 * static_cast<double>(totalGrowth) / static_cast<double>(privateBytes)
+        : 0.0;
+
+    WriteMemory(
+        "[leak] total growth since first sample = %s (%.2f%% of arena, %.3f%% of process private)",
+        MemoryBytes(totalGrowth).c_str(),
+        totalPctArena,
+        totalPctProcess
+    );
+
+    // The script arena can be perfectly flat while the process still grows. That
+    // is the common case for a streaming/pool/GPU leak, so state the process
+    // growth explicitly and, when the arena did not move, say so: otherwise
+    // "0 B" above reads as "no leak" and hides a real one.
+    writeProcessGrowth(totalGrowth);
+
+    WriteMemory(
+        "[leak] verdict guide: LEAK = grew every sample and was never released; "
+        "PLATEAU = grew then stopped (pool/buffer that filled, not a live leak); "
+        "SUSPECTED = net growth but not monotonic; STABLE = normal churn; "
+        "RELEASED = held memory earlier and has since freed it"
+    );
+    WriteMemory(
+        "[leak] confidence%% = how sure this is a real leak: 100%% needs many "
+        "consecutive growing samples, zero releases and a large growth; every "
+        "release (releases=N) cuts it hard, and a flat tail (growth stopped) "
+        "decays it, so a churning or plateaued script scores low"
+    );
+}

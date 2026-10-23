@@ -51,9 +51,13 @@ DebugUtils::DebugUtils()
         m_crashHandlerInstalled = m_vectoredHandler != nullptr;
     }
 
-    CLEO_DebugSetCrashSnapshotEnabled(
-        m_crashEnabled ? TRUE : FALSE
-    );
+    // The error diagnostics need script+opcode attribution for CLEO/RenderWare
+    // errors even when crash reporting is off, so enable the (lightweight) core
+    // snapshot whenever either feature wants it. With crash off and errors off it
+    // stays off.
+    const bool needSnapshot =
+        m_crashEnabled || (m_errorDiagEnabled && m_frameTimeEnabled);
+    CLEO_DebugSetCrashSnapshotEnabled(needSnapshot ? TRUE : FALSE);
 
     OpenLogs();
     WriteCore("[debugutils] configuration=%s", ConfigPath().c_str());
@@ -114,13 +118,73 @@ DebugUtils::DebugUtils()
     {
         WriteFrameTime("//////////////////////// frame time ////////////////////////");
         WriteFrameTime(
-            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u streaming=%u stream_limit_mb=%d target=cleo_frametime.log",
+            "[frametime] enabled interval=%us warn_ms=%u top_stutter=%u histogram=%u "
+            "streaming=%u stream_limit_mb=%d min_fps=%u low_fps_warn=%u "
+            "low_fps_warn_01=%u sustained_low=%u budget_ms=%.2f target=cleo_frametime.log",
             static_cast<unsigned>(m_frameTimeIntervalSeconds),
             static_cast<unsigned>(m_frameTimeWarnMs),
             static_cast<unsigned>(m_frameTimeTopStutter),
             m_frameTimeHistogramEnabled ? 1u : 0u,
             m_frameTimeStreamingEnabled ? 1u : 0u,
-            m_frameTimeStreamLimitMb
+            m_frameTimeStreamLimitMb,
+            static_cast<unsigned>(m_frameTimeMinFps),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn),
+            static_cast<unsigned>(m_frameTimeLowFpsWarn01),
+            static_cast<unsigned>(m_frameTimeSustainedLowIntervals),
+            m_frameTimeBudgetMs
+        );
+
+        // These keys are THRESHOLDS in FPS, not on/off switches: a value of 1
+        // means "warn below 1 FPS", which never fires and is almost always a
+        // mistake (someone set 1 expecting "enable"). Say so once, so the log is
+        // not silently missing every warning the user thought they turned on.
+        const bool thresholdsMeaningless =
+            (m_frameTimeMinFps > 0 && m_frameTimeMinFps <= 5) ||
+            (m_frameTimeLowFpsWarn > 0 && m_frameTimeLowFpsWarn <= 5) ||
+            (m_frameTimeLowFpsWarn01 > 0 && m_frameTimeLowFpsWarn01 <= 5);
+        if (thresholdsMeaningless)
+        {
+            WriteFrameTime(
+                "[fps] note: MinFps/LowFpsWarn/LowFpsWarn01 are FPS THRESHOLDS, not "
+                "on/off switches - a value of 1 means 'warn below 1 FPS', which never "
+                "fires. Set them to your real targets (e.g. MinFps=55, LowFpsWarn=40, "
+                "LowFpsWarn01=25) or 0 to disable. FrameBudgetMs is a budget in ms "
+                "(16.67 = 60 FPS), not a switch."
+            );
+        }
+
+        if (m_errorDiagEnabled)
+        {
+            WriteFrameTime(
+                "[errors] enabled renderware_watch=%u module_scan=%u file_watch=%u "
+                "texture_watch=%u rw_error_hook=%u watch_names=%zu (reports CLEO/RenderWare errors and the suspect module)",
+                m_rwErrorWatchEnabled ? 1u : 0u,
+                m_errorModuleScanEnabled ? 1u : 0u,
+                m_fileWatchEnabled ? 1u : 0u,
+                m_textureWatchEnabled ? 1u : 0u,
+                m_rwErrorHookEnabled ? 1u : 0u,
+                m_fileWatchNames.size()
+            );
+        }
+    }
+
+    if (m_leakTrackerEnabled && m_memoryLogEnabled)
+    {
+        WriteMemory(
+            "[leak] enabled interval=%us min_growth_kb=%u (per-script leak tracker)",
+            static_cast<unsigned>(m_leakIntervalSeconds),
+            static_cast<unsigned>(m_leakMinGrowthBytes / 1024u)
+        );
+    }
+    else if (m_leakTrackerEnabled && !m_memoryLogEnabled)
+    {
+        // The tracker writes through the memory log, so Memory=0 silently disables
+        // it. Say so once instead of leaving the user with an empty log and no
+        // hint why the leak report never appears. Written to the core log, which
+        // is always open (the memory log is exactly what is off here).
+        WriteCore(
+            "[leak] LeakTracker=1 but [DebugUtils.Logs] Memory=0, so the leak "
+            "report has nowhere to go and is disabled - set Memory=1 to enable it"
         );
     }
 
@@ -183,6 +247,11 @@ DebugUtils::~DebugUtils()
         return;
 
     CLEO_DebugSetCrashSnapshotEnabled(FALSE);
+
+    RemoveFileOpenWatch();
+    RemoveTextureReadWatch();
+    RemoveStreamingModelWatch();
+    RemoveRwErrorHook();
 
     UnregisterCallbacks();
     CLEO_DebugSetLogCallback(nullptr);
@@ -425,6 +494,136 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "MaxLogMB: ротация cleo_frametime.log после этого размера, МБ."
             : "MaxLogMB: rotate cleo_frametime.log when it grows past this many MB.");
     kv("DebugUtils.FrameTime", "MaxLogMB", "16");
+    desc(ru ? "MinFps: предупреждать, если средний FPS интервала ниже (0 = выкл)."
+            : "MinFps: warn when the interval's average FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "MinFps", "0");
+    desc(ru ? "LowFpsWarn: предупреждать, если 1%-низкий FPS ниже (0 = выкл)."
+            : "LowFpsWarn: warn when the 1%-low FPS is below this (0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn", "0");
+    desc(ru ? "LowFpsWarn01: предупреждать, если 0.1%-низкий FPS ниже (длинные"
+            : "LowFpsWarn01: warn when the 0.1%-low FPS is below this (long hitches;");
+    desc(ru ? "  лаги; 0 = выкл)."
+            : "  0 = off).");
+    kv("DebugUtils.FrameTime", "LowFpsWarn01", "0");
+    desc(ru ? "SustainedLowIntervals: предупреждать, если средний FPS ниже MinFps"
+            : "SustainedLowIntervals: warn when the average FPS is below MinFps for");
+    desc(ru ? "  столько интервалов подряд (0 = выкл; нужен MinFps > 0). Один"
+            : "  this many consecutive intervals (0 = off; needs MinFps > 0). One slow");
+    desc(ru ? "  медленный интервал - шум, серия - реальная деградация."
+            : "  interval is noise, a run of them is a real regression.");
+    kv("DebugUtils.FrameTime", "SustainedLowIntervals", "0");
+    desc(ru ? "FrameBudgetMs: бюджет кадра в мс (0 = выкл). В отчёт добавляется"
+            : "FrameBudgetMs: frame budget in ms (0 = off). The report then states");
+    desc(ru ? "  доля кадров, уложившихся в бюджет (сколько держит целевой FPS)."
+            : "  the share of frames that met it (does it hold the target FPS?).");
+    kv("DebugUtils.FrameTime", "FrameBudgetMs", "0");
+    line("");
+
+    line("[DebugUtils.Errors]");
+    desc(ru ? "Диагностика ошибок RenderWare и CLEO внутри cleo_frametime.log."
+            : "RenderWare and CLEO error diagnostics, reported in cleo_frametime.log.");
+    desc(ru ? "ВЫКЛЮЧЕНО по умолчанию: опрос RenderWare идёт каждый кадр и даёт"
+            : "OFF by default: the RenderWare poll runs every frame and costs a");
+    desc(ru ? "  небольшую нагрузку. Включи (1), когда ищешь ошибки."
+            : "  little. Turn it on (1) when hunting errors.");
+    desc(ru ? "Enabled: 1 = вести отчёт по ошибкам, 0 = выключить."
+            : "Enabled: 1 = keep the error report, 0 = off.");
+    kv("DebugUtils.Errors", "Enabled", "0");
+    desc(ru ? "RenderWare: 1 = опрашивать последнюю ошибку RenderWare раз в кадр"
+            : "RenderWare: 1 = poll RenderWare's last error once per frame");
+    desc(ru ? "  (только чтение, ничего не патчится; только GTA SA 1.0 US)."
+            : "  (read-only, nothing is patched; GTA SA 1.0 US only).");
+    kv("DebugUtils.Errors", "RenderWare", "0");
+    desc(ru ? "ModuleScan: 1 = искать модуль-виновник по стеку на ошибке."
+            : "ModuleScan: 1 = scan the stack at the error for the suspect module.");
+    kv("DebugUtils.Errors", "ModuleScan", "0");
+    desc(ru ? "RwErrorHook: 1 = точная причина ошибки RenderWare (хук входа"
+            : "RwErrorHook: 1 = exact RenderWare error cause (hook on the");
+    desc(ru ? "  RwErrorSet 0x808820). Опрос видит ошибку только на следующем"
+            : "  RwErrorSet entry 0x808820). The poll only notices an error on the");
+    desc(ru ? "  кадре, когда стек уже потерян, и может назвать только скрипт на"
+            : "  next frame, when the raising stack is gone, so it can only name the");
+    desc(ru ? "  момент опроса ('~скрипт'). Хук ловит стек В МОМЕНТ ошибки:"
+            : "  script active at poll time ('~script'). The hook captures the stack AT");
+    desc(ru ? "  точный мод/плагин и точный скрипт+опкод (строка 'raising opcode')."
+            : "  the error: the exact mod/plugin and the exact script+opcode ('raising");
+    desc(ru ? "  Это патч кода (JMP на входе функции); по умолчанию выключен."
+            : "  opcode' line). A code patch (JMP at the entry); off by default.");
+    kv("DebugUtils.Errors", "RwErrorHook", "0");
+    desc(ru ? "FileWatch: 1 = перехватывать открытия файлов RenderWare и печатать"
+            : "FileWatch: 1 = capture RenderWare file opens and print the exact");
+    desc(ru ? "  точный путь, который не удалось открыть (E_RW_BADOPEN)."
+            : "  path that failed to open (E_RW_BADOPEN).");
+    desc(ru ? "  Это патч только данных (подмена указателя в таблице), код не"
+            : "  Data-only patch (a table pointer is swapped), no code is");
+    desc(ru ? "  трогается. Только GTA SA 1.0 US."
+            : "  modified. GTA SA 1.0 US only.");
+    kv("DebugUtils.Errors", "FileWatch", "0");
+    desc(ru ? "FileWatchFailures: 1 = печатать блок 'failed file opens' (0 = выкл)."
+            : "FileWatchFailures: 1 = print the 'failed file opens' block (0 = off).");
+    desc(ru ? "  Пустой FileWatchNames НЕ отключает этот блок; выключай здесь."
+            : "  An empty FileWatchNames does NOT silence it; turn it off here.");
+    kv("DebugUtils.Errors", "FileWatchFailures", "1");
+    desc(ru ? "FileWatchNames: список через запятую (подстроки пути или маски)."
+            : "FileWatchNames: comma-separated path substrings or glob masks.");
+    desc(ru ? "  Каждое открытие подходящего файла пишется в лог (успех или"
+            : "  Every open of a matching file is logged (success or failure), so");
+    desc(ru ? "  ошибка) - видно, какой мод/плагин грузит файл, даже если файл"
+            : "  'who loads particle.txd' is answered even when the file exists.");
+    desc(ru ? "  есть. Маски: * и ?. Пример: particle.txd,*.txd,*.png"
+            : "  Masks: * and ?. Example: particle.txd,*.txd,*.png");
+    kv("DebugUtils.Errors", "FileWatchNames", "");
+    line("");
+    desc(ru ? "TextureWatch: 1 = перехватывать чтения текстур RenderWare и печатать"
+            : "TextureWatch: 1 = capture RenderWare texture reads and print the mod");
+    desc(ru ? "  мод, который вызвал E_RW_READTEXMASK (не удалось прочитать текстуру)."
+            : "  behind E_RW_READTEXMASK (unable to read Texture/Mask). The error");
+    desc(ru ? "  Ошибку поднимает RwTextureRead; перехват стоит на его callback,"
+            : "  is raised by RwTextureRead; the hook is on its read callback, so the");
+    desc(ru ? "  поэтому стек мода ещё на месте (в отличие от опроса ошибок через"
+            : "  mod's stack is still present - unlike the one-frame-later error poll.");
+    desc(ru ? "  кадр). Патч только данных (подмена указателей), код не трогается."
+            : "  Data-only patch (pointers are swapped), no code is modified.");
+    desc(ru ? "  Только GTA SA 1.0 US."
+            : "  GTA SA 1.0 US only.");
+    kv("DebugUtils.Errors", "TextureWatch", "0");
+    desc(ru ? "TextureExactCaller: 1 = точный виновник (перехват входа RwTextureRead)."
+            : "TextureExactCaller: 1 = exact culprit (RwTextureRead entry hook).");
+    desc(ru ? "  Стек сканируется приблизительно (может указать игру, а не мод)."
+            : "  The stack scan is approximate (it can name the game, not the mod).");
+    desc(ru ? "  Этот хук ставит JMP на вход функции, поэтому первый кадр ="
+            : "  This hook places a JMP at the function entry, so the first frame is");
+    desc(ru ? "  вызывающий мод, точно (100%). Требует TextureWatch=1."
+            : "  the calling mod, exactly (100%). Requires TextureWatch=1.");
+    desc(ru ? "  ЕДИНСТВЕННЫЙ патч кода в плагине; по умолчанию выключен."
+            : "  The ONLY code patch in this plugin; off by default.");
+    kv("DebugUtils.Errors", "TextureExactCaller", "0");
+    desc(ru ? "TextureEntryAddress: адрес RwTextureRead для перехвата входа (0 ="
+            : "TextureEntryAddress: RwTextureRead address to hook (0 = built-in");
+    desc(ru ? "  встроенный 0x7F3AC0 - настоящий RwTextureRead, который зовут моды;"
+            : "  default 0x7F3AC0 - the real RwTextureRead that mods call; plugin-sdk's");
+    desc(ru ? "  0x4C7510 у plugin-sdk - ошибка, это CVehicleModelInfo::FindTextureCB)."
+            : "  0x4C7510 is a mistake - that is CVehicleModelInfo::FindTextureCB).");
+    kv("DebugUtils.Errors", "TextureEntryAddress", "0");
+    line("");
+    desc(ru ? "StreamingModelNames: 1 = назвать модель/TXD, которая стримится, когда"
+            : "StreamingModelNames: 1 = name the model/TXD being streamed when a");
+    desc(ru ? "  чтение текстуры не удалось (для ошибок вида E_RW_READTEXMASK из"
+            : "  texture read fails (for errors like E_RW_READTEXMASK coming from the");
+    desc(ru ? "  потокового пути RwTextureStreamRead). Ставит хук на"
+            : "  RwTextureStreamRead stream path). Hooks CStreaming::ConvertBufferToObject");
+    desc(ru ? "  CStreaming::ConvertBufferToObject и строит индекс имён моделей из"
+            : "  and builds a model-name index from the IMG archives, so the report says");
+    desc(ru ? "  IMG-архивов: отчёт называет файл (напр. comptwall36), а не только"
+            : "  the file (e.g. comptwall36), not just the texture name. Второй патч кода;");
+    desc(ru ? "  имя текстуры. Требует TextureWatch=1. Второй патч кода; по умолчанию 0."
+            : "  requires TextureWatch=1. A second code patch; off by default.");
+    kv("DebugUtils.Errors", "StreamingModelNames", "0");
+    desc(ru ? "StreamingModelAddress: адрес ConvertBufferToObject (0 = встроенный"
+            : "StreamingModelAddress: ConvertBufferToObject address (0 = built-in");
+    desc(ru ? "  0x40C6B0, GTA SA 1.0 US)."
+            : "  default 0x40C6B0, GTA SA 1.0 US).");
+    kv("DebugUtils.Errors", "StreamingModelAddress", "0");
     line("");
 
     line("[DebugUtils.Limits]");
@@ -467,6 +666,19 @@ std::string DebugUtils::BuildConfigText(bool ru, const std::map<std::string, std
     desc(ru ? "ModuleMemoryMapInterval: секунды между дампами памяти по модулям."
             : "ModuleMemoryMapInterval: seconds between module memory dumps.");
     kv("DebugUtils.Logs", "ModuleMemoryMapInterval", "30");
+    desc(ru ? "LeakTracker: 1 = отслеживать утечки памяти по скриптам (0 = выкл)."
+            : "LeakTracker: 1 = track per-script memory leaks (0 = off).");
+    desc(ru ? "  Сэмплирует арену памяти скриптов и показывает рост по скриптам,"
+            : "  Samples the script-memory arena and reports per-script growth, its");
+    desc(ru ? "  долю в % от арены/процесса и вердикт (LEAK/SUSPECTED/STABLE)."
+            : "  share of the arena/process in %, and a verdict (LEAK/SUSPECTED/STABLE).");
+    kv("DebugUtils.Logs", "LeakTracker", "0");
+    desc(ru ? "LeakInterval: секунды между сэмплами трекера утечек (>=5)."
+            : "LeakInterval: seconds between leak-tracker samples (>=5).");
+    kv("DebugUtils.Logs", "LeakInterval", "30");
+    desc(ru ? "LeakMinGrowthKB: рост меньше этого числа КБ игнорируется."
+            : "LeakMinGrowthKB: growth below this many KB is ignored.");
+    kv("DebugUtils.Logs", "LeakMinGrowthKB", "64");
     desc(ru ? "Diagnostic: 1 = писать диагностический лог, 0 = выключить."
             : "Diagnostic: 1 = write the diagnostic log, 0 = disable.");
     kv("DebugUtils.Logs", "Diagnostic", "0");
@@ -539,7 +751,7 @@ void DebugUtils::LoadConfig()
     // A config from an older build lacks keys added since; rewrite it so the new
     // options are documented without dropping the values already set.
     const bool missingNewKeys =
-        !fileMissing && raw.find("DebugUtils.Logs.ModuleMemoryMap") == raw.end();
+        !fileMissing && raw.find("DebugUtils.Errors.Enabled") == raw.end();
 
     if (fileMissing || languageMismatch || missingNewKeys)
     {
@@ -756,6 +968,192 @@ void DebugUtils::LoadConfig()
         )
     );
 
+    // Frame-quality thresholds (0 = off).
+    m_frameTimeMinFps = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "MinFps",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeLowFpsWarn01 = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "LowFpsWarn01",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeSustainedLowIntervals = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "SustainedLowIntervals",
+            0,
+            path.c_str()
+        )
+    );
+    m_frameTimeBudgetMs = static_cast<double>(
+        GetPrivateProfileIntA(
+            "DebugUtils.FrameTime", "FrameBudgetMs",
+            0,
+            path.c_str()
+        )
+    );
+
+    // Error diagnostics (RenderWare + CLEO), reported inside the frame-time log.
+    // Off by default (opt-in): the per-frame RenderWare poll costs a little.
+    m_errorDiagEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "Enabled",
+            0,
+            path.c_str()
+        ) != 0;
+    m_rwErrorWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "RenderWare",
+            0,
+            path.c_str()
+        ) != 0;
+    m_errorModuleScanEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "ModuleScan",
+            0,
+            path.c_str()
+        ) != 0;
+    // Exact RenderWare error cause: hook RwErrorSet's entry so the RAISING stack is
+    // captured at the instant of the error. Opt-in: it is a code patch (a 5-byte
+    // JMP), so it is off unless asked for. When it installs, the once-per-frame
+    // poll stands down (the hook is strictly better).
+    m_rwErrorHookEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "RwErrorHook",
+            0,
+            path.c_str()
+        ) != 0;
+    // Wrap RenderWare's rwfopen to name the exact file behind a failed open.
+    // Data-only patch (no code detour), so it is safe to leave on while hunting.
+    m_fileWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatch",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Wrap RenderWare's native texture reader (RwGlobals.stdFunc[26]) to name the
+    // mod behind E_RW_READTEXMASK. Data-only patch, same safety model as FileWatch.
+    m_textureWatchEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "TextureWatch",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Exact-caller entry hook: patch RwTextureRead's entry so the wrapper sees the
+    // mod's own call site (100% exact), instead of scanning the stack. Opt-in: it
+    // is the only code patch in this plugin, so it is off unless asked for.
+    m_textureEntryHookEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "TextureExactCaller",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Optional override of the hooked entry (default 0x7F3AC0, the real RenderWare
+    // RwTextureRead that mods call). plugin-sdk lists 0x4C7510 by mistake - that is
+    // CVehicleModelInfo::FindTextureCB. 0 = use the built-in default. Validated at
+    // install time (the log is open there), so a bad value cannot disable the hook.
+    m_textureEntryAddress = static_cast<DWORD>(GetPrivateProfileIntA(
+        "DebugUtils.Errors", "TextureEntryAddress", 0, path.c_str()));
+
+    // Streaming-model attribution: hook CStreaming::ConvertBufferToObject so a
+    // failed texture read during streaming names the model/txd being loaded, and
+    // build the modelId -> file-name index from the IMG archives. Opt-in: it is a
+    // second code patch, so it is off unless asked for.
+    m_streamingModelNamesEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "StreamingModelNames",
+            0,
+            path.c_str()
+        ) != 0;
+
+    // Optional override of the hooked entry (default 0x40C6B0, SA 1.0 US). 0 = use
+    // the built-in default. Validated at install time (the log is open there), so a
+    // bad value cannot disable the hook.
+    m_streamingModelAddress = static_cast<DWORD>(GetPrivateProfileIntA(
+        "DebugUtils.Errors", "StreamingModelAddress", 0, path.c_str()));
+
+    // Failed-open report. Default 1: when FileWatch is on, naming the file that
+    // failed is the whole point. Set 0 to keep the rwfopen hook but stop the
+    // "failed file opens" block (an empty FileWatchNames does NOT silence it).
+    m_fileWatchFailuresEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Errors", "FileWatchFailures",
+            1,
+            path.c_str()
+        ) != 0;
+
+    // Comma-separated list of path substrings to record on every open (success or
+    // failure). Answers "which mod/plugin loads particle.txd" even when the file
+    // exists. Empty = disabled.
+    {
+        char buffer[512] = {};
+        GetPrivateProfileStringA(
+            "DebugUtils.Errors", "FileWatchNames", "",
+            buffer, sizeof(buffer), path.c_str());
+
+        m_fileWatchNames.clear();
+        std::string list(buffer);
+        size_t start = 0;
+        while (start <= list.size())
+        {
+            const size_t comma = list.find(',', start);
+            std::string token = list.substr(
+                start, comma == std::string::npos ? std::string::npos : comma - start);
+
+            // trim spaces and lowercase for case-insensitive matching
+            const size_t first = token.find_first_not_of(" \t");
+            const size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos)
+            {
+                token = token.substr(first, last - first + 1);
+                for (char& c : token)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                m_fileWatchNames.push_back(token);
+            }
+
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+    }
+
+    // Per-script leak tracker (off by default: it allocates and samples).
+    m_leakTrackerEnabled =
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakTracker",
+            0,
+            path.c_str()
+        ) != 0;
+    m_leakIntervalSeconds = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakInterval",
+            30,
+            path.c_str()
+        )
+    );
+    m_leakMinGrowthBytes = static_cast<DWORD>(
+        GetPrivateProfileIntA(
+            "DebugUtils.Logs", "LeakMinGrowthKB",
+            64,
+            path.c_str()
+        )
+    ) * 1024u;
+
     if (m_frameTimeIntervalSeconds < 1)
         m_frameTimeIntervalSeconds = 1;
     if (m_frameTimeWarnMs < 1)
@@ -766,6 +1164,8 @@ void DebugUtils::LoadConfig()
         m_frameTimeTopStutter = static_cast<DWORD>(kFrameTimeMaxWorst);
     if (m_frameTimeMaxLogMegabytes < 1)
         m_frameTimeMaxLogMegabytes = 1;
+    if (m_leakIntervalSeconds < 5)
+        m_leakIntervalSeconds = 5;
 
     m_crashEnabled =
         GetPrivateProfileIntA("DebugUtils.Crash", "Enabled", 1, path.c_str()) != 0;
