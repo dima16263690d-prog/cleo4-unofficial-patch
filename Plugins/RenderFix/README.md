@@ -12,7 +12,7 @@ Repairs and configuration that affect GTA San Andreas itself: frame pacing, high
 
 A protective layer for drawing performed by CLEO plugins and scripts. The first implementation snapshots and restores RenderWare states commonly changed by CLEO+ sprite drawing: texture raster/address/filter, perspective, Z test/write, shade mode, blend modes, vertex alpha, fog and alpha-test state.
 
-The state guard brackets CLEO's game-process callbacks. It is configurable because a third-party graphics plugin may intentionally leave state changes for later code. It is a first safety layer, not a claim that every RenderWare or script error is fixed.
+The state guard brackets the Plugin-SDK RenderWare drawing event, not CLEO's script-processing callbacks. Device loss/reset and RenderWare reinitialization invalidate snapshots so stale state is not replayed. It is configurable because a third-party graphics plugin may intentionally leave state changes for later code. It is a first safety layer, not a claim that every RenderWare or script error is fixed.
 
 ## Configuration
 

@@ -61,8 +61,8 @@ RenderFix::RenderFix()
         return;
     }
 
-    // RenderFix owns its GTA streaming budget and applies it after the game's
-    // initialization, then retries once on the first processed frame.
+    // RenderFix owns the GTA streaming budget directly; the GTA module keeps
+    // the requested minimum in force if the game reinitializes streaming.
 
     CLEO_RegisterCallback(
         CLEO_CB_GAME_BEGIN,
@@ -71,10 +71,6 @@ RenderFix::RenderFix()
     CLEO_RegisterCallback(
         CLEO_CB_GAME_PROCESS_BEFORE,
         reinterpret_cast<uintptr_t>(&RenderFix::OnGameProcessBefore)
-    );
-    CLEO_RegisterCallback(
-        CLEO_CB_GAME_PROCESS_AFTER,
-        reinterpret_cast<uintptr_t>(&RenderFix::OnGameProcessAfter)
     );
 
     WriteLog("[renderfix] configuration=%s", ConfigPath().c_str());
@@ -98,8 +94,6 @@ void RenderFix::OnGameProcessBefore()
     if (self == nullptr || !self->m_supportedVersion)
         return;
 
-    RenderFixCleo::OnFrameBegin();
-
     if (self->m_gtaEnabled)
         self->UpdateAutoFpsLimit();
 
@@ -112,15 +106,6 @@ void RenderFix::OnGameProcessBefore()
     if (self->m_gtaEnabled &&
         (self->m_streamingMemoryMb > 0 || self->m_streamingMemoryMb == -1))
         self->ApplyStreamingMemory();
-}
-
-void RenderFix::OnGameProcessAfter()
-{
-    RenderFix* self = s_instance;
-    if (self == nullptr || !self->m_supportedVersion)
-        return;
-
-    RenderFixCleo::OnFrameEnd();
 }
 
 

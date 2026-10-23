@@ -102,7 +102,6 @@ private:
 
     static void OnGameBegin();
     static void OnGameProcessBefore();
-    static void OnGameProcessAfter();
 
     // The CHud::Draw replacement: runs the original, then the overlay.
     static void __cdecl HudDrawWrapper();

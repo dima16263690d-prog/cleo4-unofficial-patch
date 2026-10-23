@@ -1,16 +1,12 @@
 #include "RenderFix.CLEO.h"
 
+#include "Events.h"
 #include "rwplcore.h"
 
 #include <cstddef>
-#include <cstdint>
 
 namespace
 {
-    // RenderWare globals for GTA San Andreas 1.0 US. The module is enabled only
-    // after CLEO confirms the executable version, avoiding global init reads.
-    constexpr uintptr_t kRwEngineInstanceAddress = 0xC97B24;
-
     constexpr RwRenderState kTrackedStates[] =
     {
         rwRENDERSTATETEXTURERASTER,
@@ -39,12 +35,19 @@ namespace
     RenderStateSnapshot g_snapshot[kTrackedStateCount]{};
     bool g_enabled = false;
     bool g_stateGuardEnabled = false;
+    bool g_eventsRegistered = false;
     bool g_hasFrameSnapshot = false;
 
     RwGlobals* GetRwGlobals()
     {
-        auto** slot = reinterpret_cast<RwGlobals**>(kRwEngineInstanceAddress);
-        return slot != nullptr ? *slot : nullptr;
+        return static_cast<RwGlobals*>(RwEngineInstance);
+    }
+
+    void InvalidateSnapshot()
+    {
+        g_hasFrameSnapshot = false;
+        for (size_t i = 0; i < kTrackedStateCount; ++i)
+            g_snapshot[i].valid = false;
     }
 
     bool CaptureStates()
@@ -71,7 +74,10 @@ namespace
     {
         RwGlobals* globals = GetRwGlobals();
         if (globals == nullptr || globals->dOpenDevice.fpRenderStateSet == nullptr)
+        {
+            InvalidateSnapshot();
             return;
+        }
 
         for (size_t i = 0; i < kTrackedStateCount; ++i)
         {
@@ -84,6 +90,7 @@ namespace
                 g_snapshot[i].valid = false;
             }
         }
+        g_hasFrameSnapshot = false;
     }
 }
 
@@ -91,8 +98,33 @@ void RenderFixCleo::Configure(bool enabled, bool renderStateGuard)
 {
     g_enabled = enabled;
     g_stateGuardEnabled = enabled && renderStateGuard;
-    if (!g_stateGuardEnabled)
-        g_hasFrameSnapshot = false;
+    InvalidateSnapshot();
+
+    // Bind to the actual RenderWare drawing event, not CLEO's script-processing
+    // callbacks. This brackets the game's drawing pass, where CLEO+ drawing
+    // callbacks execute, and avoids restoring renderer state around script logic.
+    if (g_stateGuardEnabled && !g_eventsRegistered)
+    {
+        Events::drawingEvent.before += [] {
+            RenderFixCleo::OnFrameBegin();
+        };
+        Events::drawingEvent.after += [] {
+            RenderFixCleo::OnFrameEnd();
+        };
+
+        // A device loss/reset or RenderWare reinitialization invalidates any
+        // in-flight snapshot. Never replay stale raster/device state after reset.
+        Events::d3dLostEvent += [] {
+            InvalidateSnapshot();
+        };
+        Events::d3dResetEvent += [] {
+            InvalidateSnapshot();
+        };
+        Events::initRwEvent += [] {
+            InvalidateSnapshot();
+        };
+        g_eventsRegistered = true;
+    }
 }
 
 void RenderFixCleo::OnFrameBegin()
@@ -109,5 +141,4 @@ void RenderFixCleo::OnFrameEnd()
         return;
 
     RestoreStates();
-    g_hasFrameSnapshot = false;
 }
