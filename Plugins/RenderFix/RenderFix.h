@@ -3,6 +3,7 @@
 #include "CLEO.h"
 #include "CLEO_Debug.h"
 #include "RenderFix.Patch.h"
+#include "RenderFix.CLEO.h"
 
 #include <windows.h>
 #include <cstdarg>
@@ -34,6 +35,9 @@ private:
 
     // ---- configuration (RenderFix.ini) ----
     bool m_enabled = false;
+    bool m_gtaEnabled = true;
+    bool m_cleoEnabled = true;
+    bool m_cleoRenderStateGuard = true;
     int m_frameLimit = 0;            // FPS cap; 0 = leave the engine value untouched
     bool m_removeFrameDelay = false; // drop the engine's ~14 ms per-frame sleep
     int m_streamingMemoryMb = 0;     // streaming budget; 0 = untouched, -1 = auto
@@ -57,6 +61,7 @@ private:
     // ---- runtime state ----
     bool m_supportedVersion = false;
     bool m_pendingReapply = false;
+    bool m_pendingStreamingReapply = false;
     bool m_fpsOverlayInstalled = false;
     int m_autoFpsCurrent = -1;       // last cap written by the auto limiter; -1 = none
 
@@ -98,6 +103,7 @@ private:
 
     static void OnGameBegin();
     static void OnGameProcessBefore();
+    static void OnGameProcessAfter();
 
     // The CHud::Draw replacement: runs the original, then the overlay.
     static void __cdecl HudDrawWrapper();

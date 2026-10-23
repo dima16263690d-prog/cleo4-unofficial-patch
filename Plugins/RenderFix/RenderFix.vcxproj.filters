@@ -14,12 +14,21 @@
     <ClCompile Include="RenderFix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="RenderFix.GTA.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderFix.CLEO.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="RenderFix.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RenderFix.Patch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderFix.CLEO.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

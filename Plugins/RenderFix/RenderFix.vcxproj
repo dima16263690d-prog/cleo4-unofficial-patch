@@ -74,6 +74,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="RenderFix.cpp" />
+    <ClCompile Include="RenderFix.GTA.cpp" />
+    <ClCompile Include="RenderFix.CLEO.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="RenderFix.ini">
@@ -83,6 +85,7 @@
   <ItemGroup>
     <ClInclude Include="RenderFix.h" />
     <ClInclude Include="RenderFix.Patch.h" />
+    <ClInclude Include="RenderFix.CLEO.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO_Debug.h" />
     <ClInclude Include="$(SolutionDir)cleo_sdk\CLEO.h" />
   </ItemGroup>

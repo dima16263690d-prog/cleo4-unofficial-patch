@@ -1,91 +1,53 @@
 # RenderFix
 
-RenderFix is the "fixer" companion to **DebugUtils**. DebugUtils only observes
-(reports RenderWare errors, stutter, leaks); RenderFix optionally *changes*
-frame pacing and streaming. Keeping them separate means the diagnostic plugin
-never silently alters the thing it is measuring.
+RenderFix remains a CLEO plugin (RenderFix.cleo) loaded and managed by CLEO 4 NEFPATH. It has two independent responsibilities; it is not a standalone ASI and does not replace CLEO.
 
-Every tweak is opt-in from `RenderFix.ini`, applied at game start, and logged to
-`cleo\debug\cleo_renderfix.log`, so a change can be isolated and reverted
-without rebuilding.
+## Two independent domains
 
-## Supported game
+### 1. RenderFix + GTA
 
-**GTA San Andreas 1.0 US only.** All addresses are 1.0 US specific. On any other
-build the plugin logs that it did nothing and applies no patches.
+Repairs and configuration that affect GTA San Andreas itself: frame pacing, high-FPS-sensitive behavior, renderer fixes, and streaming memory.
 
-## Settings (`cleo\cleo_plugins\RenderFix.ini`)
+### 2. RenderFix + CLEO
+
+A protective layer for drawing performed by CLEO plugins and scripts. The first implementation snapshots and restores RenderWare states commonly changed by CLEO+ sprite drawing: texture raster/address/filter, perspective, Z test/write, shade mode, blend modes, vertex alpha, fog and alpha-test state.
+
+The state guard brackets CLEO's game-process callbacks. It is configurable because a third-party graphics plugin may intentionally leave state changes for later code. It is a first safety layer, not a claim that every RenderWare or script error is fixed.
+
+## Configuration
+
+The file is read from the CLEO plugin configuration directory (or alongside the plugin if an INI is present). The master switch is off by default; both domains can then be controlled separately:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `[RenderFix.General] Enabled` | 0 | Master switch. 0 = the plugin does nothing. |
-| `[RenderFix.General] Log` | 1 | Write `cleo\debug\cleo_renderfix.log`. |
-| `[RenderFix.FPS] FrameLimit` | 0 | FPS cap, 1..255. 0 = leave the engine value untouched. |
-| `[RenderFix.FPS] RemoveFrameDelay` | 0 | Remove the engine's ~14 ms per-frame delay. |
-| `[RenderFix.FPS] MinRefreshRate` | 0 | Minimum monitor refresh rate in Hz. 0 = untouched. |
-| `[RenderFix.AutoLimitFPS] Enabled` | 0 | Lower the cap during high-FPS-breaking activities. |
-| `[RenderFix.AutoLimitFPS] ForCutscenes` | 1 | Cutscene cap 60. |
-| `[RenderFix.AutoLimitFPS] ForScriptedScenes` | 1 | Scripted-scene cap 80. |
-| `[RenderFix.AutoLimitFPS] ForPauseMenu` | 1 | Pause-menu cap 60. |
-| `[RenderFix.AutoLimitFPS] ForMinigames` | 1 | Minigame cap 30 (`POOL2`, `GFSEX`). |
-| `[RenderFix.AutoLimitFPS] ForMissions` | 1 | Mission-interior cap 50 (`DRUGS1` inside). |
-| `[RenderFix.AutoLimitFPS] ForSchools` | 1 | School cap 80 (`DSKOOL`, `BOAT`, `BSKOOL`). |
-| `[RenderFix.Streaming] MemoryMB` | 0 | Streaming budget in MB. 0 = untouched, -1 = auto, >0 = that many MB. |
+| [RenderFix.General] Enabled | 0 | Master switch. |
+| [RenderFix.GTA] Enabled | 1 | Enable GTA-side fixes. |
+| [RenderFix.CLEO] Enabled | 1 | Enable CLEO-side rendering protection. |
+| [RenderFix.CLEO] RenderStateGuard | 1 | Snapshot/restore selected RenderWare states each game-process cycle. |
+| [RenderFix.FPS] FrameLimit | 0 | Frame cap, 1..255; 0 = do not change current cap. |
+| [RenderFix.FPS] RemoveFrameDelay | 0 | Remove approximately 14 ms frame delay. |
+| [RenderFix.FPS] MinRefreshRate | 0 | Minimum refresh rate in Hz. |
+| [RenderFix.AutoLimitFPS] Enabled | 0 | Temporarily lower the cap during selected activities. |
+| [RenderFix.Overlay] ShowFPS | 0 | Show an FPS counter. |
+| [RenderFix.CoreFixes] MouseReinitFix | 0 | Prevent repeated DirectInput mouse-device reinitialization. |
+| [RenderFix.CoreFixes] RefFix | 0 | Prevent the reflection renderer divide-by-zero. |
+| [RenderFix.CoreFixes] DoubleRwheelsFix | 0 | Correct RenderWare matrix flags for dual rear wheels. |
+| [RenderFix.Streaming] MemoryMB | 0 | Request a minimum streaming budget in MB; -1 = automatic. |
 
-## What each tweak does
+The existing AutoLimitFPS activity keys and values remain available in the INI.
 
-- **FrameLimit** writes the engine's frame-limiter byte (`0xC1704C`). It is
-  re-applied once on the first processed frame because the engine re-initialises
-  the limiter shortly after the scripts start (the same approach SA-MixSets and
-  FramerateVigilante use).
-- **RemoveFrameDelay** removes the engine's ~14 ms per-frame sleep
-  (SilentPatch's "No framedelay"). This is what usually unlocks a smooth high
-  frame rate.
-- **MinRefreshRate** writes the immediate operand of the refresh-rate instruction
-  at `0x74612C` (FramerateVigilante's "RefreshRate").
-- **AutoLimitFPS** ports FramerateVigilante's automatic limiter: every frame it
-  reads the cutscene / scripted-scene / pause flags and walks the active script
-  list, and *lowers* the cap only while an activity that breaks at high FPS runs.
-  The override can only lower the base `FrameLimit`, never raise it, and it is
-  written only when the value changes so it does not fight another mod per frame.
-  This is the safest way to run at 60+ FPS: you keep the smooth cap everywhere
-  except the few places the engine needs 30.
-- **MemoryMB** is handed to the CLEO core (`CLEO_SetStreamingMemoryLimit`) and
-  applied at SCM init, so the engine's own streaming initialisation cannot
-  clobber it. The value is only ever raised, never lowered.
+## Streaming memory ownership
 
-## Roadmap — what could be added next (Tier 2)
+RenderFix now writes the GTA 1.0 US CStreaming::ms_memoryAvailable field itself instead of delegating the request to CLEO_SetStreamingMemoryLimit. It applies the setting when fixes are initialized and retries on the first processed frame because game initialization may overwrite an earlier write. The requested value only raises the current budget; it never lowers a budget already set higher by the game or another mod. MemoryMB=-1 selects 1024 MB for a Large Address Aware executable, otherwise 512 MB.
 
-SilentPatch and FramerateVigilante carry far more than frame pacing. The
-high-value, low-risk items to port next, in rough order:
+## Scope and compatibility
 
-1. **Physics-at-high-FPS fixes (FramerateVigilante).** These are the real reason
-   60+ FPS feels wrong: swim/dive speed scaling, buoyancy cutoff, swing-door
-   damping, siren toggle, helicopter rotor speed, burnout, ped-push-car force.
-   Each is a small inline hook, but all are *behaviour* patches, so they belong
-   behind their own ini key and should be tested one at a time.
-2. **SilentPatch "No framedelay" variants and Timer fixes.** SilentPatch also
-   fixes `CTimer` float→int rounding; useful above 30 FPS.
-3. **Streaming / memory (MixSets territory).** `MemoryMB` is already here; pool
-   sizes and a "load whole map" mode are the MixSets features worth considering,
-   but they overlap with other mods and are riskier.
+- Supported build: GTA San Andreas Classic 1.0 US only. Address-based changes are skipped on other builds.
+- Keep RenderFix.General.Enabled=0 to leave gameplay unchanged.
+- Enable or disable the GTA and CLEO domains independently.
+- The CLEO-side state guard is limited to selected RenderWare render states; resource lifetime tracking, device-reset recovery and broader script-render hooks remain future work.
+- Compare with the guard enabled and disabled when using unusual graphics stacks.
 
-Everything above is opt-in and off by default, so RenderFix stays a no-op unless
-the user asks for a specific change.
+## Existing patch-plan test
 
-## Caveats
-
-- Raising the frame rate above 30 FPS can expose physics and timing issues the
-  engine was not designed for. Enable one tweak at a time and test.
-- The addresses come from SilentPatch, SA-MixSets and FramerateVigilante (all
-  MIT). See `RenderFix.Patch.h` for the exact values and their sources.
-
-## Tests
-
-The patch plan (addresses and bytes) has a host unit test, because a wrong byte
-silently corrupts the game's code:
-
-```
-g++ -std=c++17 -I Plugins/RenderFix Plugins/RenderFix/Tests/renderfix_plan_test.cpp -o /tmp/renderfix_plan_test
-/tmp/renderfix_plan_test
-```
+The address/value unit test remains at Plugins/RenderFix/Tests/renderfix_plan_test.cpp. It checks fixed constants and AutoLimitFPS rules without requiring GTA to run. The in-game modules still require a Windows build and runtime test in GTA SA 1.0 US.
